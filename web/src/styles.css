@@ -134,7 +134,7 @@ body::before {
 /* ---------------------------------------------------------- 叙事区 */
 
 .log-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
-.log { flex: 1; overflow-y: auto; padding: 22px 26px 8px; }
+.log { flex: 1; overflow-y: auto; padding: 22px 26px 10px; }
 .log-inner { max-width: 720px; margin: 0 auto; }
 
 .narr {
@@ -243,27 +243,83 @@ body::before {
 
 /* ---------------------------------------------------------- 选项 */
 
+/*
+ * 选项区要克制 —— 它是配角，剧情才是主角。
+ * 三重限制：行更紧凑、总高有上限（超出自己滚）、可一键收起。
+ */
 .choices {
   border-top: 1px solid var(--line);
   background: var(--bg-2);
-  padding: 12px 26px 14px;
+  padding: 7px 24px 10px;
+  flex: none;
+  /*
+   * 硬上限：选项区最多占剧情栏的 42%，其余全留给剧情。
+   * 光靠"调紧凑"不够 —— 选项数量是可变的（修炼一次列 6 项），
+   * 必须有个和内容无关的天花板，剧情区才不会被挤没。
+   */
+  max-height: 42%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
-.choices-inner { max-width: 720px; margin: 0 auto; }
+
+.choices-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 5px;
+  flex: none;
+}
+.choices-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 2px 4px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+}
+.choices-toggle:hover { color: var(--blood); background: var(--bg-3); }
+.choices-toggle .chev { font-size: 10px; width: 10px; }
+.choices-toggle .cnt {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--bg-3);
+  color: var(--ink-dim);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-align: center;
+}
+.choices-tip { font-size: 11px; color: var(--ink-faint); }
+
+/* 选项一多就自己滚，绝不去挤压上面的剧情 */
+.choices-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain; /* 滚到底不要带着整页继续滚 */
+  padding-right: 2px;
+}
 
 .choice {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 10px 14px;
-  margin-bottom: 6px;
+  padding: 7px 12px;
+  margin-bottom: 4px;
   background: var(--bg-2);
   border: 1px solid var(--line);
   border-radius: 4px;
   color: var(--ink);
-  font-size: 14.5px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.45;
   transition: border-color 0.12s, background 0.12s, transform 0.08s;
 }
+.choice:last-child { margin-bottom: 0; }
 .choice:hover:not(:disabled) {
   border-color: var(--blood);
   background: #fdf6f5;
@@ -280,17 +336,12 @@ body::before {
 .choice.train:hover:not(:disabled) { border-color: var(--gold); background: #fdfaf0; }
 .choice.train .idx { color: var(--gold); }
 
-/* 自定义行动：每次对话都在，做得显眼一点 */
+/* 自定义行动：常驻，但压成一行不占地方 */
 .custom-row {
-  margin-top: 10px;
-  padding-top: 10px;
+  flex: none;
+  margin-top: 6px;
+  padding-top: 6px;
   border-top: 1px dashed var(--line);
-}
-.custom-label {
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  color: var(--ink-faint);
-  margin-bottom: 5px;
 }
 .custom-row form { display: flex; gap: 7px; }
 .custom-row input {
@@ -298,15 +349,15 @@ body::before {
   background: var(--bg-3);
   border: 1px solid var(--line);
   border-radius: 4px;
-  padding: 9px 12px;
+  padding: 7px 11px;
   color: var(--ink);
   font-family: var(--font-narr);
-  font-size: 14.5px;
+  font-size: 14px;
 }
 .custom-row input::placeholder { color: var(--ink-faint); }
 .custom-row input:focus { outline: none; border-color: var(--cursed); background: #fff; }
 .custom-row button {
-  padding: 0 18px;
+  padding: 0 16px;
   background: var(--cursed);
   border: none;
   border-radius: 4px;

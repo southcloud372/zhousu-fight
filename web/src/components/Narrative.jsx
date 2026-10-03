@@ -173,16 +173,29 @@ export function NarrativeLog({ entries, streaming, busy, liveCombat }) {
     const el = logRef.current
     if (!el) return
 
-    // 玩家刚刚出手（新增了他的行动条目）→ 恢复跟随，他要看结果
+    /*
+     * 玩家出手时：把他刚点的那一行**钉在视野顶部**，新正文从它下面往下长。
+     *
+     * 之前这里是"跟到底"，结果是点完选项直接被甩到段落结尾 ——
+     * 新正文一边生成一边把视线往下推，等于永远只看到最后几行。
+     * 玩家要的是从自己那一手开始，顺着往下读。
+     */
     if (playerRoundsRef.current !== playerRounds) {
       playerRoundsRef.current = playerRounds
-      pinnedRef.current = true
-      setPinned(true)
+      const nodes = el.querySelectorAll('.log-inner > *')
+      const anchor = nodes[nodes.length - 1]
+      if (anchor) {
+        // 用相对位移而不是 offsetTop —— 后者依赖 offsetParent，容易算错
+        const delta = anchor.getBoundingClientRect().top - el.getBoundingClientRect().top
+        el.scrollTop += delta - 10
+      }
+      // 关掉自动跟随：正文继续生成，但视野停在玩家那一手
+      pinnedRef.current = false
+      setPinned(false)
+      return // 这一拍不跟到底
     }
-    if (!pinnedRef.current) return
 
-    // 用 scrollTop 直接定位而不是 scrollIntoView({smooth})：
-    // 流式时每 16ms 触发一次，平滑动画会互相打断，看着像卡顿。
+    if (!pinnedRef.current) return
     el.scrollTop = el.scrollHeight
   }, [entries, playerRounds, streaming, liveCombat?.narration, busy])
 
@@ -240,46 +253,67 @@ export function NarrativeLog({ entries, streaming, busy, liveCombat }) {
  */
 export function ChoiceList({ choices, onPick, disabled }) {
   const [free, setFree] = React.useState('')
+  const [collapsed, setCollapsed] = React.useState(false)
   const trimmed = free.trim()
+  const count = choices.length
 
   return (
-    <div className="choices">
-      <div className="choices-inner">
-        {choices.map((c) => (
-          <button
-            key={c.id}
-            className={`choice${c.kind === 'training' ? ' train' : ''}`}
-            disabled={disabled || c.disabled}
-            title={c.reason || ''}
-            onClick={() => onPick(c)}
-          >
-            <span className="idx">{c.kind === 'training' ? '※' : c.id}.</span>
-            {c.label}
-          </button>
-        ))}
+    <div className={`choices${collapsed ? ' collapsed' : ''}`}>
+      {/* 选项多的时候这块会占掉半屏，留个收起按钮把空间还给剧情 */}
+      <div className="choices-head">
+        <button
+          className="choices-toggle"
+          onClick={() => setCollapsed((v) => !v)}
+          aria-expanded={!collapsed}
+          title={collapsed ? '展开选项' : '收起选项，把空间还给剧情'}
+        >
+          <span className="chev">{collapsed ? '▸' : '▾'}</span>
+          选择行动
+          <span className="cnt">{count}</span>
+        </button>
+        {!collapsed && count > 0 && (
+          <span className="choices-tip">也可以直接在下面写你想做的事</span>
+        )}
+      </div>
 
-        <div className="custom-row">
-          <div className="custom-label">自定义行动 —— 想做什么直接写</div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (!trimmed) return
-              setFree('')
-              // 记住上一次输入，方便微调重发
-              try { localStorage.setItem('sunuo:lastAction', trimmed) } catch {}
-              onPick({ id: 'free', label: trimmed, kind: 'story' })
-            }}
-          >
-            <input
-              value={free}
-              onChange={(e) => setFree(e.target.value)}
-              placeholder="例如：先退到巷口，用咒力试探它的反应"
-              disabled={disabled}
-              aria-label="自定义行动"
-            />
-            <button type="submit" disabled={disabled || !trimmed}>执行</button>
-          </form>
+      {/* 选项列表：超出高度时自己滚，不挤压剧情 */}
+      {!collapsed && count > 0 && (
+        <div className="choices-list">
+          {choices.map((c) => (
+            <button
+              key={c.id}
+              className={`choice${c.kind === 'training' ? ' train' : ''}`}
+              disabled={disabled || c.disabled}
+              title={c.reason || ''}
+              onClick={() => onPick(c)}
+            >
+              <span className="idx">{c.kind === 'training' ? '※' : c.id}.</span>
+              {c.label}
+            </button>
+          ))}
         </div>
+      )}
+
+      {/* 自定义行动常驻：收起选项时也留着，它是主要输入方式之一 */}
+      <div className="custom-row">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!trimmed) return
+            setFree('')
+            try { localStorage.setItem('sunuo:lastAction', trimmed) } catch {}
+            onPick({ id: 'free', label: trimmed, kind: 'story' })
+          }}
+        >
+          <input
+            value={free}
+            onChange={(e) => setFree(e.target.value)}
+            placeholder="自定义行动 —— 想做什么直接写，例如：先退到巷口，试探它的反应"
+            disabled={disabled}
+            aria-label="自定义行动"
+          />
+          <button type="submit" disabled={disabled || !trimmed}>执行</button>
+        </form>
       </div>
     </div>
   )

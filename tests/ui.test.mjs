@@ -493,12 +493,11 @@ test('生成过程中往上翻，不会被强行拽回底部', async () => {
     await new Promise((r) => setTimeout(r, 30))
   }
 
-  // 玩家出手 —— 这一步会恢复跟随（他主动点的时候跟到底是符合预期的）
+  // 玩家出手
   click(findButton('前进'))
   await new Promise((r) => setTimeout(r, 120))
-  assert.equal(log.scrollTop, log.scrollHeight, '出手后应跟随到底部')
 
-  // 关键场景：生成还在继续，玩家往上翻去重读
+  // 关键场景：生成还在继续，玩家主动往上翻去重读
   await scrollTo(150)
   const btn = dom.window.document.querySelector('.jump-latest')
   assert.ok(btn, '往上翻之后应出现「回到最新」按钮')
@@ -530,19 +529,32 @@ test('生成中的文字是逐渐出现的，不是一次糊上来', async () =>
   assert.ok(later > early, `文字没有逐渐增加：${early} → ${later}`)
 })
 
-test('玩家自己出手时恢复跟随（他要看结果）', async () => {
+test('点击选项后停在那一行，不被甩到段落结尾', async () => {
+  // 之前的毛病：点完选项就跟到底，新正文一边生成一边把视线往下推，
+  // 结果永远只看到最后几行。要的是从自己那一手开始往下读。
   await enterGame()
   const log = dom.window.document.querySelector('.log')
-  // 玩家往上翻
-  log.scrollTop = 100
-  log.dispatchEvent(new dom.window.Event('scroll', { bubbles: false }))
-  await new Promise((r) => setTimeout(r, 40))
-  assert.ok(dom.window.document.querySelector('.jump-latest'), '前置条件：应先处于"未跟随"状态')
 
-  // 点一个选项 = 主动出手，这时恢复跟随是符合预期的
   click(findButton('前进'))
   await new Promise((r) => setTimeout(r, 250))
-  assert.equal(log.scrollTop, log.scrollHeight, '玩家出手后应恢复跟随')
+
+  assert.notEqual(log.scrollTop, log.scrollHeight,
+    '点完选项就被拉到了最底部 —— 应当停在自己那一手的位置')
+  // 停住之后要能一键回到最新
+  assert.ok(dom.window.document.querySelector('.jump-latest'),
+    '停在中间时应提供「回到最新」')
+})
+
+test('停在半途时，后续正文不会把视野推走', async () => {
+  await enterGame()
+  const log = dom.window.document.querySelector('.log')
+  click(findButton('前进'))
+  await new Promise((r) => setTimeout(r, 150))
+
+  // 记下此刻位置，等后面的片段陆续到达
+  const anchored = log.scrollTop
+  await new Promise((r) => setTimeout(r, 400))
+  assert.equal(log.scrollTop, anchored, '后续生成把视野推走了')
 })
 
 test('三栏结构：左战斗 / 中剧情 / 右状态', async () => {
@@ -588,7 +600,8 @@ test('选项栏每次都有自定义行动输入', async () => {
   await enterGame()
   const input = dom.window.document.querySelector('.custom-row input')
   assert.ok(input, '没有自定义行动输入框')
-  assert.match(dom.window.document.querySelector('.custom-label').textContent, /自定义行动/)
+  // 提示文案放在 placeholder 里，不再单独占一行
+  assert.match(input.placeholder, /自定义行动/, '没有标明这是自定义行动')
   assert.match(input.placeholder, /例如/, '缺少输入示例')
 
   // 输入后提交，应当作为玩家行动进入日志
@@ -604,6 +617,57 @@ test('选项栏每次都有自定义行动输入', async () => {
 
   assert.match(dom.window.document.querySelector('.log').textContent, /先退到巷口观察/,
     '自定义行动没有进入剧情日志')
+})
+
+test('选项区可以收起，把空间还给剧情', async () => {
+  turnHasCombat = false // 用普通剧情回合测（遭遇战会接管选项栏）
+  try {
+  await enterGame()
+  click(findButton('前进'))
+  await waitFor('跳过当天，进行修炼', { timeout: 15000 })
+
+  const choices = dom.window.document.querySelector('.choices')
+  assert.ok(dom.window.document.querySelector('.choices-list'), '默认应当展开选项列表')
+
+  const toggle = dom.window.document.querySelector('.choices-toggle')
+  assert.ok(toggle, '没有收起按钮')
+  assert.match(toggle.textContent, /选择行动/)
+  assert.match(toggle.textContent, /\d/, '没有显示选项数量')
+
+  click(toggle)
+  await new Promise((r) => setTimeout(r, 80))
+  assert.ok(!dom.window.document.querySelector('.choices-list'), '收起后不该还有选项列表')
+  assert.ok(choices.className.includes('collapsed'), '缺少 collapsed 类')
+  // 收起后自定义输入必须还在 —— 那是主要输入方式之一
+  assert.ok(dom.window.document.querySelector('.custom-row input'), '收起后自定义输入不该消失')
+  } finally {
+    turnHasCombat = true
+  }
+})
+
+test('选项区高度有上限，不会占掉半个屏幕', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'web/src/styles.css'), 'utf8')
+  const block = (sel) => {
+    const re = new RegExp(`(?:^|\\n)${sel.replace('.', '\\.')}\\s*\\{([^}]*)\\}`, 'm')
+    const m = css.match(re)
+    return m ? m[1] : ''
+  }
+
+  // 整个选项区必须有和内容无关的天花板：修炼一次列 6 项，光靠"调紧凑"不够
+  const box = block('.choices')
+  const cap = (box.match(/max-height:\s*([^;]+)/) || [])[1]
+  assert.ok(cap, '选项区没有高度上限 —— 选项一多就会挤压剧情')
+  const pct = Number((cap.match(/(\d+(?:\.\d+)?)%/) || [])[1])
+  assert.ok(pct && pct <= 45, `选项区最多只能占 ${cap}，超过一半就本末倒置了`)
+  assert.match(box, /display:\s*flex/, '选项区需要 flex 才能让列表内部滚动')
+
+  // 列表自己滚，不往外挤
+  const list = block('.choices-list')
+  assert.match(list, /overflow-y:\s*auto/, '超出上限时应当自己滚')
+  assert.match(list, /min-height:\s*0/, '列表缺少 min-height:0，flex 子项不会收缩')
+
+  // 剧情区必须能拿到剩余空间
+  assert.match(block('.log-wrap'), /flex:\s*1/, '剧情区应当占据剩余空间')
 })
 
 test('亮色主题：底色是浅色、正文是深色', async () => {
