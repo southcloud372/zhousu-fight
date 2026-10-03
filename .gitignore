@@ -1,0 +1,30 @@
+# 依赖与构建产物
+node_modules/
+dist/
+.vite/
+
+# ⚠️ 密钥：绝不要提交。仓库里只留 .env.example（占位值）
+.env
+.env.local
+.env.*.local
+
+# 设定文件在 rules/ 下，随仓库一起发布。
+# 换成自己的设定：直接替换 rules/ 里的文件，或另放一个 .txt / .md（优先取文件名靠前的）。
+# ⚠️ 若放入的是**第三方文本**，记得同步更新 LICENSE 的第三方内容声明。
+
+# 本地存档（含玩家的剧情进度，不该进仓库）
+server/saves/
+*.save
+
+# 日志
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp

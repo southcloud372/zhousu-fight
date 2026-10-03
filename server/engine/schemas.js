@@ -1,0 +1,190 @@
+/**
+ * 工具 schema。用 tool calling 而不是 JSON mode，
+ * 因为这个端点关掉 thinking 后支持强制 tool_choice，结构最稳。
+ *
+ * 注意：narration 必须放在 properties 第一位 —— 流式解析靠它做打字机，
+ * 放后面就得等整个 JSON 生成完才能出字。
+ */
+
+export const submitAttributeFlavor = {
+  name: 'submit_attribute_flavor',
+  description: '提交三份属性档案的创意字段（数值由引擎给定，不可修改）',
+  input_schema: {
+    type: 'object',
+    properties: {
+      profiles: {
+        type: 'array',
+        minItems: 3,
+        maxItems: 3,
+        items: {
+          type: 'object',
+          properties: {
+            slot: { type: 'string', enum: ['A', 'B', 'C'] },
+            techniqueName: { type: 'string', description: '生得术式名称' },
+            techniqueEffect: { type: 'string', description: '术式效果，一句话说清机制' },
+            techniqueCooldown: { type: 'integer', description: '冷却回合数，1~5' },
+            domain: {
+              type: ['object', 'null'],
+              properties: {
+                name: { type: 'string' },
+                sureHit: { type: 'string', description: '必中效果' },
+                cost: { type: 'string', description: '代价' },
+              },
+              required: ['name', 'sureHit', 'cost'],
+              description: 'domainUnlocked 为 false 时填 null',
+            },
+            talents: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 3 },
+            playstyle: { type: 'string', description: '给玩家看的一句话玩法风格提示' },
+            tool: { type: ['string', 'null'], description: '咒具名称，toolCount 为 0 时填 null' },
+          },
+          required: ['slot', 'techniqueName', 'techniqueEffect', 'techniqueCooldown', 'domain', 'talents', 'playstyle', 'tool'],
+        },
+      },
+    },
+    required: ['profiles'],
+  },
+}
+
+export const submitIdentityFlavor = {
+  name: 'submit_identity_flavor',
+  description: '提交三份身份档案的创意字段',
+  input_schema: {
+    type: 'object',
+    properties: {
+      identities: {
+        type: 'array',
+        minItems: 3,
+        maxItems: 3,
+        items: {
+          type: 'object',
+          properties: {
+            slot: { type: 'string', enum: ['甲', '乙', '丙'] },
+            name: { type: 'string' },
+            background: { type: 'string', description: '具体背景与来历' },
+            mainlineRelation: { type: 'string', description: '与主线的关系' },
+            openingSituation: { type: 'string', description: '开局处境' },
+            hook: { type: 'string', description: '特殊钩子' },
+          },
+          required: ['slot', 'name', 'background', 'mainlineRelation', 'openingSituation', 'hook'],
+        },
+      },
+    },
+    required: ['identities'],
+  },
+}
+
+export const submitTurn = {
+  name: 'submit_turn',
+  description: '提交本回合的剧情推进结果',
+  input_schema: {
+    type: 'object',
+    properties: {
+      narration: {
+        type: 'string',
+        description: '本回合正文。分镜级叙事，战斗/冲突占 70% 以上，日常一句带过。不要写数值变化。',
+      },
+      dialogue: {
+        type: 'array',
+        description: 'NPC 台词。极简，每句不超过两行。禁止出现弱特级/标特级/超特级/龙级。',
+        items: {
+          type: 'object',
+          properties: {
+            speaker: { type: 'string' },
+            text: { type: 'string' },
+          },
+          required: ['speaker', 'text'],
+        },
+      },
+      choices: {
+        type: 'array',
+        description: '3~4 个行动选项，要有实质分歧。不要写"跳过当天修炼"，引擎会自动追加。',
+        items: { type: 'string' },
+        minItems: 3,
+        maxItems: 4,
+      },
+      proposal: {
+        type: 'object',
+        description: '对引擎的数值变更提议，引擎会校验并夹紧。拿不准就填 0。',
+        properties: {
+          hpDelta: { type: 'integer', description: '玩家血量变化，负数为受伤' },
+          ceDelta: { type: 'integer', description: '玩家咒力变化，负数为消耗' },
+          relationDelta: {
+            type: 'object',
+            description: '角色好感度变化，key 用角色全名',
+            additionalProperties: { type: 'integer' },
+          },
+          sukunaAwakeningDelta: { type: 'integer', description: '宿傩觉醒度变化，0~100 的绝对值增量' },
+          flags: { type: 'array', items: { type: 'string' }, description: '剧情标记，如"少年院任务_开始"' },
+          timeAdvance: { type: 'string', enum: ['0', '1d', '3d', '1w'], description: '时间推进量' },
+        },
+        required: ['hpDelta', 'ceDelta', 'relationDelta', 'sukunaAwakeningDelta', 'flags', 'timeAdvance'],
+      },
+      combatRequest: {
+        type: ['object', 'null'],
+        description: '若本回合触发战斗，填敌方信息；引擎会按等级表生成实际数值。',
+        properties: {
+          enemyName: { type: 'string' },
+          enemyGrade: {
+            type: 'string',
+            enum: ['四级', '三级', '二级', '准一级', '一级', '弱特级', '标特级', '超特级', '龙级'],
+            description: '应与玩家当前等级相称，差距不超过 2 级；剧情明确要写碾压时才可拉开，且需给出理由。',
+          },
+          enemyTechniqueName: { type: 'string', description: '敌方的术式名，会出现在战斗面板里' },
+          enemyTechniqueEffect: { type: 'string', description: '敌方术式效果，一句话' },
+          enemyDomainName: { type: ['string', 'null'], description: '敌方领域名，非特级填 null' },
+          reason: { type: 'string' },
+        },
+        required: ['enemyName', 'enemyGrade', 'enemyTechniqueName', 'enemyTechniqueEffect', 'enemyDomainName', 'reason'],
+      },
+    },
+    required: ['narration', 'dialogue', 'choices', 'proposal', 'combatRequest'],
+  },
+}
+
+export const submitOpeningScene = {
+  name: 'submit_opening_scene',
+  description: '提交开局情境',
+  input_schema: {
+    type: 'object',
+    properties: {
+      narration: {
+        type: 'string',
+        description: '开局情境。直接切入战斗或高张力冲突，不要铺垫。',
+      },
+      dialogue: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { speaker: { type: 'string' }, text: { type: 'string' } },
+          required: ['speaker', 'text'],
+        },
+      },
+      choices: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 4 },
+      proposal: {
+        type: 'object',
+        properties: {
+          hpDelta: { type: 'integer' },
+          ceDelta: { type: 'integer' },
+          relationDelta: { type: 'object', additionalProperties: { type: 'integer' } },
+          sukunaAwakeningDelta: { type: 'integer' },
+          flags: { type: 'array', items: { type: 'string' } },
+          timeAdvance: { type: 'string', enum: ['0', '1d', '3d', '1w'] },
+        },
+        required: ['hpDelta', 'ceDelta', 'relationDelta', 'sukunaAwakeningDelta', 'flags', 'timeAdvance'],
+      },
+      combatRequest: {
+        type: ['object', 'null'],
+        properties: {
+          enemyName: { type: 'string' },
+          enemyGrade: { type: 'string', enum: ['四级', '三级', '二级', '准一级', '一级', '弱特级', '标特级', '超特级', '龙级'] },
+          enemyTechniqueName: { type: 'string' },
+          enemyTechniqueEffect: { type: 'string' },
+          enemyDomainName: { type: ['string', 'null'] },
+          reason: { type: 'string' },
+        },
+        required: ['enemyName', 'enemyGrade', 'enemyTechniqueName', 'enemyTechniqueEffect', 'enemyDomainName', 'reason'],
+      },
+    },
+    required: ['narration', 'dialogue', 'choices', 'proposal', 'combatRequest'],
+  },
+}

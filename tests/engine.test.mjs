@@ -1,0 +1,518 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+
+import { makeRng, weightedPick, rint, pickByProb } from '../server/engine/dice.js'
+import {
+  GRADES, RANGES, TECH_MULT, INITIAL_WEIGHTS, SUPPRESSION, TIER_SUPPRESSION,
+  gradeIndex, shiftGrade, isTier, ATTR_GRADE_CAP,
+} from '../server/engine/tables.js'
+import { rollAttributeProfile, rollIdentity, rollIdentityKind, rollEnemy, TALENT_POOL } from '../server/engine/rolls.js'
+import { suppression, techniqueDamage, defenseOf, hpStatus } from '../server/engine/formula.js'
+import { blankState, buildPlayer, applyProposal, modelStateView } from '../server/engine/state.js'
+import { scrubDialogue, scrubTurn, clampProposal, noteNarrationLeak, checkEnemyLegality } from '../server/engine/guard.js'
+import { npcGrade, npcView, npcAttitude } from '../server/engine/visibility.js'
+import { canTrain, rollTraining, applyTraining, TRAINING_TABLE } from '../server/engine/commands.js'
+import { acceptable, allFilled, IDENTITY_FIELDS, ATTRIBUTE_FIELDS } from '../server/engine/opening.js'
+import {
+  initCombat, runRound, simulateCombat, computeRewards, applyRewards, finishCombat, unitSpeed,
+} from '../server/engine/combat.js'
+
+// ------------------------------------------------------------------ 工具
+
+function makeTestState(seed = 1, attrSeed = 2, grade) {
+  const s = blankState(makeRng(seed))
+  const a = rollAttributeProfile(makeRng(attrSeed), 'A')
+  if (grade) a.overallGrade = grade
+  Object.assign(a, {
+    techniqueName: '测试术式',
+    techniqueEffect: '测试',
+    techniqueCooldown: 2,
+    talents: ['战斗直觉'],
+    playstyle: '',
+    domain: a.domainUnlocked || isTier(a.overallGrade)
+      ? { unlocked: true, name: '测试领域', sureHit: '必中', cost: '', tierName: '完整领域' }
+      : { unlocked: false },
+  })
+  const id = rollIdentity(makeRng(seed + 5), '甲', rollIdentityKind(makeRng(seed + 6), 0))
+  Object.assign(id, { name: '测试者', background: 'b', mainlineRelation: 'm', openingSituation: 'o', hook: 'h' })
+  s.player = buildPlayer(a, a, id, id)
+  s.relations = id.initialRelations
+  return s
+}
+
+// ------------------------------------------------------------------ 数值表
+
+test('初始等级分布符合设定权重', () => {
+  const rng = makeRng(7)
+  const N = 40000
+  const tally = {}
+  for (let i = 0; i < N; i++) {
+    const g = rollAttributeProfile(rng, 'X').overallGrade
+    tally[g] = (tally[g] || 0) + 1
+  }
+  const total = Object.values(INITIAL_WEIGHTS).reduce((a, b) => a + b, 0) // 101，按比例归一化
+  for (const [g, w] of Object.entries(INITIAL_WEIGHTS)) {
+    const expected = w / total
+    const actual = (tally[g] || 0) / N
+    assert.ok(Math.abs(actual - expected) < 0.012, `${g}: 期望 ${expected.toFixed(3)} 实际 ${actual.toFixed(3)}`)
+  }
+  // 准一级与龙级初始不可获得
+  assert.equal(tally['准一级'] || 0, 0)
+  assert.equal(tally['龙级'] || 0, 0)
+})
+
+test('所有属性数值落在设定区间内', () => {
+  const rng = makeRng(21)
+  for (let i = 0; i < 600; i++) {
+    const p = rollAttributeProfile(rng, 'A')
+    for (const [key, rangeKey] of [['ce', 'ce'], ['hp', 'hp'], ['cursedDamage', 'cd'], ['physicalDamage', 'pd']]) {
+      const [lo, hi] = RANGES[p[key].grade][rangeKey]
+      assert.ok(p[key].value >= lo && p[key].value <= hi,
+        `${key} ${p[key].value} 超出 ${p[key].grade} 的 [${lo}, ${hi}]`)
+    }
+    assert.ok(p.efficiency.value >= 0.4 && p.efficiency.value <= 1.6, `效率异常 ${p.efficiency.value}`)
+  }
+})
+
+test('属性等级偏移不超过创角上限', () => {
+  const rng = makeRng(31)
+  for (let i = 0; i < 400; i++) {
+    const p = rollAttributeProfile(rng, 'A')
+    for (const k of ['ce', 'hp', 'cursedDamage', 'physicalDamage', 'efficiency']) {
+      assert.ok(gradeIndex(p[k].grade) <= gradeIndex(ATTR_GRADE_CAP), `${k} 等级 ${p[k].grade} 越界`)
+    }
+  }
+})
+
+test('术式倍率表与等级一一对应', () => {
+  for (const g of GRADES) assert.equal(typeof TECH_MULT[g], 'number')
+  assert.equal(TECH_MULT['四级'], 1.0)
+  assert.equal(TECH_MULT['龙级'], 6.0)
+})
+
+// ------------------------------------------------------------------ 领域觉醒
+
+test('特级开局直接觉醒领域，非特级不觉醒', () => {
+  const rng = makeRng(41)
+  for (let i = 0; i < 300; i++) {
+    const p = rollAttributeProfile(rng, 'A')
+    assert.equal(p.domainUnlocked, isTier(p.overallGrade),
+      `${p.overallGrade} 的领域觉醒状态不对（应为 ${isTier(p.overallGrade)}）`)
+  }
+})
+
+// ------------------------------------------------------------------ 压制
+
+test('普通跨级压制系数与原文一致', () => {
+  // 一级(4) vs 二级(2) → 差 2
+  const s2 = suppression('一级', '二级')
+  assert.equal(s2.atkMul, SUPPRESSION[2].high)
+  assert.equal(s2.defMul, SUPPRESSION[2].low)
+  assert.equal(s2.nullify, 0, '攻方是高的一方，不受无效化')
+  assert.equal(s2.domainLock, false)
+
+  // 反过来：低等级方施术应可能被无效化
+  const s2r = suppression('二级', '一级')
+  assert.equal(s2r.atkMul, SUPPRESSION[2].low)
+  assert.equal(s2r.defMul, SUPPRESSION[2].high)
+  assert.equal(s2r.nullify, SUPPRESSION[2].nullify, '低等级方术式应有 30% 概率被无效化')
+
+  // 一级(4) vs 三级(1) → 差 3
+  const s3 = suppression('一级', '三级')
+  assert.equal(s3.diff, 3)
+  assert.equal(s3.atkMul, SUPPRESSION[3].high)
+  assert.equal(s3.domainLock, false, '攻方是高的一方，自己的领域不受影响')
+
+  // domainLock 的语义是"攻方的领域能否展开"，所以劣势方才被锁
+  const s3r = suppression('三级', '一级')
+  assert.equal(s3r.domainLock, true, '攻方低三级，领域应被锁')
+
+  // 差 4 也应被夹到表里的最重一档
+  const s9 = suppression('超特级', '四级')
+  assert.equal(s9.atkMul, SUPPRESSION[3].high)
+  assert.equal(s9.domainLock, false)
+})
+
+test('龙级对下位特级连带封锁领域', () => {
+  const s = suppression('超特级', '龙级')
+  assert.equal(s.domainLock, true, '超特打龙级，攻方领域应被锁')
+  const s2 = suppression('龙级', '超特级')
+  assert.equal(s2.domainLock, false, '反过来龙级自己不受影响')
+  assert.ok(Math.abs(s2.atkMul - 3.0) < 1e-9)
+})
+
+test('特级内部压制按细分档位索引（三对相邻下标差都是 1，不能按等级差查表）', () => {
+  // 弱特(5) vs 标特(6)：标特 +40% / 弱特 -35%
+  const a = suppression('标特级', '弱特级')
+  assert.ok(Math.abs(a.atkMul - 1.4) < 1e-9, `标特打弱特应为 1.4，实际 ${a.atkMul}`)
+  assert.ok(Math.abs(a.defMul - 0.65) < 1e-9)
+
+  // 标特(6) vs 超特(7)：超特 +60% / 标特 -50%
+  const b = suppression('超特级', '标特级')
+  assert.ok(Math.abs(b.atkMul - 1.6) < 1e-9, `超特打标特应为 1.6，实际 ${b.atkMul}`)
+  assert.ok(Math.abs(b.defMul - 0.5) < 1e-9)
+
+  // 超特(7) vs 龙级(8)：龙级近乎碾压
+  const c = suppression('龙级', '超特级')
+  assert.ok(Math.abs(c.atkMul - 3.0) < 1e-9, `龙级打超特应为 3.0，实际 ${c.atkMul}`)
+  assert.ok(Math.abs(c.defMul - 0.2) < 1e-9)
+
+  // 三对必须互不相同 —— 这正是按等级差查表会踩的坑
+  assert.notEqual(a.atkMul, b.atkMul)
+  assert.notEqual(b.atkMul, c.atkMul)
+})
+
+test('特级跨两档压制逐级复合', () => {
+  const s = suppression('超特级', '弱特级')
+  const expected = TIER_SUPPRESSION[0].high * TIER_SUPPRESSION[1].high
+  assert.ok(Math.abs(s.atkMul - expected) < 1e-9, `期望 ${expected}，实际 ${s.atkMul}`)
+})
+
+test('跨大级战斗不能靠数值硬拼', () => {
+  const rng = makeRng(51)
+  const mk = (g, hp, cd) => ({
+    grade: g, hp: { cur: hp, max: hp }, ce: { cur: 1e9, max: 1e9 },
+    cursedDamage: { value: cd }, physicalDamage: { value: 100 }, efficiency: { value: 0.9 },
+    technique: { multiplier: TECH_MULT[g], cost: 1 }, domain: { active: false },
+  })
+  // 弱特级打一级：应当接近秒杀
+  const weak = mk('弱特级', 5000, 800)
+  const low = mk('一级', 1200, 240)
+  const d = techniqueDamage(weak, low, { rng })
+  assert.ok(d.damage > low.hp.max * 0.8, `弱特级应能重创一级，实际伤害 ${d.damage} / HP ${low.hp.max}`)
+})
+
+// ------------------------------------------------------------------ 公式
+
+test('防御力公式与原文一致', () => {
+  const u = { physicalDamage: { value: 100 }, efficiency: { value: 0.9 } }
+  assert.ok(Math.abs(defenseOf(u) - (100 * 0.3 + 0.9 * 20)) < 1e-9)
+})
+
+test('伤害下限为 1，不会出现负伤害治疗敌人', () => {
+  const rng = makeRng(61)
+  const weak = {
+    grade: '四级', hp: { cur: 100, max: 100 }, ce: { cur: 100, max: 100 },
+    cursedDamage: { value: 10 }, physicalDamage: { value: 5 }, efficiency: { value: 0.5 },
+    technique: { multiplier: 1.0, cost: 1 }, domain: { active: false },
+  }
+  const tank = {
+    grade: '超特级', hp: { cur: 500000, max: 500000 }, ce: { cur: 1e6, max: 1e6 },
+    cursedDamage: { value: 80000 }, physicalDamage: { value: 40000 }, efficiency: { value: 1.3 },
+    technique: { multiplier: 4.5, cost: 1 }, domain: { active: false },
+  }
+  for (let i = 0; i < 50; i++) {
+    const r = techniqueDamage(weak, tank, { rng })
+    assert.ok(r.damage >= 1, `伤害应 >= 1，实际 ${r.damage}`)
+  }
+})
+
+// ------------------------------------------------------------------ 护栏
+
+test('NPC 台词里的特级细分会被改写成"特级"', () => {
+  const turn = {
+    dialogue: [
+      { speaker: '五条悟', text: '那家伙是弱特级。' },
+      { speaker: '宿傩', text: '标特级？超特级在我眼里也是玩具。' },
+      { speaker: '虎杖悠仁', text: '一级咒术师？' },
+    ],
+  }
+  assert.equal(scrubTurn(turn), true)
+  assert.equal(turn.dialogue[0].text, '那家伙是特级。')
+  assert.equal(turn.dialogue[1].text, '特级？特级在我眼里也是玩具。')
+  assert.equal(turn.dialogue[2].text, '一级咒术师？', '非特级词汇不该被动')
+})
+
+test('旁白允许使用细分刻度，只做记录', () => {
+  const leaks = noteNarrationLeak('面板显示：综合等级 超特级，对方 弱特级。')
+  assert.deepEqual(leaks.sort(), ['weak', 'weak'].length ? ['weak'].filter(() => false).concat(['超特级', '弱特级']).sort() : [])
+})
+
+test('数值提议会被夹紧，模型改不动真值', () => {
+  const state = { player: { hp: { cur: 1000, max: 1000 }, ce: { cur: 500, max: 500 } } }
+  const p = clampProposal({
+    hpDelta: -999999, ceDelta: -999999,
+    relationDelta: { 虎杖悠仁: 999, 宿傩: -3 },
+    sukunaAwakeningDelta: 500,
+    flags: ['x'], timeAdvance: '99d',
+  }, state)
+  assert.equal(p.hpDelta, -600, '单回合掉血不超过上限 60%')
+  assert.equal(p.ceDelta, -300, '单回合耗蓝不超过上限 60%')
+  assert.equal(p.relationDelta['虎杖悠仁'], 15, '单回合好感度变动上限 ±15')
+  assert.equal(p.relationDelta['宿傩'], -3)
+  assert.equal(p.sukunaAwakeningDelta, 10)
+  assert.equal(p.timeAdvance, '0', '非法时间推进应回退为 0')
+})
+
+test('原作主要角色不会在错误的节点变成敌人', () => {
+  const early = blankState(makeRng(1)).timeline // 全是未发生
+
+  const r1 = checkEnemyLegality('虎杖悠仁（宿傩借面）', early)
+  assert.equal(r1.ok, false, '开局阶段虎杖不该是敌人')
+  assert.match(r1.reason, /宿傩夺舍/)
+
+  const r2 = checkEnemyLegality('五条悟', early)
+  assert.equal(r2.ok, false, '涩谷事变前五条不该是敌人')
+
+  // 普通咒灵随便打
+  assert.equal(checkEnemyLegality('腐骨咒灵', early).ok, true)
+  assert.equal(checkEnemyLegality('', early).ok, true)
+
+  // 节点发生后就放行
+  const late = blankState(makeRng(1)).timeline
+  late.nodes['宿傩夺舍'] = '已发生'
+  assert.equal(checkEnemyLegality('虎杖悠仁', late).ok, true)
+  late.nodes['涩谷事变'] = '已发生'
+  assert.equal(checkEnemyLegality('五条悟', late).ok, true)
+})
+
+// ------------------------------------------------------------------ 可见性
+
+test('NPC 眼中的特级一律只说"特级"', () => {
+  for (const g of ['弱特级', '标特级', '超特级', '龙级']) assert.equal(npcGrade(g), '特级')
+  for (const g of ['四级', '三级', '二级', '准一级', '一级']) assert.equal(npcGrade(g), g)
+})
+
+test('NPC 视角不含任何数值', () => {
+  const unit = {
+    grade: '超特级', hp: { cur: 400000, max: 800000 }, ce: { cur: 3000000, max: 3000000 },
+    domain: { active: true, name: '秘密领域' },
+  }
+  const view = npcView(unit)
+  const flat = JSON.stringify(view)
+  assert.ok(!flat.includes('800000'), '不该泄露血量上限')
+  assert.ok(!flat.includes('秘密领域'), 'NPC 不该知道领域名')
+  assert.equal(view.等级, '特级')
+})
+
+// ------------------------------------------------------------------ 修炼
+
+test('修炼推进时间，连续跳过 3 天后失效', () => {
+  const s = makeTestState(71, 72)
+  const rng = makeRng(73)
+  assert.equal(canTrain(s).ok, true)
+
+  for (let i = 0; i < 3; i++) {
+    const r = rollTraining(s, '体能训练', rng)
+    applyTraining(s, r)
+  }
+  assert.equal(s.time.skipStreak, 3)
+  assert.equal(s.time.date, '2018-06-08', `第 3 天后应是 6-08，实际 ${s.time.date}`)
+
+  const gate = canTrain(s)
+  assert.equal(gate.ok, false, '连续跳过 3 天后第 4 天应失效')
+  assert.match(gate.reason, /连续跳过 3 天/)
+})
+
+test('濒死与重伤状态无法修炼', () => {
+  const s = makeTestState(81, 82)
+  s.player.status = '重伤'
+  assert.equal(canTrain(s).ok, false)
+  s.player.status = '濒死'
+  assert.equal(canTrain(s).ok, false)
+})
+
+test('修炼进度累计满 100% 提升数值', () => {
+  const s = makeTestState(91, 92)
+  s.player.training['体能训练'] = 95
+  const before = s.player.hp.max
+  applyTraining(s, { item: '体能训练', progress: 0.2, hpDelta: 0, notes: [], targets: ['hp', 'physicalDamage'] })
+  assert.ok(s.player.hp.max > before, `血条上限应提升，${before} → ${s.player.hp.max}`)
+  assert.ok(s.player.training['体能训练'] < 100, '满 100 后应扣除而不是无限累积')
+})
+
+// ------------------------------------------------------------------ 战斗
+
+test('手动模式能逐回合推进并分出胜负', () => {
+  const s = makeTestState(101, 102)
+  const rng = makeRng(103)
+  const enemy = rollEnemy(rng, '三级')
+  initCombat(s, rng, { mode: 'manual', enemy, reason: 't' })
+
+  const script = ['domain', 'technique', 'physical', 'technique', 'physical', 'technique', 'physical', 'technique', 'physical', 'technique']
+  let i = 0
+  while (!s.combat.over && i < script.length) runRound(s, rng, { type: script[i++] })
+
+  assert.ok(s.combat.over, '战斗应该结束')
+  assert.ok(['player', 'enemy', 'draw', 'fled'].includes(s.combat.outcome.winner))
+  assert.ok(s.combat.log.length > 0, '应留下战况面板')
+})
+
+test('自动结算在跨大级时判定弱方失败', () => {
+  const s = makeTestState(111, 112, '三级')
+  const rng = makeRng(113)
+  const enemy = rollEnemy(rng, '弱特级')
+  initCombat(s, rng, { mode: 'skip', enemy, reason: 't' })
+  simulateCombat(s, rng)
+  assert.equal(s.combat.outcome.winner, 'enemy', `三级不该打赢弱特级，实际 ${JSON.stringify(s.combat.outcome)}`)
+})
+
+test('速度决定先手，高等级更快', () => {
+  const mk = (pd, eff) => ({ physicalDamage: { value: pd }, efficiency: { value: eff } })
+  assert.ok(unitSpeed(mk(400, 1.0)) > unitSpeed(mk(120, 0.9)))
+})
+
+test('领域展开消耗咒力并受等级压制限制', () => {
+  const s = makeTestState(121, 122, '弱特级')
+  const rng = makeRng(123)
+  const enemy = rollEnemy(rng, '龙级')
+  initCombat(s, rng, { mode: 'manual', enemy, reason: 't' })
+  const r = runRound(s, rng, { type: 'domain' })
+  const opened = r.events.some((e) => e.domainOpened)
+  assert.equal(opened, false, '被龙级压制时领域不应展开成功')
+})
+
+test('战果写入训练进度，跨级击杀可能直接升级', () => {
+  const s = makeTestState(131, 132, '三级')
+  const rng = makeRng(133)
+  const enemy = rollEnemy(rng, '二级')
+  initWith(s, enemy, rng)
+  s.combat.stats.usedTechnique = true
+  s.combat.stats.usedMelee = true
+  const rw = computeRewards(s, rng, { won: true, crossLevel: true })
+  assert.ok(Object.keys(rw.gains).length > 0)
+  const ups = applyRewards(s, rw)
+  assert.ok(ups.length >= 0)
+})
+
+function initWith(s, enemy, rng) {
+  initCombat(s, rng, { mode: 'manual', enemy, reason: 't' })
+}
+
+test('败北且血条归零时，战报明确点出濒死', () => {
+  const s = makeTestState(201, 202)
+  const rng = makeRng(203)
+  const enemy = rollEnemy(rng, '四级')
+  initCombat(s, rng, { mode: 'manual', enemy, reason: 't' })
+  s.player.hp.cur = 0
+  s.player.status = '濒死'
+  const summary = finishCombat(s, { winner: 'enemy', loser: 'player' })
+  assert.match(summary, /濒死/)
+  assert.match(summary, /死亡/)
+})
+
+test('低血量取胜时战报点出只剩一口气', () => {
+  const s = makeTestState(211, 212)
+  const rng = makeRng(213)
+  const enemy = rollEnemy(rng, '四级')
+  initCombat(s, rng, { mode: 'manual', enemy, reason: 't' })
+  s.player.hp.cur = Math.round(s.player.hp.max * 0.1)
+  const summary = finishCombat(s, { winner: 'player', loser: 'enemy' })
+  assert.match(summary, /只剩一口气/)
+})
+
+test('战斗收尾会清空战斗态并复位冷却', () => {
+  const s = makeTestState(141, 142)
+  const rng = makeRng(143)
+  const enemy = rollEnemy(rng, '四级')
+  initCombat(s, rng, { mode: 'manual', enemy, reason: 't' })
+  s.player.technique.cdLeft = 3
+  s.player.domain.active = true
+  const summary = finishCombat(s, { winner: 'player', loser: 'enemy' })
+  assert.equal(s.combat, null)
+  assert.equal(s.player.technique.cdLeft, 0)
+  assert.equal(s.player.domain.active, false)
+  assert.match(summary, /击退/)
+})
+
+// ------------------------------------------------------------------ 状态
+
+test('modelStateView 不携带历史正文（防止上下文爆炸）', () => {
+  const s = makeTestState(151, 152)
+  for (let i = 0; i < 40; i++) s.log.push({ type: 'turn', narration: '很长的正文'.repeat(300) })
+  s.history = Array.from({ length: 40 }, () => ({ role: 'assistant', content: '历史'.repeat(400) }))
+
+  const view = JSON.stringify(modelStateView(s))
+  assert.ok(!view.includes('很长的正文'), 'modelStateView 不该包含历史正文')
+  assert.ok(!view.includes('历史历史'), 'modelStateView 不该包含对话历史')
+  assert.ok(view.length < 3000, `紧凑视图应保持精简，实际 ${view.length} 字符`)
+})
+
+test('宿傩对话门槛：觉醒度不足时不可对话', () => {
+  const s = makeTestState(161, 162)
+  s.sukuna.awakening = 10
+  s.sukuna.attitude = '无视'
+  assert.equal(modelStateView(s).宿傩.可在意识中对话, false)
+
+  s.sukuna.awakening = 45
+  s.sukuna.attitude = '感兴趣'
+  assert.equal(modelStateView(s).宿傩.可在意识中对话, true)
+})
+
+test('时间推进跨月正确', () => {
+  const s = makeTestState(171, 172)
+  s.time.date = '2018-06-28'
+  applyProposal(s, { hpDelta: 0, ceDelta: 0, relationDelta: {}, sukunaAwakeningDelta: 0, flags: [], timeAdvance: '1w' })
+  assert.equal(s.time.date, '2018-07-05')
+})
+
+test('死亡不可逆：已死亡角色不会被重复写入', () => {
+  const s = makeTestState(181, 182)
+  applyProposal(s, { hpDelta: 0, ceDelta: 0, relationDelta: {}, sukunaAwakeningDelta: 0, flags: ['少年院任务_开始'], timeAdvance: '0' })
+  assert.equal(s.timeline.nodes['少年院任务'], '已发生')
+  const before = s.timeline.newEvents.length
+  applyProposal(s, { hpDelta: 0, ceDelta: 0, relationDelta: {}, sukunaAwakeningDelta: 0, flags: ['少年院任务_开始'], timeAdvance: '0' })
+  assert.equal(s.timeline.newEvents.length, before, '重复 flag 不该重复记录')
+})
+
+// ------------------------------------------------------------------ 模型空壳
+
+test('空壳输出会被判定为不合格并触发重试', () => {
+  const good = { narration: '正文'.repeat(60), choices: ['一', '二', '三'] }
+  assert.equal(acceptable(good), true)
+
+  // 实测端到端自检时真的撞到过：正文 0 字、选项 0 个
+  assert.equal(acceptable({ narration: '', choices: [] }), false, '空正文空选项必须判不合格')
+  assert.equal(acceptable({ narration: '太短', choices: ['一', '二', '三'] }), false, '正文过短要重试')
+  assert.equal(acceptable({ narration: '正文'.repeat(60), choices: ['一', '二'] }), false, '选项不足 3 个要重试')
+  assert.equal(acceptable({ narration: '正文'.repeat(60), choices: ['一', '', '  ', '四'] }), false, '空白选项不计入')
+  assert.equal(acceptable(null), false)
+  assert.equal(acceptable({}), false)
+
+  // 选项里混了空白但实际够数，应当放过
+  assert.equal(acceptable({ narration: '正文'.repeat(60), choices: ['一', '', '二', '三'] }), true)
+})
+
+test('三份档案字段残缺会被判不合格（实测 flash 会漏钩子）', () => {
+  const ok = ['甲', '乙', '丙'].map((slot) => ({
+    slot, name: `名字${slot}`, background: '一段足够长的背景描述文字',
+    mainlineRelation: '与主线的关系描述', openingSituation: '此刻正在某处的开局处境描述', hook: '一个足够具体能牵动后续剧情的钩子',
+  }))
+  assert.equal(allFilled(ok, IDENTITY_FIELDS), true)
+
+  // 钩子为空
+  const noHook = ok.map((x, i) => (i === 1 ? { ...x, hook: '' } : x))
+  assert.equal(allFilled(noHook, IDENTITY_FIELDS), false, '有档案漏钩子应判不合格')
+
+  // 钩子过短
+  const shortHook = ok.map((x, i) => (i === 2 ? { ...x, hook: '短' } : x))
+  assert.equal(allFilled(shortHook, IDENTITY_FIELDS), false, '钩子过短应判不合格')
+
+  // 份数不足
+  assert.equal(allFilled(ok.slice(0, 2), IDENTITY_FIELDS), false, '只交回两份应判不合格')
+  assert.equal(allFilled([], IDENTITY_FIELDS), false)
+  assert.equal(allFilled(null, IDENTITY_FIELDS), false)
+
+  // 属性档案同理
+  const attrs = ['A', 'B', 'C'].map((slot) => ({
+    slot, techniqueName: `术式${slot}`, techniqueEffect: '一句话说清机制的效果描述', playstyle: '玩法风格提示',
+  }))
+  assert.equal(allFilled(attrs, ATTRIBUTE_FIELDS), true)
+  assert.equal(allFilled(attrs.map((x, i) => (i === 0 ? { ...x, techniqueEffect: '' } : x)), ATTRIBUTE_FIELDS), false)
+})
+
+// ------------------------------------------------------------------ 身份
+
+test('三份身份必须含反派向与自由派各一种', () => {
+  for (let seed = 0; seed < 30; seed++) {
+    const rng = makeRng(seed)
+    const kinds = [0, 1, 2].map((i) => rollIdentity(rng, ['甲', '乙', '丙'][i], rollIdentityKind(rng, i)).kind)
+    assert.ok(kinds.includes('反派向'), `seed ${seed} 缺少反派向：${kinds}`)
+    assert.ok(kinds.includes('自由派'), `seed ${seed} 缺少自由派：${kinds}`)
+  }
+})
+
+test('天赋池无重复项且拼写正确', () => {
+  assert.equal(new Set(TALENT_POOL).size, TALENT_POOL.length, '天赋池有重复')
+  assert.ok(TALENT_POOL.includes('术式理解快'), '术式理解快 拼写错误')
+})

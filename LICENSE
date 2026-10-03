@@ -1,0 +1,52 @@
+MIT License
+
+Copyright (c) 2026 game-sunuo contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 关于第三方内容 / Third-party notice
+
+本许可仅覆盖**本仓库作者编写的代码**。
+
+- 《咒术回战》/「呪術廻戦」的角色、设定、名词版权归 芥见下下 / 集英社 / MAPPA 所有。
+  本项目是**非商业同人作品**，与版权方无任何关联，也不得用于任何商业用途。
+- `rules/模拟回战-宿傩.txt` 是**第三方撰写的游戏设定文本**，随仓库一并分发以便开箱即用，
+  但**不属于本项目的原创内容，也不在 MIT 许可范围内**。其著作权归原作者所有。
+- `rules/default-rules.md` 是本项目原创的精简设定，适用上面的 MIT 许可。
+
+如果你是 `模拟回战-宿傩.txt` 的作者，对这里的收录方式有异议
+（包括希望移除或调整署名），请开 issue，我们会立刻处理。
+
+---
+
+This license covers **only the code written by this repository's authors**.
+
+- *Jujutsu Kaisen* and all related characters and settings are the property of
+  Gege Akutami / Shueisha / MAPPA. This is a **non-commercial fan project** with
+  no affiliation to the rights holders. Commercial use is not permitted.
+- `rules/模拟回战-宿傩.txt` is **third-party game-design text**, redistributed here
+  for convenience so the project runs out of the box. It is **not** original work
+  of this project and is **not** covered by the MIT license. Copyright remains
+  with its original author.
+- `rules/default-rules.md` is original work of this project and is MIT licensed.
+
+If you are the author of `模拟回战-宿傩.txt` and object to its inclusion here,
+please open an issue and we will remove it or adjust attribution immediately.

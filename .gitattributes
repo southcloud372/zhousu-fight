@@ -1,0 +1,13 @@
+# 统一换行符，避免 Windows 提交、macOS/Linux 拉下来满屏 diff
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.ico binary
+
+# 锁文件不参与 diff 统计（GitHub 上默认折叠）
+package-lock.json linguist-generated=true
+
+# 第三方设定文本不是本项目代码，语言统计里排除
+模拟回战-宿傩.txt linguist-documentation=true
