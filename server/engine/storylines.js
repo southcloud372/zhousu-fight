@@ -18,6 +18,17 @@ const SUKUNA = {
   desc: '你是穿越者，落到一个已经很糟的局里。你知道结局，但没人认识你。',
   startDate: '2018-06-05',
   dateRange: ['2018-06-05', '2019-12-31'],
+  next: 'future',
+  crossoverNode: '最终决战',
+  // 2019 打完最终决战，跳到十年后
+  crossoverGap: {
+    from: '2019', to: '2029',
+    stages: [
+      { from: '2019', to: '2022', years: 3, label: '最初的三年' },
+      { from: '2022', to: '2026', years: 4, label: '中间四年' },
+      { from: '2026', to: '2029', years: 3, label: '最后的三年' },
+    ],
+  },
   accent: 'blood',
 
   /** 原作节点，按时间先后 —— 时间线追踪器就照这个列 */
@@ -98,6 +109,17 @@ const KAIGYOKU = {
   desc: '天内理子将被交给天元，而有人已经接了杀她的委托。这年夏天之后，一切都会变。',
   startDate: '2006-06-01',
   dateRange: ['2006-06-01', '2007-12-31'],
+  // 走完「玉折」之后可以跨到宿傩篇 —— 中间隔着十一年
+  next: 'sukuna',
+  crossoverNode: '玉折',
+  crossoverGap: {
+    from: '2007', to: '2018',
+    stages: [
+      { from: '2007', to: '2010', years: 3, label: '最初的三年' },
+      { from: '2010', to: '2014', years: 4, label: '中间四年' },
+      { from: '2014', to: '2018', years: 4, label: '最后的四年' },
+    ],
+  },
   accent: 'tier',
 
   nodes: [
@@ -158,8 +180,79 @@ const KAIGYOKU = {
   ],
 }
 
-export const STORYLINES = { sukuna: SUKUNA, kaigyoku: KAIGYOKU }
-export const STORYLINE_LIST = [SUKUNA, KAIGYOKU]
+/**
+ * 未来篇：原作完结之后的原创延伸。
+ *
+ * 这一篇**没有原作依据** —— 原作停在 2018–2019，再往后是空白。
+ * 所以节点与穿越时间点是按世界观推演的原创内容，不是考据。
+ * 玩家在宿傩篇里改了什么，这里就该长出什么后果。
+ */
+const FUTURE = {
+  id: 'future',
+  name: '未来篇',
+  subtitle: '2029 · 之后的事',
+  era: '2029 — 2031',
+  tagline: '原作结束了，但你改出来的那条线还在往前走',
+  desc: '十年前的那场仗打完了，也把该碎的都碎了。咒术界在废墟上重建，而废墟下面还有东西在动。',
+  startDate: '2029-04-01',
+  dateRange: ['2029-04-01', '2031-12-31'],
+  accent: 'cursed',
+  next: null,
+  crossoverGap: null,
+  crossoverNode: null,
+
+  nodes: [
+    '咒术界重组', '残秽扩散', '新容器现身', '第二座涩谷', '因果清算', '终局',
+  ],
+
+  characters: [
+    '虎杖悠仁', '伏黑惠', '钉崎野蔷薇', '禅院真希', '家入硝子',
+    '天元', '宿傩残秽', '新容器', '夜蛾正道', '五条悟',
+  ],
+
+  mentors: ['虎杖悠仁', '伏黑惠', '钉崎野蔷薇', '禅院真希', '家入硝子', '天元'],
+
+  timePoints: [
+    {
+      id: 'rebuild', date: '2029-04-01', label: '2029年4月 · 咒术界重组',
+      when: '新的咒术总监部刚挂牌，旧势力还在争席位',
+      situation: '名义上恢复了秩序。实际上各地结界年久失修，祓除委托堆积如山，人手只有十年前的一半。',
+      hook: '你是少数还记得十年前那场仗怎么打的人。他们需要你 —— 也可能想让你闭嘴。',
+      nodesDone: [], danger: 2, dangerLabel: '险局',
+    },
+    {
+      id: 'residue', date: '2029-08-15', label: '2029年8月 · 残秽扩散',
+      when: '宿傩死后留下的咒力残秽开始异变',
+      situation: '当年被斩碎的东西没有真正消失。残秽在旧战场聚成人形，不攻击人，只是在原地站着。',
+      hook: '残秽不杀人，它在等。等什么，没人知道 —— 但你也许猜得到。',
+      nodesDone: ['咒术界重组'], danger: 3, dangerLabel: '暗流',
+    },
+    {
+      id: 'vessel', date: '2030-02-01', label: '2030年2月 · 新容器现身',
+      when: '一个能承载残秽的孩子被找到了',
+      situation: '和当年虎杖一样的年纪，一样能吃下不该吃的东西。高层想直接处决，有人想再利用一次。',
+      hook: '这一幕你见过。上一次做决定的人，后来用了十年后悔。',
+      nodesDone: ['咒术界重组', '残秽扩散'], danger: 4, dangerLabel: '地狱',
+    },
+    {
+      id: 'shibuya2', date: '2030-10-31', label: '2030年10月31日 · 第二座涩谷',
+      when: '同一天，同一套手法，换了一座城市',
+      situation: '遮断帷幕落下来的时候，广播的女声和十年前一模一样。这不是模仿，是有人在照着抄。',
+      hook: '抄的人很熟悉这套流程。熟悉到，你怀疑他当时就站在现场。',
+      nodesDone: ['咒术界重组', '残秽扩散', '新容器现身'], danger: 5, dangerLabel: '绝境',
+    },
+    {
+      id: 'reckoning', date: '2031-06-01', label: '2031年 · 因果清算',
+      when: '十年前每一个被改变的选择，开始收账',
+      situation: '当年救下的人、放过的人、杀掉的人 —— 他们留下的后果在这几年陆续回来了。',
+      hook: '这一篇没有原作给你兜底。你改的东西，现在由你自己承担。',
+      nodesDone: ['咒术界重组', '残秽扩散', '新容器现身', '第二座涩谷'], danger: 5, dangerLabel: '终局',
+    },
+  ],
+}
+
+export const STORYLINES = { sukuna: SUKUNA, kaigyoku: KAIGYOKU, future: FUTURE }
+export const STORYLINE_LIST = [SUKUNA, KAIGYOKU, FUTURE]
 export const DEFAULT_STORYLINE = 'sukuna'
 
 export const storylineOf = (id) => STORYLINES[id] || STORYLINES[DEFAULT_STORYLINE]

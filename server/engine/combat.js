@@ -428,11 +428,12 @@ export function computeRewards(state, rng, { won, crossLevel }) {
     notes.push('败战中的经验')
   }
 
-  // 跨级击杀有概率直接升一级；一级以上仍需专属突破剧情（第八节第 7 小节）
+  // 跨级击杀有概率直接升一级。等级没有"必须靠专属突破剧情"的上限，
+  // 一路打到龙级也可以 —— 只是越往上越难触发。
   let gradeUp = null
   if (won && crossLevel && rng() < 0.25) {
     const gi = gradeIndex(state.player.grade)
-    if (gi >= 0 && gi < gradeIndex('一级')) gradeUp = GRADES[gi + 1]
+    if (gi >= 0 && gi < GRADES.length - 1) gradeUp = GRADES[gi + 1]
   }
 
   return { gains, notes, gradeUp }
@@ -461,7 +462,8 @@ export function applyRewards(state, rewards) {
     p.technique.multiplier = TECH_MULT[g]
     p.technique.grade = g
     if (isTier(g) && !p.domain.unlocked) {
-      p.domain = { unlocked: false, progress: 90, active: false } // 临界，仍需突破剧情
+      // 领域仍按第五节自己的四种触发方式领悟；这里只把进度顶到临界，算个提示
+      p.domain = { unlocked: false, progress: 90, active: false }
     }
     ups.push(`综合等级提升至 ${g}`)
   }

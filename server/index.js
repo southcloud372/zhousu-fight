@@ -18,8 +18,11 @@ import { accumulate, usageSnapshot, estimateTokens } from './pricing.js'
 import { submitTurn } from './engine/schemas.js'
 import { rollEnemy } from './engine/rolls.js'
 import { byId, pointsFor, initialNodes } from './engine/timeline.js'
-import { DEFAULT_STORYLINE, STORYLINES, storylineBriefs } from './engine/storylines.js'
+import { DEFAULT_STORYLINE, STORYLINES, storylineBriefs, storylineOf } from './engine/storylines.js'
 import { canTrain, rollTraining, applyTraining, TRAINING_TABLE } from './engine/commands.js'
+import {
+  stagesFor, FOCUSES, focusById, rollStage, applyStage, completeCrossover, crossoverReady,
+} from './engine/crossover.js'
 import {
   COMBAT_MODES, MODE_LABELS, initCombat, runRound, simulateCombat,
   summarizeRounds, computeRewards, applyRewards, finishCombat,
@@ -764,6 +767,65 @@ app.post('/api/session/:id/combat/evade', asyncRoute(async (req, res) => {
     chance: Number(chance.toFixed(3)),
     // 失败时战斗仍在，前端直接进入模式选择
     combat: success ? null : state.pendingCombat,
+    panel: panelSnapshot(state),
+  }))
+}))
+
+// ---------------------------------------------------------------- 跨篇衔接
+
+/**
+ * 从怀玉篇（2007）跨到宿傩篇（2018）。
+ *
+ * 中间十一年不跳过 —— 做成三段历练，玩家每段选一个方向，引擎结算成长。
+ * 走完三段正好落在 2018 年 6 月，带着一身本事进新篇。
+ */
+app.get('/api/session/:id/crossover', (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  const gate = crossoverReady(state)
+  res.json({
+    gate,
+    stages: stagesFor(state.storyline),
+    focuses: FOCUSES.map((f) => ({ id: f.id, name: f.name, desc: f.desc })),
+    done: state.crossover?.done || 0,
+    target: storylineOf(storylineOf(state.storyline).next)?.name || null,
+  })
+})
+
+app.post('/api/session/:id/crossover/advance', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  const gate = crossoverReady(state)
+  if (!gate.ok) return res.status(400).json({ error: gate.reason })
+
+  const focusId = String(req.body?.focus || '')
+  if (!focusById(focusId)) return res.status(400).json({ error: '未知的历练方向' })
+
+  state.crossover ||= { done: 0, log: [] }
+  const idx = state.crossover.done
+  if (idx >= stagesFor(state.storyline).length) return res.status(400).json({ error: '历练已经走完了' })
+
+  const rng = makeRng(state.seed + state.turn * 97 + idx * 31)
+  const result = rollStage(state, focusId, idx, rng)
+  const ups = applyStage(state, result)
+
+  state.crossover.done = idx + 1
+  state.crossover.log.push({ stage: idx, focus: result.focusName, ups })
+  state.turn += 1
+
+  // 三段走完 → 跨篇
+  if (state.crossover.done >= stagesFor(state.storyline).length) {
+    const done = completeCrossover(state, rng)
+    persist(state)
+    return res.json(withUsage(state, { finished: true, result, ups, crossover: done, panel: panelSnapshot(state) }))
+  }
+
+  persist(state)
+  res.json(withUsage(state, {
+    finished: false,
+    result,
+    ups,
+    done: state.crossover.done,
     panel: panelSnapshot(state),
   }))
 }))

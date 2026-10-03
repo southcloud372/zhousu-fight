@@ -86,7 +86,7 @@ export function rollTraining(state, item, rng) {
   return { item, progress, hpDelta, notes, targets: row.targets }
 }
 
-/** 进度满 100% 时数值 +10%，跨大级仍需突破剧情（第八节第 7 小节末） */
+/** 进度满 100% 时数值 +10%。等级本身没有突破门槛，堆够了就升 */
 export function applyTraining(state, result) {
   const p = state.player
   const ups = []

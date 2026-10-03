@@ -8,6 +8,7 @@ import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel } from './compon
 import { ActionBar } from './components/CombatPanel.jsx'
 import { SaveModal } from './components/SaveModal.jsx'
 import { CombatSidebar } from './components/CombatSidebar.jsx'
+import { CrossoverScreen, CrossoverResult } from './components/Crossover.jsx'
 import { UsageMeter } from './components/UsageMeter.jsx'
 
 /** 存档里的 log 还原成界面条目 */
@@ -40,6 +41,10 @@ export default function App() {
   const [customIdent, setCustomIdent] = useState(null)
   const [timeProfiles, setTimeProfiles] = useState([])
   const [storylines, setStorylines] = useState([])
+  const [xo, setXo] = useState(null)        // 跨篇数据（有值就说明可以跨）
+  const [xoStep, setXoStep] = useState(0)   // 当前第几段历练
+  const [xoOpen, setXoOpen] = useState(false)
+  const [xoLast, setXoLast] = useState(null) // 上一段的成长结算
   const [customTime, setCustomTime] = useState(null)
   const [usage, setUsage] = useState(null) // 本局 token 用量与费用
 
@@ -588,6 +593,54 @@ export default function App() {
     submit(choice.label) // submit 内部负责追加玩家行动那条记录
   }, [sessionId, submit, askCombatMode, tryEvade, startCombat, doTraining])
 
+  /** 打开跨篇界面（走完本线衔接节点后才可用） */
+  const openCrossover = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const data = await api.getCrossover(sessionId)
+      if (!data.gate?.ok) { setError(data.gate?.reason || '当前不能跨篇'); return }
+      setXo(data)
+      setXoStep(data.done || 0)
+      setXoOpen(true)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [sessionId])
+
+  /** 走一段历练 */
+  const advanceCrossover = useCallback(async (focus) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await api.crossoverAdvance(sessionId, focus)
+      takeUsage(r.usage)
+      // ups 是 result 的兄弟字段，不是一个整体 —— 合起来再交给界面，
+      // 否则 CrossoverScreen 里 lastResult.ups 是 undefined，渲染直接崩
+      setXoLast({ ...r.result, ups: r.ups })
+      setPanel(r.panel)
+
+      if (r.finished) {
+        // 三段走完 → 已经跨到新篇
+        setXoOpen(false)
+        setXo(null)
+        setEntries((prev) => [...prev, { kind: 'crossover', result: r.crossover, panel: r.panel }])
+        // 让主循环接着在新篇里演下去
+        await submit('（跨越数年，进入新的篇章）', { silent: true })
+      } else {
+        setXoStep(r.done)
+        setXo((prev) => (prev ? { ...prev, done: r.done } : prev))
+      }
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [sessionId, takeUsage, submit])
+
+
   // ---------------------------------------------------------- 渲染
 
   if (error) {
@@ -764,6 +817,7 @@ export default function App() {
         {panel?.time && <span className="date">{panel.time.date}　第 {panel.time.day} 天</span>}
         <span className="spacer" />
         {panel?.grade && <span className="date">{panel.grade}</span>}
+        <button className="top-btn" onClick={openCrossover} title="跨越两篇之间的时间空白">跨篇</button>
         <button className="top-btn" onClick={() => setShowSaves(true)}>存档</button>
         <button className="top-btn only-narrow" onClick={() => { setShowCombat((v) => !v); setShowSide(false) }}>
           战斗
@@ -806,6 +860,17 @@ export default function App() {
 
       {(showSide || showCombat) && (
         <div className="side-scrim" onClick={() => { setShowSide(false); setShowCombat(false) }} />
+      )}
+
+      {xoOpen && xo && (
+        <CrossoverScreen
+          data={xo}
+          step={xoStep}
+          lastResult={xoLast}
+          onChoose={advanceCrossover}
+          onClose={() => setXoOpen(false)}
+          busy={busy}
+        />
       )}
 
       {showSaves && (

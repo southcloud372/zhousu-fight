@@ -601,6 +601,77 @@ body::before {
 }
 .pcard .pick-btn:hover { background: var(--blood); color: #fff; }
 
+/* 跨篇衔接 */
+.crossover { background: var(--bg); }
+.xo-progress {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin: 4px 0 20px;
+}
+.xo-dot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-2);
+  min-width: 96px;
+}
+.xo-dot .n {
+  width: 20px; height: 20px; line-height: 20px;
+  text-align: center; border-radius: 50%;
+  background: var(--bg-3); color: var(--ink-faint);
+  font-size: 11px;
+}
+.xo-dot .y { font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.xo-dot.now { border-color: var(--tier); box-shadow: 0 0 0 3px rgba(107, 53, 150, 0.1); }
+.xo-dot.now .n { background: var(--tier); color: #fff; }
+.xo-dot.now .y { color: var(--ink); }
+.xo-dot.done { border-color: var(--ok); }
+.xo-dot.done .n { background: var(--ok); color: #fff; }
+
+.xo-stage-h {
+  font-family: var(--font-narr);
+  font-size: 16px;
+  letter-spacing: 0.04em;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.xo-tag {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  padding: 1px 7px;
+  border: 1px solid var(--tier);
+  border-radius: 2px;
+  color: var(--tier);
+}
+
+.xo-focus {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  text-align: left;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--ink);
+  transition: border-color 0.14s, transform 0.1s, box-shadow 0.14s;
+}
+.xo-focus:hover:not(:disabled) {
+  border-color: var(--tier);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+.xo-focus:disabled { opacity: 0.5; }
+.xo-focus-n { font-family: var(--font-narr); font-size: 17px; letter-spacing: 0.06em; }
+.xo-focus-d { font-size: 12px; line-height: 1.65; color: var(--ink-dim); }
+
 /* 故事线卡片 */
 .pcard.story { padding: 20px; }
 .pcard.story.blood { border-top: 3px solid var(--blood); }

@@ -56,6 +56,7 @@ const USAGE = {
 let usageFixture = USAGE
 let evadeSucceeds = false // 脱离判定结果，测试里可切换
 let turnHasCombat = true  // 这一回合是否触发遭遇战
+let crossoverDone = 0      // 跨篇历练已完成的段数
 
 const CHARACTER_SNAPSHOT = {
   name: '测试者', age: 17, grade: '一级', backgroundType: '自由派', background: 'b',
@@ -124,6 +125,11 @@ function makeFetchStub(log) {
           tagline: '五条悟与夏油杰还是高专二年级的时候', desc: '天内理子将被交给天元。',
           startDate: '2006-06-01', accent: 'tier', nodeCount: 8,
           characters: ['五条悟', '夏油杰', '家入硝子', '天内理子', '伏黑甚尔', '七海建人'] },
+        { id: 'future', name: '未来篇', subtitle: '2029 · 之后的事', era: '2029 — 2031',
+          tagline: '原作结束了，但你改出来的那条线还在往前走',
+          desc: '十年前的那场仗打完了，也把该碎的都碎了。',
+          startDate: '2029-04-01', accent: 'cursed', nodeCount: 6,
+          characters: ['虎杖悠仁', '伏黑惠', '钉崎野蔷薇', '禅院真希', '家入硝子', '天元'] },
       ] })
     }
     if (u.includes('/choose-storyline')) return json({ usage: usageFixture, storyline: 'sukuna', startDate: '2018-06-05' })
@@ -303,6 +309,50 @@ function makeFetchStub(log) {
         ],
       })
     }
+    // ---- 跨篇衔接 ----
+    if (u.endsWith('/crossover') && method === 'GET') {
+      return json({
+        gate: { ok: true, inProgress: false, stages: 3, done: crossoverDone },
+        stages: [
+          { from: '2007', to: '2010', years: 3, label: '最初的三年' },
+          { from: '2010', to: '2014', years: 4, label: '中间四年' },
+          { from: '2014', to: '2018', years: 4, label: '最后的四年' },
+        ],
+        focuses: [
+          { id: 'ascetic', name: '苦修', desc: '把时间全砸在身体上。' },
+          { id: 'meditation', name: '冥想', desc: '向内。扩张咒力的容量。' },
+          { id: 'research', name: '术式钻研', desc: '把生得术式拆开再装回去。' },
+          { id: 'wander', name: '游历', desc: '在咒术界的灰色地带走动。' },
+        ],
+        done: crossoverDone,
+        target: '宿傩篇',
+      })
+    }
+    if (u.includes('/crossover/advance')) {
+      const focus = JSON.parse(opts.body || '{}').focus
+      crossoverDone += 1
+      const range = [{ from: '2007', to: '2010' }, { from: '2010', to: '2014' }, { from: '2014', to: '2018' }][crossoverDone - 1]
+      const base = {
+        stage: crossoverDone - 1, focusId: focus, focusName: { ascetic: '苦修', meditation: '冥想', research: '术式钻研', wander: '游历' }[focus] || '苦修',
+        range, gains: [], notes: [],
+      }
+      if (crossoverDone >= 3) {
+        crossoverDone = 0
+        return json({
+          usage: usageFixture, finished: true, result: base,
+          ups: ['血条总量 1,379 → 1,606'],
+          crossover: {
+            from: '怀玉篇', to: '宿傩篇', toId: 'sukuna', startDate: '2018-06-05',
+            gapYears: 11, gradeUp: '二级',
+            carriedRelations: [{ name: '五条悟', value: 45 }],
+            note: '11 年过去，五条悟还记得你',
+          },
+          panel: CHARACTER_SNAPSHOT,
+        })
+      }
+      return json({ usage: usageFixture, finished: false, result: base, ups: ['咒力总量 4,458 → 4,569'], done: crossoverDone, panel: CHARACTER_SNAPSHOT })
+    }
+
     // 自主定义穿越时间
     if (u.includes('/time/custom')) {
       const brief = JSON.parse(opts.body || '{}').brief || ''
@@ -465,17 +515,19 @@ test('走完开局三选一不崩，且能进入主界面', async () => {
   assert.ok(findButton('存档'), '主界面缺少存档按钮')
 })
 
-test('开局第一屏是故事线选择，两条线各有自己的年代与阵容', async () => {
+test('开局第一屏是故事线选择，三条线各有自己的年代与阵容', async () => {
   await mount()
   click(findButton('开始生成'), '开始生成')
   await waitFor('选择故事线', { timeout: 60000 })
 
   const cards = [...dom.window.document.querySelectorAll('.pcard.story')]
-  assert.equal(cards.length, 2, `应有两条故事线，实际 ${cards.length}`)
+  assert.equal(cards.length, 3, `应有三条故事线（宿傩 / 怀玉 / 未来），实际 ${cards.length}`)
 
   const sukuna = cards.find((c) => c.textContent.includes('宿傩篇'))
+  const future = cards.find((c) => c.textContent.includes('未来篇'))
   const kaigyoku = cards.find((c) => c.textContent.includes('怀玉篇'))
-  assert.ok(sukuna && kaigyoku, '缺少某条故事线')
+  assert.ok(sukuna && kaigyoku && future, '缺少某条故事线')
+  assert.match(future.textContent, /2029-04-01/, '未来篇起始日期不对')
 
   // 年份、起始日期、阵容必须各自独立
   assert.match(sukuna.textContent, /2018-06-05/, '宿傩篇起始日期不对')
@@ -663,6 +715,61 @@ test('穿越时间也有「自主定义」：日期自定义、进度继承锚�
   click([...custom.querySelectorAll('button')].find((b) => b.textContent.includes('从这里开始')))
   await new Promise((r) => setTimeout(r, 200))
   assert.match(text(), /回战/, '没有进入主界面')
+})
+
+test('跨篇：入口在顶栏，点开是三段历练', async () => {
+  crossoverDone = 0
+  await enterGame()
+
+  const btn = findButton('跨篇')
+  assert.ok(btn, '顶栏没有跨篇入口')
+  click(btn)
+  await waitFor('跨越', { timeout: 30000 })
+
+  const t = text()
+  assert.match(t, /2007 – 2018/, '没有显示跨度')
+  assert.match(t, /宿傩篇/, '没有说明目标篇章')
+  // 突破门槛已废止 —— 界面不该再说"需要专属突破剧情"
+  assert.match(t, /积累够就直接提升一个等级/, '没有说明等级靠积累提升')
+  assert.ok(!/专属突破|突破剧情/.test(t), '界面上还残留着已废止的突破门槛说法')
+
+  // 四段历练方向（是 4 个方向、3 个阶段）
+  const focuses = [...dom.window.document.querySelectorAll('.xo-focus')]
+  assert.equal(focuses.length, 4, `应有 4 个历练方向，实际 ${focuses.length}`)
+  const names = focuses.map((f) => f.querySelector('.xo-focus-n').textContent)
+  for (const n of ['苦修', '冥想', '术式钻研', '游历']) {
+    assert.ok(names.includes(n), `缺少历练方向「${n}」`)
+  }
+
+  // 三段进度指示
+  const dots = [...dom.window.document.querySelectorAll('.xo-dot')]
+  assert.equal(dots.length, 3, `应有 3 段历练，实际 ${dots.length}`)
+  assert.equal(dots[0].className.includes('now'), true, '第一段应当是高亮状态')
+})
+
+test('跨篇：走完三段会落到新篇章，并保留该保留的东西', async () => {
+  crossoverDone = 0
+  await enterGame()
+  click(findButton('跨篇'))
+  await waitFor('跨越', { timeout: 30000 })
+
+  for (let i = 0; i < 3; i++) {
+    const f = dom.window.document.querySelector('.xo-focus')
+    assert.ok(f, `第 ${i + 1} 段找不到历练方向`)
+    click(f)
+    await new Promise((r) => setTimeout(r, 250))
+  }
+
+  // 走完三段后界面应当关闭，日志里出现跨篇结算卡
+  await waitFor('跨篇', { timeout: 30000 })
+  await new Promise((r) => setTimeout(r, 300))
+  const log = dom.window.document.querySelector('.log').textContent
+  assert.match(log, /怀玉篇\s*→\s*宿傩篇/, '没有跨篇结算卡')
+  assert.match(log, /2018-06-05/, '没有显示新篇起始日期')
+  assert.match(log, /11 年过去/, '没有显示时间跨度')
+  assert.match(log, /等级提升至/, '没有显示等级提升')
+  assert.match(log, /五条悟/, '没有列出记得你的人')
+  assert.ok(!dom.window.document.querySelector('.xo-focus'), '跨完后界面应当关闭')
 })
 
 test('开局选卡界面也有用量表', async () => {

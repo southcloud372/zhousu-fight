@@ -33,10 +33,10 @@ const enemyNames = []
 hdr('0. 故事线')
 const lineRes = await (await fetch(`${B}/api/storylines`)).json()
 const lines = lineRes.storylines || []
-ok('列出两条故事线', lines.length === 2, lines.map(s => s.name).join(' / '))
+ok('列出三条故事线', lines.length === 3, lines.map(s => s.name).join(' / '))
 const kaigyoku = lines.find(s => s.id === 'kaigyoku')
 ok('怀玉篇起始日期正确', kaigyoku?.startDate === '2006-06-01', kaigyoku?.startDate)
-ok('两条线阵容不同', (() => {
+ok('各线阵容不同', (() => {
   const sk = lines.find(s => s.id === 'sukuna')
   if (!sk || !kaigyoku) return false
   const b = kaigyoku.characters || []

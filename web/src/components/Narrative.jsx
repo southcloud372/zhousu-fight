@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { CombatResult } from './CombatPanel.jsx'
+import { CrossoverResult } from './Crossover.jsx'
 import { typewriterStep, TICK_MS } from '../lib/typewriter.js'
 import { Inquiry } from './Inquiry.jsx'
 
@@ -37,6 +38,9 @@ function Entry({ e }) {
   if (e.kind === 'combat') {
     // 数值面板已经挪到左侧战斗栏，中间这一栏只留演出文字
     return e.narration ? <p className="narr">{e.narration}</p> : null
+  }
+  if (e.kind === 'crossover') {
+    return <CrossoverResult result={e.result} panel={e.panel} />
   }
   if (e.kind === 'combatResult') {
     return <CombatResult outcome={e.outcome} summary={e.summary} rewards={e.rewards} ups={e.ups} />
@@ -205,7 +209,7 @@ export function NarrativeLog({ entries, streaming, busy, liveCombat }) {
         <div className="log-inner">
           {entries.map((e, i) => (
             <React.Fragment key={i}>
-              {i > 0 && !['training', 'combat', 'combatResult', 'inquiry'].includes(e.kind) && (
+              {i > 0 && !['training', 'combat', 'combatResult', 'inquiry', 'crossover'].includes(e.kind) && (
                 <div className="turn-sep">第 {e.turn ?? ''} 回合</div>
               )}
               <Entry e={e} />

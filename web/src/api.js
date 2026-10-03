@@ -26,6 +26,10 @@ export const chooseIdentity = (id, slot) =>
   req(`/api/session/${id}/choose-identity`, { method: 'POST', headers: J, body: JSON.stringify({ slot }) })
 export const customTime = (id, brief) =>
   req(`/api/session/${id}/time/custom`, { method: 'POST', headers: J, body: JSON.stringify({ brief }) })
+export const getCrossover = (id) => req(`/api/session/${id}/crossover`)
+export const crossoverAdvance = (id, focus) =>
+  req(`/api/session/${id}/crossover/advance`, { method: 'POST', headers: J, body: JSON.stringify({ focus }) })
+
 export const chooseTime = (id, pointId) =>
   req(`/api/session/${id}/choose-time`, { method: 'POST', headers: J, body: JSON.stringify({ id: pointId }) })
 

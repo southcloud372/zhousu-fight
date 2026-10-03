@@ -170,7 +170,7 @@ async function main() {
   await waitFor('选择故事线', { timeout: 60000, label: '故事线列表' })
 
   const storyCards = [...dom.window.document.querySelectorAll('.pcard.story')]
-  note(storyCards.length === 2 ? 'ok' : 'bad', `${storyCards.length} 条故事线可选`)
+  note(storyCards.length === 3 ? 'ok' : 'bad', `${storyCards.length} 条故事线可选（宿傩 / 怀玉 / 未来）`)
   storyCards.forEach((c) => {
     const name = c.querySelector('.tech')?.textContent?.trim() || '?'
     const date = (c.textContent.match(/\d{4}-\d{2}-\d{2}/) || [])[0] || '?'
