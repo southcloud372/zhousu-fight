@@ -19,7 +19,7 @@ export const submitAttributeFlavor = {
         items: {
           type: 'object',
           properties: {
-            slot: { type: 'string', enum: ['A', 'B', 'C'] },
+            slot: { type: 'string', enum: ['A', 'B', 'C', '自定义'] },
             techniqueName: { type: 'string', description: '生得术式名称' },
             techniqueEffect: { type: 'string', description: '术式效果，一句话说清机制' },
             techniqueCooldown: { type: 'integer', description: '冷却回合数，1~5' },
@@ -58,8 +58,14 @@ export const submitIdentityFlavor = {
         items: {
           type: 'object',
           properties: {
-            slot: { type: 'string', enum: ['甲', '乙', '丙'] },
+            slot: { type: 'string', enum: ['甲', '乙', '丙', '自定义'] },
             name: { type: 'string' },
+            // 只在"自主定义"时使用：由模型按玩家描述判定身份类型，引擎据此重掷关系值
+            kind: {
+              type: 'string',
+              enum: ['原作关联', '反派向', '自由派'],
+              description: '仅自主定义时填写；预设三选一时可省略',
+            },
             background: { type: 'string', description: '具体背景与来历' },
             mainlineRelation: { type: 'string', description: '与主线的关系' },
             openingSituation: { type: 'string', description: '开局处境' },

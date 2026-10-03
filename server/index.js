@@ -9,7 +9,10 @@ import { streamTool, streamText, models } from './llm.js'
 import { makeRng } from './engine/dice.js'
 import { blankState, applyProposal, panelSnapshot, modelStateView } from './engine/state.js'
 import { scrubTurn, clampProposal, noteNarrationLeak, checkEnemyLegality } from './engine/guard.js'
-import { generateAttributeProfiles, generateIdentityProfiles, buildCharacterAndOpening } from './engine/opening.js'
+import {
+  generateAttributeProfiles, generateIdentityProfiles, buildCharacterAndOpening,
+  generateCustomAttribute, generateCustomIdentity,
+} from './engine/opening.js'
 import { CORE_RULES, CONTRACT, turnStatePrompt } from './prompts.js'
 import { accumulate, usageSnapshot, estimateTokens } from './pricing.js'
 import { submitTurn } from './engine/schemas.js'
@@ -88,6 +91,46 @@ app.post('/api/session/:id/attributes', asyncRoute(async (req, res) => {
   state.phase = 'identities-pending'
   persist(state)
   res.json(withUsage(state, { profiles }))
+}))
+
+/**
+ * 自主定义属性：玩家写一段想要的风格，引擎重掷数值，模型按描述生成术式。
+ * 生成的档案存进 attributeProfiles，之后走和 A/B/C 完全相同的选定流程。
+ */
+app.post('/api/session/:id/attributes/custom', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  const brief = String(req.body?.brief || '').trim().slice(0, 500)
+  if (brief.length < 2) return res.status(400).json({ error: '请先描述你想要的战斗风格' })
+
+  const rng = makeRng(state.seed + state.turn + brief.length * 7)
+  const profile = await generateCustomAttribute(rng, brief, { onUsage: meter(state, models.pro) })
+
+  // 替换掉上一次的自定义档案，避免反复重掷时越堆越多
+  state.attributeProfiles = [
+    ...state.attributeProfiles.filter((p) => p.slot !== '自定义'),
+    profile,
+  ]
+  persist(state)
+  res.json(withUsage(state, { profile }))
+}))
+
+/** 自主定义身份：同理，模型自己判定身份类型，引擎据此重掷关系值 */
+app.post('/api/session/:id/identities/custom', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  const brief = String(req.body?.brief || '').trim().slice(0, 500)
+  if (brief.length < 2) return res.status(400).json({ error: '请先描述你想要的背景' })
+
+  const rng = makeRng(state.seed + state.turn + brief.length * 13)
+  const identity = await generateCustomIdentity(rng, brief, { onUsage: meter(state, models.pro) })
+
+  state.identityProfiles = [
+    ...state.identityProfiles.filter((p) => p.slot !== '自定义'),
+    identity,
+  ]
+  persist(state)
+  res.json(withUsage(state, { identity }))
 }))
 
 app.post('/api/session/:id/choose-attributes', asyncRoute(async (req, res) => {

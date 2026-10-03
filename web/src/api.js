@@ -11,6 +11,11 @@ async function req(url, opts = {}) {
 
 export const newSession = () => req('/api/session', { method: 'POST' })
 export const genAttributes = (id) => req(`/api/session/${id}/attributes`, { method: 'POST' })
+export const customAttribute = (id, brief) =>
+  req(`/api/session/${id}/attributes/custom`, { method: 'POST', headers: J, body: JSON.stringify({ brief }) })
+export const customIdentity = (id, brief) =>
+  req(`/api/session/${id}/identities/custom`, { method: 'POST', headers: J, body: JSON.stringify({ brief }) })
+
 export const chooseAttributes = (id, slot) =>
   req(`/api/session/${id}/choose-attributes`, { method: 'POST', headers: J, body: JSON.stringify({ slot }) })
 export const chooseIdentity = (id, slot) =>

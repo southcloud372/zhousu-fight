@@ -1,5 +1,7 @@
 import { callTool, models } from '../llm.js'
-import { rollAttributeProfile, rollIdentity, rollIdentityKind, TALENT_POOL } from './rolls.js'
+import {
+  rollAttributeProfile, rollIdentity, rollIdentityKind, rollInitialRelations, TALENT_POOL,
+} from './rolls.js'
 import { CORE_RULES, CONTRACT, attributeFlavorPrompt, identityFlavorPrompt } from '../prompts.js'
 import { submitAttributeFlavor, submitIdentityFlavor, submitOpeningScene } from './schemas.js'
 import { buildPlayer } from './state.js'
@@ -107,6 +109,49 @@ export async function generateAttributeProfiles(rng, { onUsage } = {}) {
   })
 }
 
+/**
+ * 自主定义（属性）：玩家写一段想要的风格，引擎重新掷一份数值，
+ * 模型按玩家描述生成术式 / 领域 / 天赋。
+ *
+ * 等级仍然由引擎按设定概率掷出 —— 那套分布是整个战斗平衡的地基，
+ * 让玩家直接点名"我要超特级"会把跨级压制、敌人设计全部架空的。
+ * 玩家的描述影响的是**风格**（近战还是远程、爆发还是续航），不是**强度**。
+ */
+export async function generateCustomAttribute(rng, brief, { onUsage } = {}) {
+  const rolled = [rollAttributeProfile(rng, '自定义')]
+  const input = await callWithRetry({
+    system: baseSystem(),
+    messages: [{ role: 'user', content: attributeFlavorPrompt(rolled, { brief }) }],
+    tool: submitAttributeFlavor,
+    model: models.pro,
+    maxTokens: 2500,
+    onUsage,
+    validate: (x) => allFilled((x?.profiles || []).filter((p) => p.slot === '自定义'), ATTRIBUTE_FIELDS),
+    hint: '提交不合格：需要且只需要一份 slot 为「自定义」的档案，techniqueName / techniqueEffect / playstyle 都要填满。请重新提交。',
+  })
+  const f = (input.profiles || []).find((p) => p.slot === '自定义') || (input.profiles || [])[0] || {}
+  const r = rolled[0]
+  return {
+    ...r,
+    techniqueName: f.techniqueName || '未命名术式',
+    techniqueEffect: f.techniqueEffect || '',
+    techniqueCooldown: clampInt(f.techniqueCooldown, 0, 5, 1),
+    domain: r.domainUnlocked
+      ? {
+          unlocked: true,
+          name: f.domain?.name || '未命名领域',
+          sureHit: f.domain?.sureHit || '',
+          cost: f.domain?.cost || '',
+          tierName: r.domainTierName,
+        }
+      : { unlocked: false },
+    talents: (f.talents || []).filter((t) => TALENT_POOL.includes(t)).slice(0, 3),
+    playstyle: f.playstyle || '',
+    tool: r.toolCount > 0 ? f.tool || null : null,
+    brief, // 留个记录，界面上可以显示"依据你的描述生成"
+  }
+}
+
 /** 第二步：引擎定身份骨架 → 模型补创意字段 */
 export async function generateIdentityProfiles(rng, { onUsage } = {}) {
   const rolled = [0, 1, 2].map((i) => rollIdentity(rng, ['甲', '乙', '丙'][i], rollIdentityKind(rng, i)))
@@ -132,6 +177,48 @@ export async function generateIdentityProfiles(rng, { onUsage } = {}) {
       hook: f.hook || '',
     }
   })
+}
+
+/**
+ * 自主定义（身份）：玩家写背景，模型按描述写，并自己判定身份类型。
+ *
+ * 身份类型决定初始关系值（反派向对宿傩有好感、对五条是负的），
+ * 所以不能让预设的随机类型卡住玩家的设定 —— 让模型按描述判定，
+ * 引擎再按它选的类型重掷关系。
+ */
+export async function generateCustomIdentity(rng, brief, { onUsage } = {}) {
+  // 骨架给一份随机的，模型可以完全改写；kind 由模型按玩家描述重新判定
+  const skeleton = rollIdentity(rng, '自定义', rollIdentityKind(rng, 2))
+  const input = await callWithRetry({
+    system: baseSystem(),
+    messages: [{ role: 'user', content: identityFlavorPrompt([skeleton], { brief, allowKindChoice: true }) }],
+    tool: submitIdentityFlavor,
+    model: models.pro,
+    maxTokens: 2500,
+    onUsage,
+    validate: (x) => allFilled(
+      (x?.identities || []).filter((p) => p.slot === '自定义'),
+      IDENTITY_FIELDS,
+    ),
+    hint: '提交不合格：需要且只需要一份 slot 为「自定义」的身份档案，name / background / mainlineRelation / openingSituation / hook 都要填满（每条至少 8 个字），并给出 kind（原作关联 / 反派向 / 自由派）。请重新提交。',
+  })
+
+  const f = (input.identities || []).find((p) => p.slot === '自定义') || (input.identities || [])[0] || {}
+  const kind = ['原作关联', '反派向', '自由派'].includes(f.kind) ? f.kind : skeleton.kind
+
+  return {
+    slot: '自定义',
+    kind,
+    age: skeleton.age,
+    // 换了类型就按新类型重掷关系值，别让预设类型的关系残留
+    initialRelations: rollInitialRelations(rng, kind),
+    name: f.name || '无名',
+    background: f.background || brief,
+    mainlineRelation: f.mainlineRelation || '',
+    openingSituation: f.openingSituation || '',
+    hook: f.hook || '',
+    brief,
+  }
 }
 
 /** 第三步：组合成最终角色并生成开局情境 */

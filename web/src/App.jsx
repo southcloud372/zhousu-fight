@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import * as api from './api.js'
-import { AttributeCard, IdentityCard } from './components/Cards.jsx'
+import { AttributeCard, IdentityCard, CustomCard } from './components/Cards.jsx'
 import { NarrativeLog, ChoiceList, useTypewriter } from './components/Narrative.jsx'
 import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel } from './components/Panels.jsx'
 import { ActionBar } from './components/CombatPanel.jsx'
@@ -32,6 +32,10 @@ export default function App() {
   const [showSaves, setShowSaves] = useState(false)
   const [showSide, setShowSide] = useState(false) // 窄屏时右侧状态栏抽屉
   const [showCombat, setShowCombat] = useState(false) // 中等宽度时左侧战斗栏抽屉
+  // 自主定义：玩家自己写的那份，以及重掷前的输入
+  const [customBrief, setCustomBrief] = useState('')
+  const [customAttr, setCustomAttr] = useState(null)
+  const [customIdent, setCustomIdent] = useState(null)
   const [usage, setUsage] = useState(null) // 本局 token 用量与费用
 
   // 打字机：把成块到达的文字按节奏吐出来，而不是一块块往外蹦
@@ -127,6 +131,8 @@ export default function App() {
     setError(null)
     try {
       const { identities, usage: u1 } = await api.chooseAttributes(sessionId, slot)
+      setCustomBrief('') // 换阶段了，清掉上一阶段的输入
+      setCustomIdent(null)
       takeUsage(u1)
       setIdentProfiles(identities)
       setPhase('identity')
@@ -136,6 +142,28 @@ export default function App() {
       setBusy(false)
     }
   }, [sessionId])
+
+  /** 自主定义：生成一份属于自己的属性 / 身份档案 */
+  const generateCustom = useCallback(async (kind) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const brief = customBrief.trim()
+      if (kind === 'attribute') {
+        const r = await api.customAttribute(sessionId, brief)
+        takeUsage(r.usage)
+        setCustomAttr(r.profile)
+      } else {
+        const r = await api.customIdentity(sessionId, brief)
+        takeUsage(r.usage)
+        setCustomIdent(r.identity)
+      }
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [sessionId, customBrief, takeUsage])
 
   const pickIdentity = useCallback(async (slot) => {
     setBusy(true)
@@ -155,16 +183,15 @@ export default function App() {
     }
   }, [sessionId])
 
-  // ---------------------------------------------------------- 错误恢复
-
   /**
-   * 出错时以服务端为准重建界面。必须定义在 submit / 战斗回调之前 ——
-   * 它们把 resync 写进了 useCallback 的依赖数组，声明在后面的会触发 TDZ。
-   *
-   * 战斗流程里有好几处"先把本地状态清掉、再等接口返回"，
-   * 一旦接口挂了，本地就少了半截状态（行动栏没了、弹窗没了），
-   * 玩家会卡在既不能出招也不能推进剧情的死局里。
+   * 走「自主定义」时档案已经存在服务端了，直接按 slot 选。
+   * 必须定义在 pickAttribute / pickIdentity 之后 —— 提前引用会触发 TDZ。
    */
+  const pickCustom = useCallback((slot) => {
+    if (phase === 'attributes') return pickAttribute(slot)
+    return pickIdentity(slot)
+  }, [phase, pickAttribute, pickIdentity])
+
   // ---------------------------------------------------------- 错误恢复
 
   /**
@@ -566,13 +593,26 @@ export default function App() {
               : '属性已锁定，三份身份只在背景、关系与处境上区分'}
           </div>
           <div className="cards">
-            {list.map((p) =>
+            {/* 预设的三份里不含"自定义"（它可能还没生成） */}
+            {list.filter((p) => p.slot !== '自定义').map((p) =>
               phase === 'attributes' ? (
                 <AttributeCard key={p.slot} p={p} onPick={pickAttribute} busy={busy} />
               ) : (
                 <IdentityCard key={p.slot} p={p} onPick={pickIdentity} busy={busy} />
               ),
             )}
+
+            {/* 第四项：自主定义 */}
+            <CustomCard
+              kind={phase === 'attributes' ? 'attribute' : 'identity'}
+              brief={customBrief}
+              setBrief={setCustomBrief}
+              generated={phase === 'attributes' ? customAttr : customIdent}
+              onGenerate={() => generateCustom(phase === 'attributes' ? 'attribute' : 'identity')}
+              onReroll={() => generateCustom(phase === 'attributes' ? 'attribute' : 'identity')}
+              onPick={pickCustom}
+              busy={busy}
+            />
           </div>
           {busy && (
             <div className="loading">

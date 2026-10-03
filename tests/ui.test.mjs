@@ -232,6 +232,35 @@ function makeFetchStub(log) {
         actions: null, combat: null, inCombat: null,
       })
     }
+    // ---- 自主定义 ----
+    if (u.includes('/attributes/custom')) {
+      const brief = JSON.parse(opts.body || '{}').brief || ''
+      if (String(brief).trim().length < 2) return json({ error: '请先描述你想要的战斗风格' }, 400)
+      return json({ usage: usageFixture, profile: {
+        slot: '自定义', overallGrade: '一级', ce: { value: 4200, grade: '一级' },
+        hp: { value: 1180, grade: '一级' }, cursedDamage: { value: 193, grade: '一级' },
+        physicalDamage: { value: 117, grade: '一级' }, efficiency: { value: 0.88, grade: '一级' },
+        techniqueGrade: '一级', techniqueMultiplier: 2.5,
+        techniqueName: '绯缠咒法', techniqueEffect: '绯色咒线缠住退路，只能正面接招',
+        techniqueCooldown: 2, domainUnlocked: false, domain: { unlocked: false },
+        reverseCursedTechnique: '未掌握', toolCount: 0, tool: null,
+        talents: ['体术天赋', '抗痛性强'], playstyle: '贴脸近战压制', brief,
+      } })
+    }
+    if (u.includes('/identities/custom')) {
+      const brief = JSON.parse(opts.body || '{}').brief || ''
+      if (String(brief).trim().length < 2) return json({ error: '请先描述你想要的背景' }, 400)
+      return json({ usage: usageFixture, identity: {
+        slot: '自定义', kind: '反派向', age: 17, name: '神代秋生',
+        background: '被除名的咒灵观察员，靠倒卖情报活着',
+        mainlineRelation: '截到一条宿傩手指的线报',
+        openingSituation: '深夜在丰岛的办公室里核对加密邮件',
+        hook: '买家名单里有咒术界内部的人',
+        initialRelations: { 五条悟: -6, 宿傩: 6 },
+        brief,
+      } })
+    }
+
     if (u.includes('/attributes')) {
       return json({ usage: usageFixture, profiles: ['A', 'B', 'C'].map((slot) => ({
         slot, overallGrade: '一级', ce: { value: 300, grade: '一级' }, hp: { value: 1000, grade: '一级' },
@@ -420,6 +449,74 @@ test('开始界面就要能看到用量表（不是只有游戏内才有）', as
   assert.match(pop.textContent, /还没开始/, '未开局时的说明文案不对')
   // 未开局不该冒出"未配置单价"这种噪音
   assert.ok(!/未配置单价/.test(pop.textContent), '未开局时不该提示价格未配置')
+})
+
+test('开局属性页有「自主定义」第四项，能生成并采用', async () => {
+  await mount()
+  click(findButton('开始生成'), '开始生成')
+  await waitFor('第一步 · 属性', { timeout: 60000 })
+
+  // 四张卡：A / B / C / 自主定义
+  const cards = [...dom.window.document.querySelectorAll('.pcard')]
+  assert.equal(cards.length, 4, `应有 3 份预设 + 1 项自主定义，实际 ${cards.length} 张`)
+  const custom = dom.window.document.querySelector('.pcard.custom')
+  assert.ok(custom, '找不到自主定义卡片')
+  assert.match(custom.textContent, /自主定义/)
+
+  // 必须写明等级不可指定，否则玩家会以为能点单"我要超特级"
+  assert.match(custom.textContent, /等级由引擎按设定概率掷出/, '没有说明等级不可指定')
+
+  const ta = custom.querySelector('textarea')
+  assert.ok(ta, '没有输入框')
+  const genBtn = [...custom.querySelectorAll('button')].find((b) => b.textContent.includes('按我的描述生成'))
+  assert.ok(genBtn && genBtn.disabled, '输入为空时生成按钮应当禁用')
+
+  // 填描述后生成
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set
+  setter.call(ta, '我想打近身压制，靠体术和短刀，术式封住对方退路')
+  ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+  await new Promise((r) => setTimeout(r, 60))
+  click([...custom.querySelectorAll('button')].find((b) => b.textContent.includes('按我的描述生成')))
+  await waitFor('依据你的描述生成', { timeout: 30000 })
+
+  const result = dom.window.document.querySelector('.custom-result')
+  assert.ok(result, '没有显示生成结果')
+  const rt = result.textContent
+  assert.match(rt, /绯缠咒法/, '结果里没有术式')
+  assert.match(rt, /贴脸近战压制/, '结果里没有玩法风格')
+  assert.match(rt, /一级/, '结果里没有等级')
+
+  // 采用它 → 进入身份页
+  const useBtn = [...custom.querySelectorAll('button')].find((b) => b.textContent.includes('就用这个'))
+  assert.ok(useBtn, '缺少「就用这个」按钮')
+  click(useBtn)
+  await waitFor('第二步 · 身份', { timeout: 60000 })
+})
+
+test('开局身份页也有「自主定义」，模型判定类型后重掷关系', async () => {
+  await mount()
+  click(findButton('开始生成'), '开始生成')
+  await waitFor('第一步 · 属性', { timeout: 60000 })
+  click(findButton('选择档案 A'))
+  await waitFor('第二步 · 身份', { timeout: 60000 })
+
+  const cards = [...dom.window.document.querySelectorAll('.pcard')]
+  assert.equal(cards.length, 4, `身份页也应有 4 张卡，实际 ${cards.length}`)
+  const custom = dom.window.document.querySelector('.pcard.custom')
+  assert.match(custom.textContent, /身份类型由模型按你的描述判定/, '没有说明类型由模型判定')
+
+  const ta = custom.querySelector('textarea')
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set
+  setter.call(ta, '我是被高专除名的观察员，暗中替诅咒师做事')
+  ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+  await new Promise((r) => setTimeout(r, 60))
+  click([...custom.querySelectorAll('button')].find((b) => b.textContent.includes('按我的描述生成')))
+  await waitFor('依据你的描述生成', { timeout: 30000 })
+
+  const rt = dom.window.document.querySelector('.custom-result').textContent
+  assert.match(rt, /神代秋生/, '结果里没有姓名')
+  assert.match(rt, /反派向/, '没有显示模型判定的身份类型')
+  assert.match(rt, /钩子/, '没有钩子')
 })
 
 test('开局选卡界面也有用量表', async () => {

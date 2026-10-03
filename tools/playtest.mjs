@@ -175,10 +175,21 @@ async function main() {
 
   step(2, '属性档案 A / B / C')
   const cards = [...dom.window.document.querySelectorAll('.pcard')]
-  note(cards.length === 3 ? 'ok' : 'bad', `渲染了 ${cards.length} 张属性卡`)
+  note(cards.length === 4 ? 'ok' : 'bad', `渲染了 ${cards.length} 张属性卡（3 份预设 + 自主定义）`)
+
+  // 第 4 张是「自主定义」（生成前没有内容），所有预设相关的处理都要先把它摘出去
+  const presetCards = cards.filter((c) => !c.className.includes('custom'))
+  const customCard = cards.find((c) => c.className.includes('custom'))
+  note(customCard ? 'ok' : 'bad', customCard ? '存在「自主定义」第四项' : '缺少自主定义卡片')
+  note(presetCards.length === 3 ? 'ok' : 'bad', `预设档案 ${presetCards.length} 份`)
+  if (customCard) {
+    const hasNote = /等级由引擎按设定概率掷出/.test(customCard.textContent)
+    note(hasNote ? 'ok' : 'bad',
+      hasNote ? '已写明等级不可指定' : '没有说明等级不可指定，玩家会以为能点单')
+  }
 
   const ALL_GRADES = ['弱特级', '标特级', '超特级', '准一级', '龙级', '一级', '二级', '三级', '四级']
-  const attrInfo = cards.map((c) => {
+  const attrInfo = presetCards.map((c) => {
     const grade = ALL_GRADES.find((g) => c.textContent.includes(g)) || '?'
     const tech = c.querySelector('.tech')?.textContent?.trim() || '?'
     const eff = (c.textContent.match(/(\d+)%/) || [])[1]
@@ -187,8 +198,8 @@ async function main() {
   })
   attrInfo.forEach((a, i) => info(`${'ABC'[i]}: ${C.mag(a.grade.padEnd(4))} ${a.tech}　效率 ${a.eff}%　主数值 ${a.vals.join(' / ')}`))
 
-  // 校验每张卡都有必填内容
-  for (const [i, c] of cards.entries()) {
+  // 校验每份预设档案都有必填内容
+  for (const [i, c] of presetCards.entries()) {
     const t = c.textContent
     const missing = ['咒力总量', '血条总量', '咒术伤害', '体术伤害', '咒力效率'].filter((k) => !t.includes(k))
     if (missing.length) note('bad', `档案 ${'ABC'[i]} 缺少字段：${missing.join('、')}`)
@@ -205,13 +216,15 @@ async function main() {
 
   step(3, '身份档案 甲 / 乙 / 丙')
   const idCards = [...dom.window.document.querySelectorAll('.pcard')]
-  note(idCards.length === 3 ? 'ok' : 'bad', `渲染了 ${idCards.length} 张身份卡`)
-  idCards.forEach((c, i) => {
+  note(idCards.length === 4 ? 'ok' : 'bad', `渲染了 ${idCards.length} 张身份卡（3 份预设 + 自主定义）`)
+  // 同样跳过「自主定义」那张（没生成前还没有类型）
+  const presetIdent = idCards.filter((c) => !c.className.includes('custom'))
+  presetIdent.forEach((c, i) => {
     const name = c.querySelector('.tech')?.textContent?.trim() || '?'
     const kind = (c.textContent.match(/(反派向|自由派|原作关联)/) || [])[1] || '?'
     info(`${'甲乙丙'[i]}: ${C.mag(name)}（${kind}）`)
   })
-  const kinds = idCards.map((c) => (c.textContent.match(/(反派向|自由派|原作关联)/) || [])[1])
+  const kinds = presetIdent.map((c) => (c.textContent.match(/(反派向|自由派|原作关联)/) || [])[1])
   note(kinds.includes('反派向') && kinds.includes('自由派') ? 'ok' : 'bad',
     kinds.includes('反派向') && kinds.includes('自由派') ? '反派向 / 自由派各有一份（符合第十节）' : `身份类型不全：${kinds.join('、')}`)
 

@@ -601,6 +601,44 @@ body::before {
 }
 .pcard .pick-btn:hover { background: var(--blood); color: #fff; }
 
+/* 「自主定义」卡片 */
+.pcard.custom { border-style: dashed; border-color: var(--cursed); }
+.pcard.custom:hover { border-color: var(--cursed); border-style: solid; }
+.pcard.custom h2 { color: var(--cursed); }
+
+.custom-brief {
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 11px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  font-family: var(--font-narr);
+  font-size: 13.5px;
+  line-height: 1.7;
+  resize: vertical;
+  min-height: 76px;
+}
+.custom-brief::placeholder { color: var(--ink-faint); }
+.custom-brief:focus { outline: none; border-color: var(--cursed); background: #fff; }
+
+.custom-note {
+  margin-top: 7px;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink-faint);
+  padding-left: 9px;
+  border-left: 2px solid var(--line);
+}
+
+.custom-result-h {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--cursed);
+  margin-bottom: 7px;
+}
+
 .domain-box {
   margin-top: 10px;
   padding: 9px 11px;

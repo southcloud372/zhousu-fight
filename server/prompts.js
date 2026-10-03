@@ -93,12 +93,26 @@ export const CONTRACT = `
 `.trim()
 
 /** 把引擎掷好的骰子结果告诉模型，让它只填创意部分 */
-export function attributeFlavorPrompt(profiles) {
-  return `引擎已掷出三份属性档案的数值，**数值不可改动**。请为每份档案补齐创意字段。
+export function attributeFlavorPrompt(profiles, { brief } = {}) {
+  const custom = brief ? `
+
+## 玩家自主定义
+
+玩家自己提出了要求：
+
+> ${brief}
+
+**数值不可改动**（等级由引擎按设定概率掷出），但术式名称、效果、领域、天赋标签、
+玩法风格提示都要**往玩家描述的方向靠**。玩家想要近身格斗就别给远程术式，
+想要防御型就别给爆发型。若玩家提到的具体能力与掷出的等级明显不匹配
+（比如三级却要求"改写规则"），按等级能承受的强度来写，不要虚标。
+` : ''
+
+  return `引擎已掷出${brief ? '一份' : '三份'}属性档案的数值，**数值不可改动**。请为每份档案补齐创意字段。
 
 掷骰结果（JSON）：
 ${JSON.stringify(profiles, null, 2)}
-
+${custom}
 要求：
 - 术式名称要有咒术回战的质感（日式汉字词，如"十划咒法""刍灵咒法"的风格），效果描述一句话说清机制，必须与咒术伤害等级相称。
 - 若 domainUnlocked 为 true，必须给出领域名称、必中效果、代价；领域风格必须与生得术式主题一致。
@@ -108,12 +122,26 @@ ${JSON.stringify(profiles, null, 2)}
 - 三份档案的战斗风格必须明显不同。`
 }
 
-export function identityFlavorPrompt(identities) {
-  return `引擎已定好三份身份档案的骨架（背景类型、年龄、关系初值、背景模板）。请补齐创意字段。
+export function identityFlavorPrompt(identities, { brief, allowKindChoice = false } = {}) {
+  const custom = brief ? `
+
+## 玩家自主定义
+
+玩家自己提出了要求：
+
+> ${brief}
+
+请让姓名、背景、与主线的关系、开局处境、钩子都**贴着玩家的描述来写**。
+${allowKindChoice ? `${identities[0]?.kind ? '' : ''}另外：请在 kind 字段里判定这份身份属于哪一类（原作关联 / 反派向 / 自由派），
+引擎会按你选的类型重掷初始关系值。以玩家描述为准，不要被骨架里的类型限制。` : ''}
+背景模板只是参考方向，可以完全改写，但必须与玩家描述一致。
+` : ''
+
+  return `引擎已定好${brief ? '一份' : '三份'}身份档案的骨架（背景类型、年龄、关系初值、背景模板）。请补齐创意字段。
 
 骨架（JSON）：
 ${JSON.stringify(identities, null, 2)}
-
+${custom}
 要求：
 - 姓名随机，日式或中式皆可。
 - 背景要具体：说清来历、现在靠什么活着、身上带着什么麻烦。

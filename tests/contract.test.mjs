@@ -85,8 +85,20 @@ test('narration 必须是 schema 的第一个属性', () => {
 })
 
 test('slot 枚举与开局流程用的编号一致', () => {
-  assert.deepEqual(submitAttributeFlavor.input_schema.properties.profiles.items.properties.slot.enum, ['A', 'B', 'C'])
-  assert.deepEqual(submitIdentityFlavor.input_schema.properties.identities.items.properties.slot.enum, ['甲', '乙', '丙'])
+  // 前三个是引擎掷好的预设，第四个是玩家「自主定义」生成的那份
+  assert.deepEqual(submitAttributeFlavor.input_schema.properties.profiles.items.properties.slot.enum,
+    ['A', 'B', 'C', '自定义'])
+  assert.deepEqual(submitIdentityFlavor.input_schema.properties.identities.items.properties.slot.enum,
+    ['甲', '乙', '丙', '自定义'])
+})
+
+test('自定义身份的 kind 是可选字段（预设三选一时不填）', () => {
+  const props = submitIdentityFlavor.input_schema.properties.identities.items
+  assert.ok(Object.keys(props.properties).includes('kind'), 'schema 里没有 kind')
+  assert.ok(!(props.required || []).includes('kind'),
+    'kind 不该是必填 —— 预设的甲乙丙不需要它')
+  // 枚举必须和引擎认识的三种类型一致
+  assert.deepEqual(props.properties.kind.enum.sort(), ['原作关联', '反派向', '自由派'].sort())
 })
 
 // ------------------------------------------------------------------ 常量 ↔ 代码
