@@ -2,9 +2,14 @@ import { callTool, models } from '../llm.js'
 import {
   rollAttributeProfile, rollIdentity, rollIdentityKind, rollInitialRelations, TALENT_POOL,
 } from './rolls.js'
-import { CORE_RULES, CONTRACT, attributeFlavorPrompt, identityFlavorPrompt } from '../prompts.js'
-import { submitAttributeFlavor, submitIdentityFlavor, submitOpeningScene } from './schemas.js'
-import { buildPlayer } from './state.js'
+import {
+  CORE_RULES, CONTRACT, attributeFlavorPrompt, identityFlavorPrompt, customTimePrompt,
+} from '../prompts.js'
+import {
+  submitAttributeFlavor, submitIdentityFlavor, submitOpeningScene, submitCustomTime,
+} from './schemas.js'
+import { buildPlayer, GAME_START_DATE } from './state.js'
+import { TIME_POINTS, NODE_ORDER, applyTimeline, byId } from './timeline.js'
 import { npcAttitude } from './visibility.js'
 
 const baseSystem = () =>
@@ -221,11 +226,72 @@ export async function generateCustomIdentity(rng, brief, { onUsage } = {}) {
   }
 }
 
+/**
+ * 第三步：穿越时间三选一。
+ * 保底有一份是最开篇（2018年6月·宿傩手指）—— 那是"从零开始"的基准线，
+ * 任何时候都得能选到它。另两份从其余时点里随机。
+ */
+export function rollTimeProfiles(rng) {
+  const [first, ...rest] = TIME_POINTS
+  const picked = []
+  const pool = [...rest]
+  while (picked.length < 2 && pool.length) {
+    picked.push(pool.splice(Math.floor(rng() * pool.length), 1)[0])
+  }
+  // 按时间先后排序，读起来更自然
+  return [first, ...picked].sort((a, b) => a.date.localeCompare(b.date))
+}
+
+/**
+ * 自主定义穿越时间。
+ *
+ * 关键约束：日期可以自定义，但**原作进度必须继承自某个既有锚点** ——
+ * 否则"哪些事件已经发生"就无从算起，整个时间线追踪器会失真。
+ * 所以模型同时给出 date（玩家的实际落点）和 anchorId（决定进度与危险度）。
+ */
+export async function generateCustomTime(brief, { onUsage } = {}) {
+  const { input, usage } = await callTool({
+    system: baseSystem(),
+    messages: [{ role: 'user', content: customTimePrompt(brief, TIME_POINTS) }],
+    tool: submitCustomTime,
+    model: models.pro,
+    maxTokens: 1200,
+  })
+  onUsage?.(usage)
+
+  // 锚点必须合法，否则退回最开篇 —— 宁可保守也不能让进度状态悬空
+  const anchor = byId(input.anchorId) || TIME_POINTS[0]
+
+  // 日期做范围校验：模型偶尔会算出 2017 或 2020 这种越界值
+  let date = String(input.date || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))) {
+    date = anchor.date
+  } else if (date < '2018-06-05' || date > '2019-12-31') {
+    date = anchor.date
+  }
+
+  return {
+    id: '自定义',
+    date,
+    label: input.label || `${date} · ${anchor.label.split('·')[1]?.trim() || '自定义'}`,
+    when: input.note || anchor.when,
+    situation: input.situation || anchor.situation,
+    hook: input.hook || anchor.hook,
+    nodesDone: [...anchor.nodesDone], // 进度继承自锚点
+    danger: anchor.danger,
+    dangerLabel: anchor.dangerLabel,
+    anchorLabel: anchor.label, // 界面上标明进度取自哪里
+    brief,
+  }
+}
+
 /** 第三步：组合成最终角色并生成开局情境 */
-export async function buildCharacterAndOpening(state, attrProfile, identityProfile, { onUsage } = {}) {
+export async function buildCharacterAndOpening(state, attrProfile, identityProfile, timePoint, { onUsage } = {}) {
   const player = buildPlayer(attrProfile, attrProfile, identityProfile, identityProfile)
   state.player = player
   state.relations = { ...identityProfile.initialRelations }
+  // 穿越时间决定起始日期与原作进度 —— 不写进去的话这个选择就只是装饰
+  if (timePoint) applyTimeline(state, timePoint)
   state.sukuna.fingersEaten = 1
 
   const relationsForModel = Object.fromEntries(
@@ -262,7 +328,12 @@ export async function buildCharacterAndOpening(state, attrProfile, identityProfi
 NPC 当前对他的态度（NPC 只知道态度，不知道好感度数值）：
 ${JSON.stringify(relationsForModel, null, 2)}
 
-现在是 2018 年 6 月 5 日，虎杖悠仁即将（或刚刚）吞下第一根宿傩手指。
+穿越时间：${timePoint ? `${timePoint.label}（${timePoint.date}）` : GAME_START_DATE}
+${timePoint ? `此时此刻：${timePoint.when}。${timePoint.situation}\n已经发生：${timePoint.nodesDone.length ? timePoint.nodesDone.join('、') : '（什么都没有，一切尚未开始）'}\n尚未发生：${NODE_ORDER.filter((n) => !timePoint.nodesDone.includes(n)).join('、')}` : '虎杖悠仁即将（或刚刚）吞下第一根宿傩手指。'}
+
+**开局情境必须贴合这个时间点。** 已经发生的事是不可更改的既定事实，
+玩家醒来时那些事已经过去了；还没发生的事可以被他改变。
+危险度参考：${timePoint ? `${timePoint.dangerLabel}（${timePoint.danger} / 5）` : '序章'}。
 
 请生成开局情境：**直接切入战斗或高张力冲突，不要铺垫、不要介绍世界设定。** 让玩家一上来就处在必须立刻做决定的位置。`,
       },

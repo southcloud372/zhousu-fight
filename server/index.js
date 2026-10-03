@@ -11,12 +11,13 @@ import { blankState, applyProposal, panelSnapshot, modelStateView } from './engi
 import { scrubTurn, clampProposal, noteNarrationLeak, checkEnemyLegality } from './engine/guard.js'
 import {
   generateAttributeProfiles, generateIdentityProfiles, buildCharacterAndOpening,
-  generateCustomAttribute, generateCustomIdentity,
+  generateCustomAttribute, generateCustomIdentity, rollTimeProfiles, generateCustomTime,
 } from './engine/opening.js'
 import { CORE_RULES, CONTRACT, turnStatePrompt } from './prompts.js'
 import { accumulate, usageSnapshot, estimateTokens } from './pricing.js'
 import { submitTurn } from './engine/schemas.js'
 import { rollEnemy } from './engine/rolls.js'
+import { byId, TIME_POINTS } from './engine/timeline.js'
 import { canTrain, rollTraining, applyTraining, TRAINING_TABLE } from './engine/commands.js'
 import {
   COMBAT_MODES, MODE_LABELS, initCombat, runRound, simulateCombat,
@@ -133,6 +134,11 @@ app.post('/api/session/:id/identities/custom', asyncRoute(async (req, res) => {
   res.json(withUsage(state, { identity }))
 }))
 
+/** 全部可选时间点（自主定义穿越时间时给玩家做参考） */
+app.get('/api/time-points', (req, res) => {
+  res.json({ points: TIME_POINTS.map(({ id, date, label, when, dangerLabel }) => ({ id, date, label, when, dangerLabel })) })
+})
+
 app.post('/api/session/:id/choose-attributes', asyncRoute(async (req, res) => {
   const state = load(req.params.id)
   if (!state) return res.status(404).json({ error: '会话不存在' })
@@ -158,8 +164,49 @@ app.post('/api/session/:id/choose-identity', asyncRoute(async (req, res) => {
   if (!attr || !ident) return res.status(400).json({ error: '档案不存在' })
 
   state.chosenIdentitySlot = slot
+  // 第三步：穿越时间。开局情境要等时间点定了才生成 ——
+  // 同一个角色穿到 6 月和穿到涩谷事变，开局处境完全不是一回事。
+  const times = rollTimeProfiles(makeRng(state.seed + 991))
+  state.timeProfiles = times
+  state.phase = 'time'
+  persist(state)
+
+  res.json(withUsage(state, { times }))
+}))
+
+/** 自主定义穿越时间：玩家写想穿到什么时候，模型解析成合法时间点 */
+app.post('/api/session/:id/time/custom', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  const brief = String(req.body?.brief || '').trim().slice(0, 300)
+  if (brief.length < 2) return res.status(400).json({ error: '请先描述你想穿越到的时机' })
+
+  const point = await generateCustomTime(brief, { onUsage: meter(state, models.pro) })
+  // 替换上一次的自定义时间点，避免反复重掷越堆越多
+  state.timeProfiles = [
+    ...(state.timeProfiles || []).filter((t) => t.id !== '自定义'),
+    point,
+  ]
+  persist(state)
+  res.json(withUsage(state, { point }))
+}))
+
+/** 第三步：选定穿越时间 → 组合最终档案 → 生成开局情境 */
+app.post('/api/session/:id/choose-time', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  const { id } = req.body || {}
+  const attr = state.attributeProfiles.find((p) => p.slot === state.chosenAttributeSlot)
+  const ident = state.identityProfiles.find((p) => p.slot === state.chosenIdentitySlot)
+  if (!attr || !ident) return res.status(400).json({ error: '前置档案不存在' })
+
+  // 从这一局自己的候选里找 —— 自定义那份只存在于 state 里，不在全局表
+  const point = (state.timeProfiles || []).find((t) => t.id === id) || byId(id)
+  if (!point) return res.status(400).json({ error: '未知的穿越时间' })
+
+  state.chosenTimeId = id
   state.turn = 1 // 先置位，否则 postProcess 写进日志的回合号是 0
-  const opening = await buildCharacterAndOpening(state, attr, ident, { onUsage: meter(state, models.pro) })
+  const opening = await buildCharacterAndOpening(state, attr, ident, point, { onUsage: meter(state, models.pro) })
 
   const cleaned = postProcess(state, opening, { isOpening: true })
   state.phase = 'playing'
@@ -798,6 +845,7 @@ app.get('/api/session/:id/state', (req, res) => {
     phase: state.phase,
     attributeProfiles: state.attributeProfiles,
     identityProfiles: state.identityProfiles,
+    timeProfiles: state.timeProfiles || [],
     log: state.log,
     panel: panelSnapshot(state),
     choices: state.phase === 'playing' && lastTurn ? withTrainingOption(lastTurn.choices || [], state) : [],

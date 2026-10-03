@@ -278,12 +278,41 @@ function makeFetchStub(log) {
         openingSituation: '处境', hook: '钩子', initialRelations: { 虎杖悠仁: 5 },
       })) })
     }
+    // 第二步选定后 → 返回三份穿越时间（不再直接开局）
     if (u.includes('/choose-identity')) {
+      return json({
+        usage: usageFixture,
+        times: [
+          { id: 'start', date: '2018-06-05', label: '2018年6月 · 宿傩手指', when: '虎杖吞下第一根手指前后', situation: '一切的开端。', hook: '你早知道结局。', nodesDone: [], danger: 1, dangerLabel: '序章' },
+          { id: 'sisters', date: '2018-07-12', label: '2018年7月 · 京都姊妹校交流', when: '两校交流战', situation: '咒灵侧开始试探。', hook: '真人会注意到容器。', nodesDone: ['虎杖吞手指'], danger: 3, dangerLabel: '暗流' },
+          { id: 'shibuya', date: '2018-10-31', label: '2018年10月31日 · 涩谷事变', when: '五条悟被封印', situation: '涩谷已经封场。', hook: '这一天之后天平翻了。', nodesDone: ['虎杖吞手指', '涩谷事变'], danger: 4, dangerLabel: '地狱' },
+        ],
+      })
+    }
+    // 自主定义穿越时间
+    if (u.includes('/time/custom')) {
+      const brief = JSON.parse(opts.body || '{}').brief || ''
+      if (String(brief).trim().length < 2) return json({ error: '请先描述你想穿越到的时机' }, 400)
+      return json({ usage: usageFixture, point: {
+        id: '自定义',
+        date: '2018-09-30',
+        label: '2018年9月30日 · 涩谷前夜的前夜',
+        when: '距涩谷事变还有一个月',
+        situation: '表面上一切照旧，咒灵侧已经在布针对五条悟的局。',
+        hook: '你还有一个月。说不说，是你的事。',
+        nodesDone: ['虎杖吞手指', '死刑缓期', '高专入学', '少年院任务', '宿傩夺舍', '京都姊妹校交流'],
+        danger: 3, dangerLabel: '暗流',
+        anchorLabel: '2018年8月 · 涩谷前夜',
+        brief,
+      } })
+    }
+    // 第三步：选定穿越时间 → 才是真正的开局
+    if (u.includes('/choose-time')) {
       return json({
         usage: usageFixture,
         narration: '开局正文。', dialogue: [{ speaker: '虎杖悠仁', text: '你是谁？' }], notes: [],
         choices: [{ id: '1', label: '出手', kind: 'story' }, { id: 'T', label: '【跳过当天，进行修炼】', kind: 'training' }],
-        panel: null, combat: null,
+        panel: CHARACTER_SNAPSHOT, combat: null,
       })
     }
     return json({ ok: true })
@@ -414,9 +443,43 @@ test('走完开局三选一不崩，且能进入主界面', async () => {
   assert.match(text(), /第二步 · 身份/, '没有进入身份选择')
 
   click(findButton('选择身份 甲'))
-  await new Promise((r) => setTimeout(r, 80))
+  await new Promise((r) => setTimeout(r, 120))
+  assert.match(text(), /第三步 · 穿越时间/, '没有进入穿越时间选择')
+
+  click(findButton('从这里开始'))
+  await new Promise((r) => setTimeout(r, 150))
   assert.match(text(), /回战/, '没有进入主界面')
   assert.ok(findButton('存档'), '主界面缺少存档按钮')
+})
+
+test('穿越时间：三选一，保底含最开篇，按时间排序', async () => {
+  await mount()
+  click(findButton('开始生成'), '开始生成')
+  await waitFor('第一步 · 属性', { timeout: 60000 })
+  click(findButton('选择档案 A'))
+  await waitFor('第二步 · 身份', { timeout: 60000 })
+  click(findButton('选择身份 甲'))
+  await waitFor('第三步 · 穿越时间', { timeout: 60000 })
+
+  const cards = [...dom.window.document.querySelectorAll('.pcard.time')]
+  assert.equal(cards.length, 3, `应有 3 份穿越时间，实际 ${cards.length}`)
+
+  const dates = cards.map((c) => c.querySelector('.time-date').textContent)
+  assert.ok(dates.includes('2018-06-05'), `保底必须含最开篇，实际：${dates.join(' / ')}`)
+  assert.deepEqual(dates, [...dates].sort(), `时间点应按先后排序：${dates.join(' / ')}`)
+
+  // 每张卡都要写清"那一刻在发生什么"和危险度
+  for (const c of cards) {
+    assert.ok(c.querySelector('.tech').textContent.trim(), '缺少时间点标题')
+    assert.match(c.textContent, /那一刻/, '没有说明那一刻的处境')
+    assert.ok(c.querySelector('.time-danger'), '没有危险度标识')
+  }
+  // 最开篇那张应当明说"一切还没开始"
+  const first = cards.find((c) => c.querySelector('.time-date').textContent === '2018-06-05')
+  assert.match(first.textContent, /还没开始/, '最开篇没有标出"从头改写"')
+  // 靠后的时间点要列出已经发生、不可更改的节点
+  const late = cards[cards.length - 1]
+  assert.match(late.textContent, /已经发生（不可更改）/, '后期时间点没有列出既定事实')
 })
 
 test('刷新续接：localStorage 里有会话时自动回到游戏', async () => {
@@ -517,6 +580,47 @@ test('开局身份页也有「自主定义」，模型判定类型后重掷关�
   assert.match(rt, /神代秋生/, '结果里没有姓名')
   assert.match(rt, /反派向/, '没有显示模型判定的身份类型')
   assert.match(rt, /钩子/, '没有钩子')
+})
+
+test('穿越时间也有「自主定义」：日期自定义、进度继承锚点', async () => {
+  await mount()
+  click(findButton('开始生成'), '开始生成')
+  await waitFor('第一步 · 属性', { timeout: 60000 })
+  click(findButton('选择档案 A'))
+  await waitFor('第二步 · 身份', { timeout: 60000 })
+  click(findButton('选择身份 甲'))
+  await waitFor('第三步 · 穿越时间', { timeout: 60000 })
+
+  // 3 份预设 + 1 份自主定义
+  const cards = [...dom.window.document.querySelectorAll('.pcard')]
+  assert.equal(cards.length, 4, `应有 3 份预设 + 自主定义，实际 ${cards.length} 张`)
+  const custom = dom.window.document.querySelector('.time-custom')
+  assert.ok(custom, '穿越时间页没有自主定义卡片')
+  // 必须说明进度是继承的，否则玩家以为连进度都能自定义
+  assert.match(custom.textContent, /继承自最接近的既有节点/, '没有说明原作进度是继承的')
+
+  const ta = custom.querySelector('textarea')
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set
+  setter.call(ta, '我想穿到涩谷事变前一个月，还来得及做点什么的时候')
+  ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+  await new Promise((r) => setTimeout(r, 60))
+
+  const genBtn = [...custom.querySelectorAll('button')].find((b) => b.textContent.includes('按我的描述定位'))
+  assert.ok(genBtn && !genBtn.disabled, '找不到生成按钮或按钮被禁用')
+  click(genBtn)
+  await waitFor('依据你的描述定位', { timeout: 30000 })
+
+  const rt = dom.window.document.querySelector('.time-custom .custom-result').textContent
+  // 关键：日期是自定义的（不是锚点的 2018-08-20），进度却来自锚点
+  assert.match(rt, /2018-09-30/, `落地日期应当自定义，实际：${rt.slice(0, 60)}`)
+  assert.match(rt, /原作进度取自/, '没有标明进度取自哪里')
+  assert.match(rt, /涩谷前夜/, '没有显示锚点名称')
+  assert.match(rt, /京都姊妹校交流/, '没有列出继承的已发生节点')
+
+  // 采用它 → 进入游戏
+  click([...custom.querySelectorAll('button')].find((b) => b.textContent.includes('从这里开始')))
+  await new Promise((r) => setTimeout(r, 200))
+  assert.match(text(), /回战/, '没有进入主界面')
 })
 
 test('开局选卡界面也有用量表', async () => {

@@ -186,6 +186,134 @@ export function CustomCard({ kind, brief, setBrief, generated, onGenerate, onPic
   )
 }
 
+/** 自主定义穿越时间 */
+export function CustomTimeCard({ brief, setBrief, generated, onGenerate, onPick, busy }) {
+  return (
+    <div className="pcard custom time-custom">
+      <h2>自主定义</h2>
+      <div className="tech">自己指定穿越时机</div>
+      <div className="tech-eff">
+        写清你想穿到什么时候、想赶上或避开哪件事。
+      </div>
+
+      <textarea
+        className="custom-brief"
+        value={brief}
+        onChange={(e) => setBrief(e.target.value)}
+        placeholder="例如：我想穿到涩谷事变前一个月，还来得及做点什么的时候……"
+        rows={3}
+        disabled={busy}
+      />
+
+      <div className="custom-note">
+        日期可以自定义，但**原作进度与危险度**会继承自最接近的既有节点 ——
+        否则「哪些事件已经发生」就无从算起。生成时会告诉你锚定在哪。
+      </div>
+
+      {!generated && (
+        <button className="pick-btn" style={{ marginTop: 12 }} onClick={onGenerate} disabled={busy || brief.trim().length < 2}>
+          {busy ? '推演中…' : '按我的描述定位'}
+        </button>
+      )}
+
+      {generated && (
+        <>
+          <div className="divider" />
+          <div className="custom-result">
+            <div className="custom-result-h">依据你的描述定位</div>
+            <div className="tech" style={{ fontSize: 16, marginBottom: 2 }}>{generated.label}</div>
+            <div className="time-meta">
+              <span className="time-date">{generated.date}</span>
+              <span className="time-danger" data-lv={generated.danger}>
+                {'●'.repeat(generated.danger)}{'○'.repeat(Math.max(0, 5 - generated.danger))}
+                <em>{generated.dangerLabel}</em>
+              </span>
+            </div>
+            <div style={{ fontSize: 13, lineHeight: 1.75, marginTop: 8 }}>
+              <div>{generated.situation}</div>
+              <div style={{ marginTop: 7, color: 'var(--gold)' }}>▸ {generated.hook}</div>
+            </div>
+
+            {/* 必须说清进度是从哪来的 —— 否则玩家以为日期是新算的，进度却是继承的 */}
+            {generated.anchorLabel && (
+              <div className="custom-note" style={{ marginTop: 9 }}>
+                原作进度取自「{generated.anchorLabel}」：
+                {generated.nodesDone.length ? generated.nodesDone.join('、') : '一切都还没发生'}
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+            <button className="pick-btn" style={{ flex: 1 }} onClick={() => onPick('自定义')} disabled={busy}>
+              从这里开始
+            </button>
+            <button
+              className="pick-btn"
+              style={{ flex: '0 0 84px', borderColor: 'var(--line)', color: 'var(--ink-dim)' }}
+              onClick={onGenerate}
+              disabled={busy}
+            >
+              重掷
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** 穿越时间卡片：日期、那时在发生什么、危险度 */
+export function TimeCard({ p, onPick, busy }) {
+  const danger = '●'.repeat(p.danger) + '○'.repeat(Math.max(0, 5 - p.danger))
+  return (
+    <div className="pcard time">
+      <h2>穿越时间</h2>
+      <div className="tech">{p.label}</div>
+      <div className="tech-eff">{p.when}</div>
+
+      <div className="time-meta">
+        <span className="time-date">{p.date}</span>
+        <span className="time-danger" data-lv={p.danger} title={`危险度 ${p.danger} / 5`}>
+          {danger} <em>{p.dangerLabel}</em>
+        </span>
+      </div>
+
+      <div className="divider" />
+
+      <div style={{ fontSize: 13, lineHeight: 1.75 }}>
+        <div style={{ color: 'var(--ink-dim)', fontSize: 11.5, letterSpacing: '0.1em', marginBottom: 3 }}>那一刻</div>
+        <div>{p.situation}</div>
+      </div>
+
+      {p.nodesDone?.length > 0 ? (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ color: 'var(--ink-dim)', fontSize: 11.5, letterSpacing: '0.1em', marginBottom: 4 }}>
+            已经发生（不可更改）
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--ink-faint)', lineHeight: 1.7 }}>
+            {p.nodesDone.join(' · ')}
+          </div>
+        </div>
+      ) : (
+        <div style={{ marginTop: 10, fontSize: 11.5, color: 'var(--ok)' }}>
+          一切都还没开始 —— 你可以从头改写
+        </div>
+      )}
+
+      {p.hook && (
+        <div className="domain-box" style={{ marginTop: 10, borderColor: 'rgba(168,35,27,.25)', background: 'rgba(168,35,27,.04)' }}>
+          <div className="dn" style={{ color: 'var(--blood)', fontSize: 13 }}>局势</div>
+          <div>{p.hook}</div>
+        </div>
+      )}
+
+      <button className="pick-btn" style={{ marginTop: 14 }} onClick={() => onPick(p.id)} disabled={busy}>
+        从这里开始
+      </button>
+    </div>
+  )
+}
+
 export function IdentityCard({ p, onPick, busy }) {
   const rel = Object.entries(p.initialRelations || {}).filter(([, v]) => v !== 0)
   return (

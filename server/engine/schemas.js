@@ -147,6 +147,30 @@ export const submitTurn = {
   },
 }
 
+export const submitCustomTime = {
+  name: 'submit_custom_time',
+  description: '把玩家想要的穿越时机解析成一个合法时间点',
+  input_schema: {
+    type: 'object',
+    properties: {
+      anchorId: {
+        type: 'string',
+        enum: ['start', 'juvenile', 'sisters', 'shibuya-eve', 'shibuya', 'culling', 'final'],
+        description: '最接近的既有时间点。原作进度与危险度都继承自它，所以必须选最贴近玩家描述的那个。',
+      },
+      date: {
+        type: 'string',
+        description: '玩家实际落地日期，YYYY-MM-DD，必须落在 2018-06-05 ~ 2019-12-31 之间',
+      },
+      label: { type: 'string', description: '一行标题，如「2018年9月 · 涩谷前夜」' },
+      situation: { type: 'string', description: '那一刻正在发生什么（两三句）' },
+      hook: { type: 'string', description: '一句局势提示' },
+      note: { type: 'string', description: '一句话说明为什么落在这个时机' },
+    },
+    required: ['anchorId', 'date', 'label', 'situation', 'hook', 'note'],
+  },
+}
+
 export const submitOpeningScene = {
   name: 'submit_opening_scene',
   description: '提交开局情境',

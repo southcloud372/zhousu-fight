@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import * as api from './api.js'
-import { AttributeCard, IdentityCard, CustomCard } from './components/Cards.jsx'
+import { AttributeCard, IdentityCard, CustomCard, TimeCard, CustomTimeCard } from './components/Cards.jsx'
 import { NarrativeLog, ChoiceList, useTypewriter } from './components/Narrative.jsx'
 import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel } from './components/Panels.jsx'
 import { ActionBar } from './components/CombatPanel.jsx'
@@ -36,6 +36,8 @@ export default function App() {
   const [customBrief, setCustomBrief] = useState('')
   const [customAttr, setCustomAttr] = useState(null)
   const [customIdent, setCustomIdent] = useState(null)
+  const [timeProfiles, setTimeProfiles] = useState([])
+  const [customTime, setCustomTime] = useState(null)
   const [usage, setUsage] = useState(null) // 本局 token 用量与费用
 
   // 打字机：把成块到达的文字按节奏吐出来，而不是一块块往外蹦
@@ -98,6 +100,10 @@ export default function App() {
         } else if (r.phase === 'identity') {
           setIdentProfiles(r.identityProfiles || [])
           setPhase('identity')
+        } else if (r.phase === 'time') {
+          setTimeProfiles(r.timeProfiles || [])
+          setCustomBrief('')
+          setPhase('time')
         }
       } catch {
         // 会话已失效（存档被清过），安静地回到开始界面
@@ -106,6 +112,30 @@ export default function App() {
     })()
     return () => { cancelled = true }
   }, [takeUsage])
+
+
+  /**
+   * 遭遇战不再弹窗，而是在对话流里插一块询问，选项走底部那一栏。
+   * 第一次问「要不要打」（可以逃），选了迎战再问用哪种战斗模式。
+   */
+  const askCombatEnter = useCallback((pc) => {
+    setPending(pc || null)
+    if (!pc) return
+    setEntries((prev) => [...prev, {
+      kind: 'inquiry',
+      inquiry: {
+        tag: '遭遇',
+        title: pc.enemyGrade ? `${pc.enemyName}（${pc.enemyGrade}）` : pc.enemyName,
+        lines: [pc.reason || '', pc.enemyTechnique ? `对方术式：${pc.enemyTechnique}` : ''].filter(Boolean),
+        hint: '可以打，也可以试着甩掉它 —— 脱离不一定成功。',
+        tone: 'danger',
+      },
+    }])
+    setChoices([
+      { id: 'fight', label: '迎战', kind: 'combat-enter' },
+      { id: 'evade', label: '尝试脱离（按速度判定，可能失败）', kind: 'combat-evade' },
+    ])
+  }, [])
 
   // ---------------------------------------------------------- 开局
 
@@ -171,6 +201,40 @@ export default function App() {
     try {
       const res = await api.chooseIdentity(sessionId, slot)
       takeUsage(res.usage)
+      setTimeProfiles(res.times || [])
+      setCustomBrief('') // 换阶段了，清掉上一阶段的输入
+      setPhase('time')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [sessionId])
+
+  /** 自主定义穿越时间 */
+  const generateCustomT = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await api.customTime(sessionId, customBrief.trim())
+      takeUsage(r.usage)
+      setCustomTime(r.point)
+      // 把它并进候选列表，选定时就能按 id 找到
+      setTimeProfiles((prev) => [...prev.filter((t) => t.id !== '自定义'), r.point])
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [sessionId, customBrief, takeUsage])
+
+  /** 第三步：选定穿越时间 → 生成最终档案与开局情境 */
+  const pickTime = useCallback(async (id) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await api.chooseTime(sessionId, id)
+      takeUsage(res.usage)
       setEntries([{ kind: 'turn', turn: 1, narration: res.narration, dialogue: res.dialogue, notes: res.notes }])
       setChoices(res.choices || [])
       setPanel(res.panel)
@@ -181,7 +245,7 @@ export default function App() {
     } finally {
       setBusy(false)
     }
-  }, [sessionId])
+  }, [sessionId, takeUsage, askCombatEnter])
 
   /**
    * 走「自主定义」时档案已经存在服务端了，直接按 slot 选。
@@ -288,29 +352,6 @@ export default function App() {
     if (!cur) return
     livePanelRef.current = null
     setEntries((prev) => [...prev, { kind: 'combat', panel: cur.panel, narration: cur.narration }])
-  }, [])
-
-  /**
-   * 遭遇战不再弹窗，而是在对话流里插一块询问，选项走底部那一栏。
-   * 第一次问「要不要打」（可以逃），选了迎战再问用哪种战斗模式。
-   */
-  const askCombatEnter = useCallback((pc) => {
-    setPending(pc || null)
-    if (!pc) return
-    setEntries((prev) => [...prev, {
-      kind: 'inquiry',
-      inquiry: {
-        tag: '遭遇',
-        title: pc.enemyGrade ? `${pc.enemyName}（${pc.enemyGrade}）` : pc.enemyName,
-        lines: [pc.reason || '', pc.enemyTechnique ? `对方术式：${pc.enemyTechnique}` : ''].filter(Boolean),
-        hint: '可以打，也可以试着甩掉它 —— 脱离不一定成功。',
-        tone: 'danger',
-      },
-    }])
-    setChoices([
-      { id: 'fight', label: '迎战', kind: 'combat-enter' },
-      { id: 'evade', label: '尝试脱离（按速度判定，可能失败）', kind: 'combat-evade' },
-    ])
   }, [])
 
   const askCombatMode = useCallback(() => {
@@ -576,6 +617,41 @@ export default function App() {
             onClose={() => setShowSaves(false)}
           />
         )}
+      </div>
+    )
+  }
+
+  // 第三步：穿越时间
+  if (phase === 'time') {
+    return (
+      <div className="pick">
+        <div className="meter-fixed"><UsageMeter usage={usage} /></div>
+        <div className="pick-inner">
+          <h1>第三步 · 穿越时间</h1>
+          <div className="sub">
+            你在这个世界醒来的时刻 —— 决定哪些原作事件已成定局、哪些还来得及改变
+          </div>
+          <div className="cards">
+            {/* 自定义那份单独用 CustomTimeCard 渲染，不重复出卡 */}
+            {timeProfiles.filter((p) => p.id !== '自定义').map((p) => (
+              <TimeCard key={p.id} p={p} onPick={pickTime} busy={busy} />
+            ))}
+            <CustomTimeCard
+              brief={customBrief}
+              setBrief={setCustomBrief}
+              generated={customTime}
+              onGenerate={generateCustomT}
+              onPick={pickTime}
+              busy={busy}
+            />
+          </div>
+          {busy && (
+            <div className="loading">
+              <div className="spinner" />
+              正在生成开局情境…
+            </div>
+          )}
+        </div>
       </div>
     )
   }

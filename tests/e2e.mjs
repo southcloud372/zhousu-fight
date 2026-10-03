@@ -49,9 +49,22 @@ ok('含自由派', identities.some(i=>i.kind==='自由派'))
 ok('每份都有钩子', identities.every(i=>i.hook && i.hook.length > 8))
 console.log('   ' + identities.map(i=>`${i.slot}:${i.name}(${i.kind})`).join('  '))
 
-hdr('3. 开局 · 最终档案与开局情境')
-const open = await post(`/api/session/${sessionId}/choose-identity`, { slot: identities[0].slot })
+hdr('3. 开局 · 穿越时间')
+const timeRes = await post(`/api/session/${sessionId}/choose-identity`, { slot: identities[0].slot })
+ok('选出三份穿越时间', timeRes.times?.length === 3, timeRes.times?.map(t=>t.id).join(', '))
+ok('保底含最开篇', timeRes.times?.some(t=>t.id === 'start'), '必须永远能选到 2018年6月')
+ok('每份都有日期与处境', timeRes.times?.every(t=>t.date && t.situation && t.danger))
+ok('按时间先后排序', (() => {
+  const d = (timeRes.times||[]).map(t=>t.date)
+  return d.every((v,i) => i===0 || d[i-1] <= v)
+})())
+console.log('   ' + timeRes.times.map(t=>`${t.date} ${t.label.split('·')[1]?.trim()||''}`).join('  |  '))
+
+hdr('4. 开局 · 最终档案与开局情境')
+const open = await post(`/api/session/${sessionId}/choose-time`, { id: 'start' })
 ok('返回角色面板', !!open.panel?.name)
+ok('起始日期跟随所选时间点', open.panel?.time?.date === '2018-06-05', open.panel?.time?.date)
+ok('时间线节点按时间点预置', open.panel?.timeline?.nodes?.['涩谷事变'] === '未发生', '选最开篇时涩谷事变不该已发生')
 ok('开局直接切入冲突', (open.narration||'').length > 100, `${(open.narration||'').length} 字`)
 ok('给出选项', open.choices.length >= 4)
 ok('末项为"跳过当天修炼"', open.choices.at(-1).kind === 'training')
@@ -59,7 +72,7 @@ ok('选项均为可渲染对象', open.choices.every(c=>c.id && c.label && c.kin
 open.dialogue.forEach(d => { if (TIER_WORDS.some(w=>d.text.includes(w))) dialogueLeaks.push(`开局 ${d.speaker}: ${d.text}`) })
 console.log(`   角色 ${open.panel.name} ${open.panel.grade} | HP ${open.panel.hp.max} | 咒力 ${open.panel.ce.max}`)
 
-hdr('4. 主循环 · 推流')
+hdr('5. 主循环 · 推流')
 let turnDone = null, narr = '', firstAt = null
 const t1 = Date.now()
 await sse(`/api/session/${sessionId}/turn`, { input: open.choices[0].label }, {
@@ -73,7 +86,7 @@ ok('返回选项', turnDone.choices?.length >= 4)
 ok('返回面板快照', !!turnDone.panel?.hp)
 turnDone.dialogue?.forEach(d => { if (TIER_WORDS.some(w=>d.text.includes(w))) dialogueLeaks.push(`回合 ${d.speaker}: ${d.text}`) })
 
-hdr('5. 战斗 · 手动模式')
+hdr('6. 战斗 · 手动模式')
 let pending = turnDone.combat || open.combat
 // 模型不保证两回合内一定开打，多试几次
 for (let attempt = 0; !pending && attempt < 5; attempt++) {
@@ -122,7 +135,7 @@ if (pending) {
   ok('战后咒力未越界', fin.panel.ce.cur >= 0 && fin.panel.ce.cur <= fin.panel.ce.max)
 }
 
-hdr('6. 存档槽位')
+hdr('7. 存档槽位')
 const sv = await post(`/api/session/${sessionId}/save`, { name: '自检存档' })
 const list = await (await fetch(B+'/api/saves')).json()
 ok('保存成功', list.saves.some(s=>s.id===sv.id))
@@ -135,12 +148,12 @@ await fetch(`${B}/api/saves/${sv.id}`, { method:'DELETE' })
 const after = await (await fetch(B+'/api/saves')).json()
 ok('删除生效', !after.saves.some(s=>s.id===sv.id))
 
-hdr('7. 巡查：设定一致性')
+hdr('8. 巡查：设定一致性')
 ok('敌人不是越界的原作角色', !enemyNames.some(n => ['虎杖悠仁','伏黑惠','钉崎野蔷薇','五条悟','七海建人','禅院真希','狗卷棘','熊猫','夜蛾正道'].some(w => n.includes(w))), enemyNames.join(',')||'无')
 ok('NPC 台词无特级细分泄漏', dialogueLeaks.length === 0,
    dialogueLeaks.length ? `${dialogueLeaks.length} 处：${dialogueLeaks[0]}` : '（引擎后处理生效）')
 
-hdr('8. 巡查：非法输入')
+hdr('9. 巡查：非法输入')
 const r1 = await fetch(`${B}/api/session/${sessionId}/turn`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input:''})})
 ok('空输入被拒', r1.status === 400)
 const r2 = await fetch(`${B}/api/session/不存在的会话/state`)

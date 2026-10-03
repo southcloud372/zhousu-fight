@@ -229,12 +229,34 @@ async function main() {
     kinds.includes('反派向') && kinds.includes('自由派') ? '反派向 / 自由派各有一份（符合第十节）' : `身份类型不全：${kinds.join('、')}`)
 
   click(findBtn('选择身份 甲'), '选择身份')
+  await waitFor('第三步 · 穿越时间', { timeout: 60000, label: '穿越时间选择' })
+
+  // ---------------------------------------------------------- 穿越时间
+
+  step(4, '穿越时间')
+  const timeCards = [...dom.window.document.querySelectorAll('.pcard.time')]
+  note(timeCards.length === 3 ? 'ok' : 'bad', `${timeCards.length} 份穿越时间可选`)
+  const timeIds = timeCards.map((c) => c.querySelector('.time-date')?.textContent || '?')
+  const hasStart = timeIds.some((d) => d === '2018-06-05')
+  note(hasStart ? 'ok' : 'bad', hasStart ? '保底含最开篇（2018-06-05）' : `没有最开篇：${timeIds.join(' / ')}`)
+  timeCards.forEach((c) => {
+    const label = c.querySelector('.tech')?.textContent?.trim() || '?'
+    const date = c.querySelector('.time-date')?.textContent || '?'
+    const danger = c.querySelector('.time-danger em')?.textContent || '?'
+    info(`${date}　${C.mag(label)}　危险度 ${danger}`)
+  })
+  // 日期应当按先后排序
+  const sorted = [...timeIds].sort()
+  note(JSON.stringify(timeIds) === JSON.stringify(sorted) ? 'ok' : 'bad',
+    JSON.stringify(timeIds) === JSON.stringify(sorted) ? '按时间先后排序' : `未排序：${timeIds.join(' / ')}`)
+
+  click(findBtn('从这里开始'), '穿越时间')
   await waitFor('穿越者|实时|存档', { timeout: 150000, label: '开局情境生成' })
   await waitIdle()
 
   // ---------------------------------------------------------- 开局情境
 
-  step(4, '开局情境')
+  step(5, '开局情境')
   const opening = [...dom.window.document.querySelectorAll('.narr')].map((n) => n.textContent).join('\n')
   console.log(wrap(opening.slice(0, 700)))
   const dlg = [...dom.window.document.querySelectorAll('.line')].map((l) => {
@@ -261,7 +283,7 @@ async function main() {
 
   // ---------------------------------------------------------- 主循环
 
-  step(5, '主循环 · 连打三回合')
+  step(6, '主循环 · 连打三回合')
   for (let t = 1; t <= 3; t++) {
     // 若出现遭遇询问，转入战斗流程
     if (hasCombatInquiry()) {
@@ -289,7 +311,7 @@ async function main() {
   // ---------------------------------------------------------- 战斗
 
   if (hasCombatInquiry()) {
-    step(6, '遭遇战 · 询问 → 手动模式')
+    step(7, '遭遇战 · 询问 → 手动模式')
 
     // ① 先问要不要打
     assert_no_overlay('遭遇战不该是弹窗，应当在对话流里')
@@ -369,7 +391,7 @@ async function main() {
 
   // ---------------------------------------------------------- 修炼
 
-  step(7, '跳过当天 · 修炼')
+  step(8, '跳过当天 · 修炼')
   const trainBtn = findBtn('跳过当天，进行修炼')
   if (trainBtn && !trainBtn.disabled) {
     click(trainBtn, '修炼')
@@ -401,7 +423,7 @@ async function main() {
 
   // ---------------------------------------------------------- 存档
 
-  step(8, '存档 / 读档')
+  step(9, '存档 / 读档')
   await waitIdle()
   click(findBtn('存档'), '存档')
   await waitFor('还没有任何存档|读取', { timeout: 30000 })
@@ -430,7 +452,7 @@ async function main() {
 
   // ---------------------------------------------------------- 用量表
 
-  step(9, '左上角用量表')
+  step(10, '左上角用量表')
   const meter = dom.window.document.querySelector('.usage')
   if (!meter) {
     note('bad', '左上角没有用量表')
@@ -468,7 +490,7 @@ async function main() {
 
   // ---------------------------------------------------------- 界面完整性
 
-  step(10, '界面完整性巡查')
+  step(11, '界面完整性巡查')
   const t = txt()
   for (const [label, kw] of [['角色面板', '穿越者'], ['关系网', '关系网'], ['手指追踪', '宿傩手指追踪'], ['时间线', '原作分歧追踪']]) {
     note(t.includes(kw) ? 'ok' : 'bad', `${label}${t.includes(kw) ? '已渲染' : '缺失'}`)

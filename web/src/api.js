@@ -20,6 +20,11 @@ export const chooseAttributes = (id, slot) =>
   req(`/api/session/${id}/choose-attributes`, { method: 'POST', headers: J, body: JSON.stringify({ slot }) })
 export const chooseIdentity = (id, slot) =>
   req(`/api/session/${id}/choose-identity`, { method: 'POST', headers: J, body: JSON.stringify({ slot }) })
+export const customTime = (id, brief) =>
+  req(`/api/session/${id}/time/custom`, { method: 'POST', headers: J, body: JSON.stringify({ brief }) })
+export const chooseTime = (id, pointId) =>
+  req(`/api/session/${id}/choose-time`, { method: 'POST', headers: J, body: JSON.stringify({ id: pointId }) })
+
 export const getState = (id) => req(`/api/session/${id}/state`)
 export const train = (id, item) =>
   req(`/api/session/${id}/train`, { method: 'POST', headers: J, body: JSON.stringify({ item }) })
