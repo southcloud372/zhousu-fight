@@ -166,8 +166,20 @@ async function main() {
   note(startText.includes('回战') ? 'ok' : 'bad', startText.includes('回战') ? '开始界面正常渲染' : '开始界面没渲染出来')
   note(findBtn('开始生成') ? 'ok' : 'bad', findBtn('开始生成') ? '有「开始生成」按钮' : '缺少开始按钮')
 
-  const t0 = Date.now()
   click(findBtn('开始生成'), '开始生成')
+  await waitFor('选择故事线', { timeout: 60000, label: '故事线列表' })
+
+  const storyCards = [...dom.window.document.querySelectorAll('.pcard.story')]
+  note(storyCards.length === 2 ? 'ok' : 'bad', `${storyCards.length} 条故事线可选`)
+  storyCards.forEach((c) => {
+    const name = c.querySelector('.tech')?.textContent?.trim() || '?'
+    const date = (c.textContent.match(/\d{4}-\d{2}-\d{2}/) || [])[0] || '?'
+    const cast = [...c.querySelectorAll('.tag')].map((t) => t.textContent).join('、')
+    info(`${C.mag(name)}　起始 ${date}　${cast}`)
+  })
+
+  const t0 = Date.now()
+  click(findBtn('进入这条线'), '故事线')
   await waitFor('第一步 · 属性', { timeout: 120000, label: '属性档案生成' })
   info(`属性档案生成耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`)
 

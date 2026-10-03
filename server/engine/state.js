@@ -2,6 +2,8 @@ import { hpStatus } from './formula.js'
 import { sukunaAttitude, npcAttitude } from './visibility.js'
 import { DOMAIN_TIER } from './tables.js'
 import { emptyUsage } from '../pricing.js'
+import { DEFAULT_STORYLINE, storylineOf } from './storylines.js'
+import { initialNodes } from './timeline.js'
 
 export const GAME_START_DATE = '2018-06-05'
 
@@ -11,9 +13,11 @@ export const DOMAIN_COST_RATIO = 0.08
 
 const TRAINING_ITEMS = ['体能训练', '咒力冥想', '术式演练', '反转术式修习', '领域雏形冥想', '体术实战']
 
-export function blankState(rng) {
+export function blankState(rng, storylineId = DEFAULT_STORYLINE) {
+  const line = storylineOf(storylineId)
   return {
     version: 1,
+    storyline: line.id,
     seed: Math.floor(rng() * 1e9),
     phase: 'attributes', // attributes → identities → playing
     attributeProfiles: [],
@@ -24,13 +28,11 @@ export function blankState(rng) {
     relations: {},
     sukuna: { fingersCollected: 1, fingersEaten: 1, awakening: 5, attitude: '无视' },
     timeline: {
-      nodes: {
-        虎杖吞手指: '已发生', 死刑缓期: '未发生', 高专入学: '未发生', 少年院任务: '未发生',
-        宿傩夺舍: '未发生', 京都姊妹校交流: '未发生', 涩谷事变: '未发生', 死灭回游: '未发生', 最终决战: '未发生',
-      },
+      // 节点表按故事线生成 —— 宿傩篇和怀玉篇的原作节点完全不同
+      nodes: initialNodes(line.id),
       changed: [], deaths: [], newEvents: [],
     },
-    time: { date: GAME_START_DATE, day: 1, skipStreak: 0 },
+    time: { date: line.startDate, day: 1, skipStreak: 0 },
     log: [],       // 界面渲染用
     history: [],   // 喂给模型的对话历史
     chronicle: '', // 更早剧情的压缩摘要
@@ -176,7 +178,11 @@ export function modelStateView(state) {
       .map(([k, v]) => [k, { 数值: v, 表现出的态度: npcAttitude(v) }]),
   )
 
+  const line = storylineOf(state.storyline)
   return {
+    故事线: `${line.name}（${line.era}）`,
+    本线登场角色: line.characters,
+    本线原作节点: line.nodes,
     日期: state.time.date,
     第几天: state.time.day,
     连续跳过天数: state.time.skipStreak,

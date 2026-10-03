@@ -186,6 +186,46 @@ export function CustomCard({ kind, brief, setBrief, generated, onGenerate, onPic
   )
 }
 
+/** 故事线选择：开局第一屏 */
+export function StorylineCard({ s, onPick, busy }) {
+  return (
+    <div className={`pcard story ${s.accent || ''}`}>
+      <h2>{s.subtitle}</h2>
+      <div className="tech">{s.name}</div>
+      <div className="tech-eff">{s.tagline}</div>
+
+      <div className="divider" />
+
+      <div style={{ fontSize: 13, lineHeight: 1.8 }}>{s.desc}</div>
+
+      <div className="story-meta">
+        <div>
+          <span className="story-k">起始</span>
+          <span className="story-v">{s.startDate}</span>
+        </div>
+        <div>
+          <span className="story-k">原作节点</span>
+          <span className="story-v">{s.nodeCount} 个</span>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        <div style={{ color: 'var(--ink-dim)', fontSize: 11.5, letterSpacing: '0.1em', marginBottom: 4 }}>
+          登场角色
+        </div>
+        <div>
+          {(s.characters || []).map((c) => <span key={c} className="tag">{c}</span>)}
+          {s.nodeCount > 0 && s.characters?.length === 6 && <span className="tag">…</span>}
+        </div>
+      </div>
+
+      <button className="pick-btn" style={{ marginTop: 14 }} onClick={() => onPick(s.id)} disabled={busy}>
+        进入这条线
+      </button>
+    </div>
+  )
+}
+
 /** 自主定义穿越时间 */
 export function CustomTimeCard({ brief, setBrief, generated, onGenerate, onPick, busy }) {
   return (

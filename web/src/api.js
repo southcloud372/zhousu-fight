@@ -10,6 +10,10 @@ async function req(url, opts = {}) {
 }
 
 export const newSession = () => req('/api/session', { method: 'POST' })
+export const listStorylines = () => req('/api/storylines')
+export const chooseStoryline = (id, sid) =>
+  req(`/api/session/${id}/choose-storyline`, { method: 'POST', headers: J, body: JSON.stringify({ id: sid }) })
+
 export const genAttributes = (id) => req(`/api/session/${id}/attributes`, { method: 'POST' })
 export const customAttribute = (id, brief) =>
   req(`/api/session/${id}/attributes/custom`, { method: 'POST', headers: J, body: JSON.stringify({ brief }) })

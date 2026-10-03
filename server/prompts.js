@@ -152,8 +152,10 @@ ${custom}
 }
 
 /** 自主定义穿越时间：把玩家的描述解析成合法时间点 */
-export function customTimePrompt(brief, points) {
-  return `玩家想自己指定穿越时机。他的话是：
+export function customTimePrompt(brief, points, line) {
+  return `当前故事线：${line ? `${line.name}（${line.era}）` : '宿傩篇'}
+
+玩家想自己指定穿越时机。他的话是：
 
 > ${brief}
 

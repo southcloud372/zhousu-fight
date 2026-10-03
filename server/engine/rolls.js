@@ -4,6 +4,8 @@ import {
 } from './tables.js'
 import { rint, pickByProb, weightedPick, rfloat } from './dice.js'
 import { defenseOf } from './formula.js'
+import { charactersFor } from './timeline.js'
+import { DEFAULT_STORYLINE } from './storylines.js'
 
 /** 领域每回合维持消耗 = 咒力上限的比例，与 state.js 保持一致 */
 const DOMAIN_COST_RATIO = 0.08
@@ -94,30 +96,46 @@ export function rollIdentityKind(rng, index) {
 }
 
 /** 关系初值由身份类型决定，模型不参与 */
-export function rollInitialRelations(rng, kind) {
-  const rel = { 虎杖悠仁: 0, 伏黑惠: 0, 钉崎野蔷薇: 0, 五条悟: 0, 七海建人: 0, 宿傩: 0, 禅院真希: 0, 狗卷棘: 0, 熊猫: 0, 夜蛾正道: 0 }
+/**
+ * 关系初值。名单按故事线取 —— 怀玉篇里没有虎杖、钉崎，
+ * 硬套宿傩篇的名单会生成一堆"对这个 2006 年还不存在的人有好感"。
+ */
+export function rollInitialRelations(rng, kind, storylineId = DEFAULT_STORYLINE) {
+  const rel = {}
+  for (const name of charactersFor(storylineId)) rel[name] = 0
+
+  const pick = (names) => names.filter((n) => n in rel)
+  const bump = (name, lo, hi) => { if (name in rel) rel[name] = rint(rng, lo, hi) }
+
   if (kind === '原作关联') {
-    rel.虎杖悠仁 = rint(rng, 5, 15)
-    rel.五条悟 = rint(rng, 0, 10)
-    rel.伏黑惠 = rint(rng, 0, 8)
+    // 各线的"主角位"不同：宿傩篇是虎杖，怀玉篇是五条与夏油
+    if (storylineId === 'kaigyoku') {
+      bump('五条悟', 5, 15); bump('夏油杰', 3, 12); bump('家入硝子', 0, 8)
+    } else {
+      bump('虎杖悠仁', 5, 15); bump('五条悟', 0, 10); bump('伏黑惠', 0, 8)
+    }
   } else if (kind === '反派向') {
-    rel.宿傩 = rint(rng, 0, 12)
-    rel.五条悟 = -rint(rng, 0, 10)
-    rel.夜蛾正道 = -rint(rng, 0, 5)
+    if (storylineId === 'kaigyoku') {
+      // 2006 年的"反派侧"是诅咒师与盘星教，不是宿傩
+      bump('伏黑甚尔', 0, 12); bump('五条悟', -rint(rng, 0, 10), -1); bump('夜蛾正道', -rint(rng, 0, 5), -1)
+    } else {
+      bump('宿傩', 0, 12); bump('五条悟', -rint(rng, 0, 10), -1); bump('夜蛾正道', -rint(rng, 0, 5), -1)
+    }
   } else {
-    rel.宿傩 = rint(rng, -5, 5)
-    rel.五条悟 = rint(rng, -5, 5)
+    for (const n of pick(storylineId === 'kaigyoku' ? ['五条悟', '夏油杰'] : ['宿傩', '五条悟'])) {
+      rel[n] = rint(rng, -5, 5)
+    }
   }
   return rel
 }
 
-export function rollIdentity(rng, slot, kind) {
+export function rollIdentity(rng, slot, kind, storylineId = DEFAULT_STORYLINE) {
   return {
     slot,
     kind,
     age: rint(rng, 16, 18),
     backgroundTemplate: pickByProb(rng, BACKGROUNDS[kind].map((b) => ({ value: b, p: 1 / BACKGROUNDS[kind].length }))),
-    initialRelations: rollInitialRelations(rng, kind),
+    initialRelations: rollInitialRelations(rng, kind, storylineId),
   }
 }
 

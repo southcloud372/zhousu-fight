@@ -9,7 +9,8 @@ import {
   submitAttributeFlavor, submitIdentityFlavor, submitOpeningScene, submitCustomTime,
 } from './schemas.js'
 import { buildPlayer, GAME_START_DATE } from './state.js'
-import { TIME_POINTS, NODE_ORDER, applyTimeline, byId } from './timeline.js'
+import { pointsFor, nodesFor, applyTimeline, byId, firstPoint } from './timeline.js'
+import { storylineOf, DEFAULT_STORYLINE } from './storylines.js'
 import { npcAttitude } from './visibility.js'
 
 const baseSystem = () =>
@@ -158,8 +159,8 @@ export async function generateCustomAttribute(rng, brief, { onUsage } = {}) {
 }
 
 /** 第二步：引擎定身份骨架 → 模型补创意字段 */
-export async function generateIdentityProfiles(rng, { onUsage } = {}) {
-  const rolled = [0, 1, 2].map((i) => rollIdentity(rng, ['甲', '乙', '丙'][i], rollIdentityKind(rng, i)))
+export async function generateIdentityProfiles(rng, { onUsage, storyline = DEFAULT_STORYLINE } = {}) {
+  const rolled = [0, 1, 2].map((i) => rollIdentity(rng, ['甲', '乙', '丙'][i], rollIdentityKind(rng, i), storyline))
   const input = await callWithRetry({
     system: baseSystem(),
     messages: [{ role: 'user', content: identityFlavorPrompt(rolled) }],
@@ -191,9 +192,9 @@ export async function generateIdentityProfiles(rng, { onUsage } = {}) {
  * 所以不能让预设的随机类型卡住玩家的设定 —— 让模型按描述判定，
  * 引擎再按它选的类型重掷关系。
  */
-export async function generateCustomIdentity(rng, brief, { onUsage } = {}) {
+export async function generateCustomIdentity(rng, brief, { onUsage, storyline = DEFAULT_STORYLINE } = {}) {
   // 骨架给一份随机的，模型可以完全改写；kind 由模型按玩家描述重新判定
-  const skeleton = rollIdentity(rng, '自定义', rollIdentityKind(rng, 2))
+  const skeleton = rollIdentity(rng, '自定义', rollIdentityKind(rng, 2), storyline)
   const input = await callWithRetry({
     system: baseSystem(),
     messages: [{ role: 'user', content: identityFlavorPrompt([skeleton], { brief, allowKindChoice: true }) }],
@@ -216,7 +217,7 @@ export async function generateCustomIdentity(rng, brief, { onUsage } = {}) {
     kind,
     age: skeleton.age,
     // 换了类型就按新类型重掷关系值，别让预设类型的关系残留
-    initialRelations: rollInitialRelations(rng, kind),
+    initialRelations: rollInitialRelations(rng, kind, storyline),
     name: f.name || '无名',
     background: f.background || brief,
     mainlineRelation: f.mainlineRelation || '',
@@ -231,8 +232,8 @@ export async function generateCustomIdentity(rng, brief, { onUsage } = {}) {
  * 保底有一份是最开篇（2018年6月·宿傩手指）—— 那是"从零开始"的基准线，
  * 任何时候都得能选到它。另两份从其余时点里随机。
  */
-export function rollTimeProfiles(rng) {
-  const [first, ...rest] = TIME_POINTS
+export function rollTimeProfiles(rng, storyline = DEFAULT_STORYLINE) {
+  const [first, ...rest] = pointsFor(storyline)
   const picked = []
   const pool = [...rest]
   while (picked.length < 2 && pool.length) {
@@ -249,10 +250,10 @@ export function rollTimeProfiles(rng) {
  * 否则"哪些事件已经发生"就无从算起，整个时间线追踪器会失真。
  * 所以模型同时给出 date（玩家的实际落点）和 anchorId（决定进度与危险度）。
  */
-export async function generateCustomTime(brief, { onUsage } = {}) {
+export async function generateCustomTime(brief, { onUsage, storyline = DEFAULT_STORYLINE } = {}) {
   const { input, usage } = await callTool({
     system: baseSystem(),
-    messages: [{ role: 'user', content: customTimePrompt(brief, TIME_POINTS) }],
+    messages: [{ role: 'user', content: customTimePrompt(brief, pointsFor(storyline), storylineOf(storyline)) }],
     tool: submitCustomTime,
     model: models.pro,
     maxTokens: 1200,
@@ -260,13 +261,14 @@ export async function generateCustomTime(brief, { onUsage } = {}) {
   onUsage?.(usage)
 
   // 锚点必须合法，否则退回最开篇 —— 宁可保守也不能让进度状态悬空
-  const anchor = byId(input.anchorId) || TIME_POINTS[0]
+  const anchor = byId(input.anchorId, storyline) || firstPoint(storyline)
+  const r = storylineOf(storyline).dateRange
 
   // 日期做范围校验：模型偶尔会算出 2017 或 2020 这种越界值
   let date = String(input.date || '').trim()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))) {
     date = anchor.date
-  } else if (date < '2018-06-05' || date > '2019-12-31') {
+  } else if (date < r[0] || date > r[1]) {
     date = anchor.date
   }
 
@@ -310,7 +312,14 @@ export async function buildCharacterAndOpening(state, attrProfile, identityProfi
     messages: [
       {
         role: 'user',
-        content: `穿越者最终档案已确定：
+        content: `## 故事线
+
+**${storylineOf(state.storyline).name}**（${storylineOf(state.storyline).era}）—— ${storylineOf(state.storyline).tagline}
+
+这条线里会出场的角色：${storylineOf(state.storyline).characters.join('、')}
+**开局情境里出现的人物必须是这个名单里的人。** 别的时代的人此刻还不存在，或者根本不在场。
+
+## 穿越者最终档案已确定：
 
 姓名：${player.name}　年龄：${player.age}
 背景类型：${player.backgroundType}
@@ -329,7 +338,7 @@ NPC 当前对他的态度（NPC 只知道态度，不知道好感度数值）：
 ${JSON.stringify(relationsForModel, null, 2)}
 
 穿越时间：${timePoint ? `${timePoint.label}（${timePoint.date}）` : GAME_START_DATE}
-${timePoint ? `此时此刻：${timePoint.when}。${timePoint.situation}\n已经发生：${timePoint.nodesDone.length ? timePoint.nodesDone.join('、') : '（什么都没有，一切尚未开始）'}\n尚未发生：${NODE_ORDER.filter((n) => !timePoint.nodesDone.includes(n)).join('、')}` : '虎杖悠仁即将（或刚刚）吞下第一根宿傩手指。'}
+${timePoint ? `此时此刻：${timePoint.when}。${timePoint.situation}\n已经发生：${timePoint.nodesDone.length ? timePoint.nodesDone.join('、') : '（什么都没有，一切尚未开始）'}\n尚未发生：${nodesFor(state.storyline).filter((n) => !timePoint.nodesDone.includes(n)).join('、')}` : '虎杖悠仁即将（或刚刚）吞下第一根宿傩手指。'}
 
 **开局情境必须贴合这个时间点。** 已经发生的事是不可更改的既定事实，
 玩家醒来时那些事已经过去了；还没发生的事可以被他改变。

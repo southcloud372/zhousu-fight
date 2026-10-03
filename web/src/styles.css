@@ -601,6 +601,33 @@ body::before {
 }
 .pcard .pick-btn:hover { background: var(--blood); color: #fff; }
 
+/* 故事线卡片 */
+.pcard.story { padding: 20px; }
+.pcard.story.blood { border-top: 3px solid var(--blood); }
+.pcard.story.tier { border-top: 3px solid var(--tier); }
+.pcard.story.blood:hover { border-color: var(--blood); }
+.pcard.story.tier:hover { border-color: var(--tier); }
+.pcard.story.blood h2 { color: var(--blood); }
+.pcard.story.tier h2 { color: var(--tier); }
+.pcard.story .tech { font-size: 19px; }
+
+.story-meta {
+  display: flex;
+  gap: 22px;
+  margin-top: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+.story-k {
+  display: block;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+  margin-bottom: 2px;
+}
+.story-v { font-family: var(--font-narr); font-size: 14px; color: var(--ink); }
+
 /* 穿越时间卡片 */
 .pcard.time { border-color: var(--gold); }
 .pcard.time:hover { border-color: var(--gold); }

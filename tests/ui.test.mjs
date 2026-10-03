@@ -112,7 +112,21 @@ function makeFetchStub(log) {
 
     if (u.endsWith('/api/saves')) return json({ saves: [] })
     if (u.includes('/api/health')) return json({ ok: true })
-    if (u.endsWith('/api/session') && method === 'POST') return json({ sessionId: 'ui-test', phase: 'attributes' })
+    if (u.endsWith('/api/session') && method === 'POST') return json({ sessionId: 'ui-test', phase: 'storyline' })
+    // ---- 故事线 ----
+    if (u.endsWith('/api/storylines')) {
+      return json({ storylines: [
+        { id: 'sukuna', name: '宿傩篇', subtitle: '2018 · 诅咒之王', era: '2018 — 2019',
+          tagline: '虎杖悠仁吞下第一根宿傩手指之后', desc: '你是穿越者，落到一个已经很糟的局里。',
+          startDate: '2018-06-05', accent: 'blood', nodeCount: 10,
+          characters: ['虎杖悠仁', '伏黑惠', '钉崎野蔷薇', '五条悟', '七海建人', '宿傩'] },
+        { id: 'kaigyoku', name: '怀玉篇', subtitle: '2006 · 最强二人', era: '2006 — 2007',
+          tagline: '五条悟与夏油杰还是高专二年级的时候', desc: '天内理子将被交给天元。',
+          startDate: '2006-06-01', accent: 'tier', nodeCount: 8,
+          characters: ['五条悟', '夏油杰', '家入硝子', '天内理子', '伏黑甚尔', '七海建人'] },
+      ] })
+    }
+    if (u.includes('/choose-storyline')) return json({ usage: usageFixture, storyline: 'sukuna', startDate: '2018-06-05' })
 
     // ---- 主循环：返回一场待结算的遭遇战，用来驱动战斗 UI ----
     if (u.endsWith('/turn')) {
@@ -434,8 +448,7 @@ test('开始界面能点开存档面板（没有会话时不给保存）', async
 test('走完开局三选一不崩，且能进入主界面', async () => {
   await mount()
 
-  click(findButton('开始生成'))
-  await new Promise((r) => setTimeout(r, 80))
+  await gotoAttributes()
   assert.match(text(), /第一步 · 属性/, '没有进入属性选择')
 
   click(findButton('选择档案 A'))
@@ -452,10 +465,34 @@ test('走完开局三选一不崩，且能进入主界面', async () => {
   assert.ok(findButton('存档'), '主界面缺少存档按钮')
 })
 
-test('穿越时间：三选一，保底含最开篇，按时间排序', async () => {
+test('开局第一屏是故事线选择，两条线各有自己的年代与阵容', async () => {
   await mount()
   click(findButton('开始生成'), '开始生成')
+  await waitFor('选择故事线', { timeout: 60000 })
+
+  const cards = [...dom.window.document.querySelectorAll('.pcard.story')]
+  assert.equal(cards.length, 2, `应有两条故事线，实际 ${cards.length}`)
+
+  const sukuna = cards.find((c) => c.textContent.includes('宿傩篇'))
+  const kaigyoku = cards.find((c) => c.textContent.includes('怀玉篇'))
+  assert.ok(sukuna && kaigyoku, '缺少某条故事线')
+
+  // 年份、起始日期、阵容必须各自独立
+  assert.match(sukuna.textContent, /2018-06-05/, '宿傩篇起始日期不对')
+  assert.match(kaigyoku.textContent, /2006-06-01/, '怀玉篇起始日期不对')
+  assert.match(sukuna.textContent, /虎杖悠仁/, '宿傩篇阵容里没有虎杖')
+  assert.match(kaigyoku.textContent, /夏油杰/, '怀玉篇阵容里没有夏油')
+  assert.ok(!/虎杖悠仁/.test(kaigyoku.textContent), '怀玉篇不该出现虎杖 —— 2006 年他还没出生')
+
+  // 选定后才掷属性
+  assert.ok(!dom.window.document.querySelector('.choices'), '这时不该有游戏界面')
+  click([...sukuna.querySelectorAll('button')].find((b) => b.textContent.includes('进入这条线')))
   await waitFor('第一步 · 属性', { timeout: 60000 })
+})
+
+test('穿越时间：三选一，保底含最开篇，按时间排序', async () => {
+  await mount()
+  await gotoAttributes()
   click(findButton('选择档案 A'))
   await waitFor('第二步 · 身份', { timeout: 60000 })
   click(findButton('选择身份 甲'))
@@ -489,6 +526,14 @@ test('刷新续接：localStorage 里有会话时自动回到游戏', async () =
   assert.match(text(), /2018-06-05/, '没有恢复游戏内日期')
 })
 
+/** 走完故事线选择，停在属性页 */
+async function gotoAttributes() {
+  click(findButton('开始生成'), '开始生成')
+  await waitFor('选择故事线', { timeout: 60000 })
+  click(findButton('进入这条线'), '进入这条线')
+  await waitFor('第一步 · 属性', { timeout: 60000 })
+}
+
 /** 把界面推进到"主循环可操作"的状态 */
 async function enterGame() {
   await mount((win) => win.localStorage.setItem('sunuo:session', 'ui-test'))
@@ -516,8 +561,7 @@ test('开始界面就要能看到用量表（不是只有游戏内才有）', as
 
 test('开局属性页有「自主定义」第四项，能生成并采用', async () => {
   await mount()
-  click(findButton('开始生成'), '开始生成')
-  await waitFor('第一步 · 属性', { timeout: 60000 })
+  await gotoAttributes()
 
   // 四张卡：A / B / C / 自主定义
   const cards = [...dom.window.document.querySelectorAll('.pcard')]
@@ -558,8 +602,7 @@ test('开局属性页有「自主定义」第四项，能生成并采用', async
 
 test('开局身份页也有「自主定义」，模型判定类型后重掷关系', async () => {
   await mount()
-  click(findButton('开始生成'), '开始生成')
-  await waitFor('第一步 · 属性', { timeout: 60000 })
+  await gotoAttributes()
   click(findButton('选择档案 A'))
   await waitFor('第二步 · 身份', { timeout: 60000 })
 
@@ -584,8 +627,7 @@ test('开局身份页也有「自主定义」，模型判定类型后重掷关�
 
 test('穿越时间也有「自主定义」：日期自定义、进度继承锚点', async () => {
   await mount()
-  click(findButton('开始生成'), '开始生成')
-  await waitFor('第一步 · 属性', { timeout: 60000 })
+  await gotoAttributes()
   click(findButton('选择档案 A'))
   await waitFor('第二步 · 身份', { timeout: 60000 })
   click(findButton('选择身份 甲'))
@@ -625,8 +667,7 @@ test('穿越时间也有「自主定义」：日期自定义、进度继承锚�
 
 test('开局选卡界面也有用量表', async () => {
   await mount()
-  click(findButton('开始生成'), '开始生成')
-  await waitFor('第一步 · 属性', { timeout: 60000 })
+  await gotoAttributes()
   const meter = dom.window.document.querySelector('.usage')
   assert.ok(meter, '属性选卡界面没有用量表')
   // 生成属性已经花钱了，这里应当显示真实数字

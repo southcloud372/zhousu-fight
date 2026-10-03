@@ -279,7 +279,7 @@ export function ChoiceList({ choices, onPick, disabled }) {
       {/* 选项列表：超出高度时自己滚，不挤压剧情 */}
       {!collapsed && count > 0 && (
         <div className="choices-list">
-          {choices.map((c) => (
+          {choices.map((c, i) => (
             <button
               key={c.id}
               className={`choice${c.kind === 'training' ? ' train' : ''}`}
@@ -287,7 +287,9 @@ export function ChoiceList({ choices, onPick, disabled }) {
               title={c.reason || ''}
               onClick={() => onPick(c)}
             >
-              <span className="idx">{c.kind === 'training' ? '※' : c.id}.</span>
+              {/* 序号用数组下标，不能用 c.id —— 那是内部标识
+                  （修炼项是 t-体能训练 这种），当成序号显示会变成 "t-体能训练.体能训练" */}
+              <span className="idx">{c.kind === 'training' ? '※' : i + 1}.</span>
               {c.label}
             </button>
           ))}

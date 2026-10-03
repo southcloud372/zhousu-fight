@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import * as api from './api.js'
-import { AttributeCard, IdentityCard, CustomCard, TimeCard, CustomTimeCard } from './components/Cards.jsx'
+import {
+  AttributeCard, IdentityCard, CustomCard, TimeCard, CustomTimeCard, StorylineCard,
+} from './components/Cards.jsx'
 import { NarrativeLog, ChoiceList, useTypewriter } from './components/Narrative.jsx'
 import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel } from './components/Panels.jsx'
 import { ActionBar } from './components/CombatPanel.jsx'
@@ -37,6 +39,7 @@ export default function App() {
   const [customAttr, setCustomAttr] = useState(null)
   const [customIdent, setCustomIdent] = useState(null)
   const [timeProfiles, setTimeProfiles] = useState([])
+  const [storylines, setStorylines] = useState([])
   const [customTime, setCustomTime] = useState(null)
   const [usage, setUsage] = useState(null) // 本局 token 用量与费用
 
@@ -94,6 +97,11 @@ export default function App() {
             setLiveCombat({ mode: r.inCombat.mode, panel: r.inCombat.panel, narration: '', actions: r.inCombat.actions })
           }
           setPhase('playing')
+        } else if (r.phase === 'storyline') {
+          const { storylines: lines } = await api.listStorylines()
+          if (cancelled) return
+          setStorylines(lines || [])
+          setPhase('storyline')
         } else if (r.phase === 'attributes') {
           setAttrProfiles(r.attributeProfiles || [])
           setPhase('attributes')
@@ -139,14 +147,35 @@ export default function App() {
 
   // ---------------------------------------------------------- 开局
 
+  /** 第零步：开一局，列出可选故事线 */
   const boot = useCallback(async () => {
     setBusy(true)
     setError(null)
     try {
       const { sessionId: id } = await api.newSession()
       setSessionId(id)
-      const { profiles, usage: u0 } = await api.genAttributes(id)
-      takeUsage(u0)
+      const { storylines: lines } = await api.listStorylines()
+      setStorylines(lines || [])
+      setPhase('storyline')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  /**
+   * 选定故事线 → 才开始掷属性档案。
+   * 顺序不能反：原作节点表、可交互角色、穿越时间候选全由故事线决定。
+   */
+  const pickStoryline = useCallback(async (sid) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r0 = await api.chooseStoryline(sessionId, sid)
+      takeUsage(r0.usage)
+      const { profiles, usage: u } = await api.genAttributes(sessionId)
+      takeUsage(u) // 掷属性是真花钱的，漏了这一步用量表就不动
       setAttrProfiles(profiles)
       setPhase('attributes')
     } catch (e) {
@@ -154,7 +183,7 @@ export default function App() {
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [sessionId, takeUsage])
 
   const pickAttribute = useCallback(async (slot) => {
     setBusy(true)
@@ -617,6 +646,32 @@ export default function App() {
             onClose={() => setShowSaves(false)}
           />
         )}
+      </div>
+    )
+  }
+
+  // 第零步：故事线
+  if (phase === 'storyline') {
+    return (
+      <div className="pick">
+        <div className="meter-fixed"><UsageMeter usage={usage} /></div>
+        <div className="pick-inner">
+          <h1>选择故事线</h1>
+          <div className="sub">
+            两条线的时间、人物、原作节点完全不同 —— 选定后再掷属性与身份
+          </div>
+          <div className="cards">
+            {storylines.map((s) => (
+              <StorylineCard key={s.id} s={s} onPick={pickStoryline} busy={busy} />
+            ))}
+          </div>
+          {busy && (
+            <div className="loading">
+              <div className="spinner" />
+              正在掷出属性档案…
+            </div>
+          )}
+        </div>
       </div>
     )
   }

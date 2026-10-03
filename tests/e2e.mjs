@@ -30,9 +30,24 @@ const TIER_WORDS = ['弱特级','标特级','超特级','龙级']
 let dialogueLeaks = []
 const enemyNames = []
 
+hdr('0. 故事线')
+const lineRes = await (await fetch(`${B}/api/storylines`)).json()
+const lines = lineRes.storylines || []
+ok('列出两条故事线', lines.length === 2, lines.map(s => s.name).join(' / '))
+const kaigyoku = lines.find(s => s.id === 'kaigyoku')
+ok('怀玉篇起始日期正确', kaigyoku?.startDate === '2006-06-01', kaigyoku?.startDate)
+ok('两条线阵容不同', (() => {
+  const sk = lines.find(s => s.id === 'sukuna')
+  if (!sk || !kaigyoku) return false
+  const b = kaigyoku.characters || []
+  // 怀玉篇是 2006 年，虎杖那时还没出生
+  return !b.includes('虎杖悠仁') && b.includes('夏油杰')
+})(), kaigyoku?.characters?.join('、'))
+
 hdr('1. 开局 · 属性档案')
 const { sessionId } = await post('/api/session')
 const t0 = Date.now()
+await post(`/api/session/${sessionId}/choose-storyline`, { id: 'sukuna' })
 const { profiles } = await post(`/api/session/${sessionId}/attributes`)
 ok('生成三份档案', profiles.length === 3, `${((Date.now()-t0)/1000).toFixed(1)}s`)
 ok('编号为 A/B/C', profiles.map(p=>p.slot).join('') === 'ABC')
