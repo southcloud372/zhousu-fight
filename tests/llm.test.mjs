@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { extractPartialString } from '../server/llm.js'
+import { extractPartialString, salvageToolInput } from '../server/llm.js'
 
 /**
  * extractPartialString 是整个项目最取巧的一段代码：
@@ -176,4 +176,48 @@ test('对真实的 submit_turn 入参形状可用', () => {
 test('自定义字段名可用', () => {
   assert.equal(extractPartialString('{"scene":"场景文本"}', 'scene'), '场景文本')
   assert.equal(extractPartialString('{"narration":"x"}', 'scene'), null)
+})
+
+// ------------------------------------------------------------------ 残缺 JSON 抢救
+
+test('模型把自己的工具调用语法写进 JSON 时能抢救出正文', () => {
+  // 实测撞到的原文（doubao 系列会把 XML 式工具语法漏进字符串里）
+  const broken = '{"narration": "你不再拆招。\n\n左手压他按在你腕上的那只手，右手缝贴着肋侧那道旧口收线。\n\n他最后一口气落在砖面上，只剩一句。\n\n「……原来，是真要杀。」</doubao>\n\n<parameter name="dialogue">[{"speaker": "虎杖悠仁", "text": "……原来，是真要杀。"}]'
+  const r = salvageToolInput(broken)
+  assert.ok(r, '应当抢救成功，而不是整个回合作废')
+  assert.match(r.narration, /你不再拆招/, '正文没捞回来')
+  assert.match(r.narration, /原来，是真要杀/, '正文被截断了')
+  // 尾部挂着的残破标签必须切掉，不能出现在玩家看到的故事里
+  assert.ok(!/doubao/.test(r.narration), `正文里残留了模型标签：${r.narration.slice(-40)}`)
+  assert.ok(!/<parameter/.test(r.narration), '正文里残留了工具调用语法')
+  // 台词能捞就捞
+  assert.equal(r.dialogue[0]?.speaker, '虎杖悠仁')
+  // 提议字段补齐，引擎才能正常处理
+  assert.equal(r.proposal.hpDelta, 0)
+  assert.deepEqual(r.proposal.flags, [])
+})
+
+test('截断在正文中间时也能拿到已产出的部分', () => {
+  const cut = '{"narration": "他抬手，斩击从三个方向同时落下，空气被切开'
+  const r = salvageToolInput(cut)
+  assert.ok(r)
+  assert.match(r.narration, /斩击从三个方向/)
+})
+
+test('正文太短或压根没有时返回 null，交给上层重试', () => {
+  // 宁可重试，也不要拿半句话糊弄玩家
+  assert.equal(salvageToolInput('{"narration": "短"}'), null)
+  assert.equal(salvageToolInput('{"dialogue": []}'), null)
+  assert.equal(salvageToolInput(''), null)
+  assert.equal(salvageToolInput(null), null)
+  assert.equal(salvageToolInput('{'), null)
+})
+
+test('抢救不会把正常的 JSON 也带偏', () => {
+  const good = JSON.stringify({ narration: '正文'.repeat(40), choices: ['甲', '乙'] })
+  assert.equal(JSON.parse(good).narration, '正文'.repeat(40))
+  // 正常 JSON 应当走 JSON.parse，不该走抢救路径
+  const r = salvageToolInput(good)
+  assert.ok(r, '抢救路径对正常输入也应当可用（兜底）')
+  assert.match(r.narration, /^正文/)
 })

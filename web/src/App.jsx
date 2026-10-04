@@ -16,7 +16,7 @@ function entriesFromLog(log) {
   return (log || []).map((e) =>
     e.type === 'training'
       ? { kind: 'training', ...e }
-      : { kind: 'turn', turn: e.turn, narration: e.narration, dialogue: e.dialogue, notes: e.notes },
+      : { kind: 'turn', turn: e.turn, narration: e.narration, recap: e.recap, dialogue: e.dialogue, notes: e.notes },
   )
 }
 
@@ -43,6 +43,7 @@ export default function App() {
   const [storylines, setStorylines] = useState([])
   const [playModes, setPlayModes] = useState([])
   const [playMode, setMode] = useState('story')
+  const [recap, setRecap] = useState('') // 选项上方那句局面提要
   const [xo, setXo] = useState(null)        // 跨篇数据（有值就说明可以跨）
   const [xoStep, setXoStep] = useState(0)   // 当前第几段历练
   const [xoOpen, setXoOpen] = useState(false)
@@ -60,6 +61,7 @@ export default function App() {
     try { localStorage.setItem('sunuo:session', r.sessionId) } catch {}
     setSessionId(r.sessionId)
     setEntries(entriesFromLog(r.log))
+    setRecap(r.recap || '')
     setChoices(r.choices || [])
     setPanel(r.panel)
     askCombatEnter(r.combat)
@@ -104,6 +106,7 @@ export default function App() {
           .catch(() => {})
         if (r.phase === 'playing') {
           setEntries(entriesFromLog(r.log))
+          setRecap(r.recap || '') // 刷新后选项上方那句提要也要恢复
           setChoices(r.choices || [])
           askCombatEnter(r.combat)
           if (r.inCombat) {
@@ -282,7 +285,8 @@ export default function App() {
     try {
       const res = await api.chooseTime(sessionId, id)
       takeUsage(res.usage)
-      setEntries([{ kind: 'turn', turn: 1, narration: res.narration, dialogue: res.dialogue, notes: res.notes }])
+      setEntries([{ kind: 'turn', turn: 1, narration: res.narration, dialogue: res.dialogue, notes: res.notes, recap: res.recap }])
+      setRecap(res.recap || '')
       setChoices(res.choices || [])
       setPanel(res.panel)
       askCombatEnter(res.combat)
@@ -358,9 +362,10 @@ export default function App() {
       onDone: (data) => {
         tw.flush() // 把缓冲里剩下的字立刻吐完，避免和下面的条目之间出现跳变
         takeUsage(data.usage)
+        setRecap(data.recap || '')
         setEntries((prev) => [
           ...prev,
-          { kind: 'turn', turn: data.turn, narration: acc, dialogue: data.dialogue, notes: data.notes },
+          { kind: 'turn', turn: data.turn, narration: acc, dialogue: data.dialogue, notes: data.notes, recap: data.recap },
         ])
         setChoices(data.choices || [])
         setPanel(data.panel)
@@ -603,7 +608,10 @@ export default function App() {
     }
     if (choice.kind === 'training-item') return doTraining(choice.item)
 
-    submit(choice.label) // submit 内部负责追加玩家行动那条记录
+    // 自己写的行动要带标记 —— 模型得能分辨"玩家点了选项"和"玩家自己写了指令"，
+    // 后者在契约里是最高优先级
+    const isCustom = choice.id === 'free'
+    submit(isCustom ? `【我的行动】${choice.label}` : choice.label)
   }, [sessionId, submit, askCombatMode, tryEvade, startCombat, doTraining])
 
   /** 开局后也能换模式 —— 点顶栏那个徽章即可 */
@@ -878,6 +886,7 @@ export default function App() {
         ) : (
           <ChoiceList
             choices={choices}
+            recap={recap}
             onPick={onPick}
             disabled={busy || tw.shown !== null || !!liveCombat}
           />

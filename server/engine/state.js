@@ -123,6 +123,11 @@ export function applyProposal(state, prop) {
     state.relations[k] = Math.max(-100, Math.min(100, cur + v))
   }
 
+  // 死亡永久入库：模型每回合都会在状态里看到已死亡角色，就很难让人复活
+  for (const who of prop.deaths || []) {
+    if (!state.timeline.deaths.includes(who)) state.timeline.deaths.push(who)
+  }
+
   if (prop.sukunaAwakeningDelta) {
     state.sukuna.awakening = Math.max(0, Math.min(100, state.sukuna.awakening + prop.sukunaAwakeningDelta))
     state.sukuna.attitude = sukunaAttitude(state.sukuna.awakening)

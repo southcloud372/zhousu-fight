@@ -255,7 +255,7 @@ export function NarrativeLog({ entries, streaming, busy, liveCombat }) {
  * 自定义输入是常驻的 —— 每一轮剧情都能不走选项、直接写自己想做的事。
  * 之前它混在选项下面不太显眼，现在单独一行并加了标题。
  */
-export function ChoiceList({ choices, onPick, disabled }) {
+export function ChoiceList({ choices, onPick, disabled, recap }) {
   const [free, setFree] = React.useState('')
   const [collapsed, setCollapsed] = React.useState(false)
   const trimmed = free.trim()
@@ -263,6 +263,17 @@ export function ChoiceList({ choices, onPick, disabled }) {
 
   return (
     <div className={`choices${collapsed ? ' collapsed' : ''}`}>
+      {/*
+        局面提要：玩家不用往回翻就能想起现在是什么状况，再决定选什么。
+        正文和台词保持原样，这只是多一行"你在哪、手上有什么"。
+      */}
+      {recap && (
+        <div className="recap" title="本回合局面">
+          <span className="recap-tag">局面</span>
+          <span className="recap-text">{recap}</span>
+        </div>
+      )}
+
       {/* 选项多的时候这块会占掉半屏，留个收起按钮把空间还给剧情 */}
       <div className="choices-head">
         <button

@@ -269,6 +269,7 @@ app.post('/api/session/:id/choose-time', asyncRoute(async (req, res) => {
 
   res.json(withUsage(state, {
     ...cleaned,
+    recap: cleaned.recap,
     choices: withTrainingOption(cleaned.choices, state),
     panel: panelSnapshot(state),
     combat: state.pendingCombat,
@@ -281,7 +282,7 @@ app.post('/api/session/:id/choose-time', asyncRoute(async (req, res) => {
  * 所有模型输出都要过这一关：
  * 清洗 NPC 台词里的特级细分 → 夹紧数值提议 → 应用 → 写入日志。
  */
-function postProcess(state, raw, { isOpening = false } = {}) {
+function postProcess(state, raw, { isOpening = false, playerInput = '' } = {}) {
   const leaked = scrubTurn(raw)
   const prop = clampProposal(raw.proposal, state)
   const notes = applyProposal(state, prop)
@@ -294,6 +295,9 @@ function postProcess(state, raw, { isOpening = false } = {}) {
   const entry = {
     turn: state.turn,
     narration: raw.narration || '',
+    // 选项上方那句概括。模型偶尔会漏，兜底截正文第一句，界面不至于空着
+    recap: (typeof raw.recap === 'string' && raw.recap.trim())
+      || (raw.narration || '').split(/[。！？\n]/)[0].slice(0, 60),
     dialogue: raw.dialogue || [],
     choices: (raw.choices || []).slice(0, 4),
     notes,
@@ -310,7 +314,7 @@ function postProcess(state, raw, { isOpening = false } = {}) {
     const enemy = rollEnemy(rng, raw.combatRequest.enemyGrade)
 
     // 原作主要角色不能凭空变成敌人 —— 需要对应节点已发生
-    const legal = checkEnemyLegality(raw.combatRequest.enemyName, state.timeline)
+    const legal = checkEnemyLegality(raw.combatRequest.enemyName, state.timeline, playerInput)
     if (!legal.ok) {
       entry.notes.push(`已拦截越界敌人：${legal.reason}`)
       raw.combatRequest.enemyName = '无名咒灵'
@@ -382,7 +386,11 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
     let raw = null
     let streamedText = ''   // 本次流式已产出的正文，用于实时估算
     let lastLiveAt = 0
+    let lastErr = null
     for (let attempt = 0; attempt < 3; attempt++) {
+      // 每次尝试单独兜错：模型偶尔会交回残缺的 JSON，
+      // 重试一次通常就好了，不该让一次解析失败把整个回合打断
+      try {
       for await (const ev of streamTool({
         system: turnSystem(state),
         messages: attempt === 0
@@ -412,6 +420,13 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
           }
         } else if (ev.type === 'done') raw = ev.input
       }
+      } catch (err) {
+        lastErr = err
+        send('status', { text: `本回合生成异常，重试中…（${attempt + 1}/3）` })
+        send('reset', {})
+        streamedText = ''
+        continue
+      }
       const ok = typeof raw?.narration === 'string' && raw.narration.trim().length >= 60
       if (ok) break
       if (attempt < 2) {
@@ -423,12 +438,13 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
       }
     }
 
-    const entry = postProcess(state, raw)
+    const entry = postProcess(state, raw, { playerInput: input })
     persist(state)
 
     send('done', {
       turn: state.turn,
       dialogue: entry.dialogue,
+      recap: entry.recap,
       choices: withTrainingOption(entry.choices, state),
       notes: entry.notes,
       panel: panelSnapshot(state),
@@ -965,6 +981,7 @@ app.get('/api/session/:id/state', (req, res) => {
     timeProfiles: state.timeProfiles || [],
     playMode: state.playMode,
     log: state.log,
+    recap: [...(state.log || [])].reverse().find((e) => e.recap)?.recap || '',
     panel: panelSnapshot(state),
     choices: state.phase === 'playing' && lastTurn ? withTrainingOption(lastTurn.choices || [], state) : [],
     actions: state.combat && !state.combat.over ? availableActions(state) : null,

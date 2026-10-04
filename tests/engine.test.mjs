@@ -13,6 +13,7 @@ import { scrubDialogue, scrubTurn, clampProposal, noteNarrationLeak, checkEnemyL
 import { npcGrade, npcView, npcAttitude } from '../server/engine/visibility.js'
 import { canTrain, rollTraining, applyTraining, TRAINING_TABLE } from '../server/engine/commands.js'
 import { acceptable, allFilled, IDENTITY_FIELDS, ATTRIBUTE_FIELDS } from '../server/engine/opening.js'
+import { CONTRACT } from '../server/prompts.js'
 import {
   initCombat, runRound, simulateCombat, computeRewards, applyRewards, finishCombat, unitSpeed,
 } from '../server/engine/combat.js'
@@ -515,4 +516,87 @@ test('三份身份必须含反派向与自由派各一种', () => {
 test('天赋池无重复项且拼写正确', () => {
   assert.equal(new Set(TALENT_POOL).size, TALENT_POOL.length, '天赋池有重复')
   assert.ok(TALENT_POOL.includes('术式理解快'), '术式理解快 拼写错误')
+})
+
+test('玩家点名要打的角色不会被护栏挡掉', () => {
+  // 这道护栏是防"模型自作主张把同伴派成敌人"的，不是用来否决玩家的。
+  // 之前没做这个区分，玩家写"我要杀了虎杖"时敌人被偷偷换成无名咒灵。
+  const early = blankState(makeRng(1)).timeline
+
+  // 玩家没点名 → 照旧拦
+  assert.equal(checkEnemyLegality('虎杖悠仁', early).ok, false)
+  assert.match(checkEnemyLegality('虎杖悠仁', early).reason, /玩家没点名/)
+
+  // 玩家点名 → 放行
+  const r1 = checkEnemyLegality('虎杖悠仁', early, '我要杀了虎杖，趁他现在还没完全掌握咒力')
+  assert.equal(r1.ok, true, '玩家点名要打虎杖时不该被拦')
+  assert.equal(r1.playerInitiated, true, '应当标明是玩家发起的')
+
+  // 点名别人不相关 → 仍然拦
+  assert.equal(checkEnemyLegality('虎杖悠仁', early, '我去找五条悟').ok, false)
+
+  // 五条同理
+  assert.equal(checkEnemyLegality('五条悟', early, '趁他落单，先解决五条悟').ok, true)
+  assert.equal(checkEnemyLegality('五条悟', early, '我在街上闲逛').ok, false)
+
+  // 普通敌人不受影响
+  assert.equal(checkEnemyLegality('腐骨咒灵', early, '').ok, true)
+})
+
+test('护栏放行后仍然记录是玩家发起的（便于排查）', () => {
+  const early = blankState(makeRng(1)).timeline
+  const r = checkEnemyLegality('钉崎野蔷薇', early, '先把钉崎野蔷薇解决掉，别让她碍事')
+  assert.equal(r.ok, true)
+  assert.equal(r.playerInitiated, true)
+  // 非玩家发起时不该带这个标记
+  assert.equal(checkEnemyLegality('钉崎野蔷薇', early, '我继续赶路').playerInitiated, undefined)
+})
+
+test('契约里写明了"玩家的行动必须真的执行"', () => {
+  for (const kw of ['玩家的行动必须真的执行', '让攻击落空', '有人及时赶到',
+                    '玩家可以改变任何人的命运', '死亡不可逆']) {
+    assert.ok(CONTRACT.includes(kw), `契约里缺少「${kw}」`)
+  }
+  // 要明确点名原作主角也可以被杀
+  assert.match(CONTRACT, /玩家要杀虎杖，\*\*就让他杀成\*\*/)
+})
+
+test('死亡会被永久登记，且不重复、不越界', () => {
+  const s = makeTestState(1300)
+  const prop = (deaths) => ({
+    hpDelta: 0, ceDelta: 0, relationDelta: {}, sukunaAwakeningDelta: 0,
+    deaths, flags: [], timeAdvance: '0',
+  })
+
+  applyProposal(s, prop(['虎杖悠仁']))
+  assert.deepEqual(s.timeline.deaths, ['虎杖悠仁'], '死亡没有入库')
+
+  // 同一个名字重复登记不该重复
+  applyProposal(s, prop(['虎杖悠仁']))
+  assert.equal(s.timeline.deaths.length, 1, '重复登记了')
+
+  // 空数组是常态，不该报错
+  applyProposal(s, prop([]))
+  assert.equal(s.timeline.deaths.length, 1)
+
+  // 模型偶尔会塞垃圾进来，要过滤掉
+  const r = clampProposal(prop(['x', '老虎杖悠仁老虎杖悠仁老虎杖悠仁老虎杖悠仁', '伏黑惠', 123, '']), s)
+  applyProposal(s, r)
+  assert.ok(s.timeline.deaths.includes('伏黑惠'), '正常名字被误过滤')
+  assert.ok(!s.timeline.deaths.includes('x'), '一个字的名字不该入库')
+  assert.ok(!s.timeline.deaths.some((d) => d.length > 12), '超长串不该入库')
+})
+
+test('已死亡角色会写进状态视图，模型每回合都能看到', () => {
+  const s = makeTestState(1400)
+  applyProposal(s, {
+    hpDelta: 0, ceDelta: 0, relationDelta: {}, sukunaAwakeningDelta: 0,
+    deaths: ['虎杖悠仁'], flags: [], timeAdvance: '0',
+  })
+  assert.deepEqual(modelStateView(s).已死亡角色, ['虎杖悠仁'])
+})
+
+test('契约要求把死亡写进 deaths 字段', () => {
+  assert.match(CONTRACT, /proposal\.deaths/, '没有告诉模型往哪写')
+  assert.match(CONTRACT, /没有死亡就填空数组/, '没有说明无死亡时该填什么')
 })

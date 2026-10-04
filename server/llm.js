@@ -183,9 +183,88 @@ export async function* streamTool({ system, messages, tool, maxTokens = 4000, mo
   try {
     parsed = JSON.parse(jsonBuf)
   } catch (e) {
-    throw new Error(`tool 入参 JSON 解析失败：${e.message}\n${jsonBuf.slice(0, 500)}`)
+    // 模型偶尔会把自己的 XML 式工具调用语法写进 JSON 字符串里
+    // （实测见过 </doubao>、<parameter name="dialogue">），
+    // 那个引号会提前闭合字符串，整个 JSON 就废了。
+    // 直接抛会让整回合失败，所以先尽量把能救的字段捞出来。
+    parsed = salvageToolInput(jsonBuf)
+    if (parsed) {
+      parsed.__salvaged = e.message
+    } else {
+      throw new Error(`tool 入参 JSON 解析失败：${e.message}\n${jsonBuf.slice(0, 500)}`)
+    }
   }
   yield { type: 'done', input: parsed, usage }
+}
+
+/**
+ * JSON 解析失败时的抢救。
+ *
+ * 只从残缺的缓冲区里抠出还算完整的字段，凑一份能用的入参。
+ * 抠不出正文就返回 null —— 让调用方重试，而不是拿半截内容糊弄玩家。
+ */
+export function salvageToolInput(buf) {
+  if (typeof buf !== 'string' || !buf) return null
+
+  let narration = extractPartialString(buf, 'narration')
+  if (!narration) return null
+
+  // 尾部常挂着被截断的标签（</doubao>、<parameter name= 之类），切掉。
+  // 必须循环 —— 一次 replace 只吃掉最后一个，切掉它之后底下还压着一个。
+  const TAIL_TAG = /<\/?[a-zA-Z][^>]*>?\s*$/
+  let prev
+  do {
+    prev = narration
+    narration = narration.replace(TAIL_TAG, '').trim()
+  } while (narration !== prev)
+  if (narration.length < 20) return null
+
+  // dialogue / choices 尽量捞；捞不到就留空，引擎和界面都能接受
+  const dialogue = salvageArray(buf, 'dialogue', ['speaker', 'text'])
+  const choices = salvageStringArray(buf, 'choices')
+
+  return {
+    narration,
+    dialogue,
+    choices,
+    proposal: {
+      hpDelta: 0, ceDelta: 0, relationDelta: {},
+      sukunaAwakeningDelta: 0, flags: [], timeAdvance: '0',
+    },
+    combatRequest: null,
+  }
+}
+
+/** 从残破 JSON 里抠对象数组（只取每个元素里能认出来的字符串字段） */
+function salvageArray(buf, key, fields) {
+  const seg = sliceValue(buf, key)
+  if (!seg) return []
+  const out = []
+  for (const m of seg.matchAll(/\{([^{}]*)\}/g)) {
+    const item = {}
+    for (const f of fields) {
+      const v = extractPartialString(`{${m[1]}}`, f)
+      if (v) item[f] = v
+    }
+    if (Object.keys(item).length) out.push(item)
+  }
+  return out
+}
+
+function salvageStringArray(buf, key) {
+  const seg = sliceValue(buf, key)
+  if (!seg) return []
+  return [...seg.matchAll(/"([^"\\]{2,120})"/g)].map((m) => m[1]).slice(0, 6)
+}
+
+/** 取出某个键后面方括号里的那一段原文 */
+function sliceValue(buf, key) {
+  const i = buf.indexOf(`"${key}"`)
+  if (i < 0) return null
+  const start = buf.indexOf('[', i)
+  if (start < 0) return null
+  const end = buf.indexOf(']', start)
+  return buf.slice(start + 1, end < 0 ? buf.length : end)
 }
 
 /** message_delta 里的 output_tokens 是累计值，直接覆盖而不是相加 */

@@ -263,6 +263,34 @@ body::before {
   min-height: 0;
 }
 
+/* 局面提要：选项上方那一行，让玩家不用往回翻 */
+.recap {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-bottom: 8px;
+  padding: 7px 11px;
+  background: var(--bg-3);
+  border-left: 3px solid var(--cursed);
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ink);
+}
+.recap-tag {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--cursed);
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  padding: 0 5px;
+  position: relative;
+  top: -1px;
+}
+.recap-text { font-family: var(--font-narr); }
+
 .choices-head {
   display: flex;
   align-items: center;

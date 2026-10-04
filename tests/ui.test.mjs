@@ -150,6 +150,7 @@ function makeFetchStub(log) {
         ...chunks.map((t) => ['narration', { text: t }]),
         ['done', {
           turn: 2,
+          recap: '咒灵退进地下，你左肩的伤还在渗血。',
           dialogue: [{ speaker: '虎杖悠仁', text: '小心！' }],
           notes: [],
           choices: [
@@ -253,7 +254,8 @@ function makeFetchStub(log) {
     if (u.endsWith('/state')) {
       return json({
         phase: 'playing',
-        log: [{ type: 'turn', turn: 1, narration: '测试正文。', dialogue: [{ speaker: '宿傩', text: '特级？' }], notes: [], choices: ['前进', '后退', '观察'] }],
+        log: [{ type: 'turn', turn: 1, narration: '测试正文。', recap: '你落在杉泽第三高中外的巷口，虎杖刚从墙里翻出来。', dialogue: [{ speaker: '宿傩', text: '特级？' }], notes: [], choices: ['前进', '后退', '观察'] }],
+        recap: '你落在杉泽第三高中外的巷口，虎杖刚从墙里翻出来。',
         panel: CHARACTER_SNAPSHOT,
         usage: usageFixture,
         choices: [{ id: '1', label: '前进', kind: 'story' }],
@@ -382,7 +384,8 @@ function makeFetchStub(log) {
     if (u.includes('/choose-time')) {
       return json({
         usage: usageFixture,
-        narration: '开局正文。', dialogue: [{ speaker: '虎杖悠仁', text: '你是谁？' }], notes: [],
+        narration: '开局正文。', recap: '你落在杉泽第三高中外的巷口，虎杖刚从墙里翻出来。',
+        dialogue: [{ speaker: '虎杖悠仁', text: '你是谁？' }], notes: [],
         choices: [{ id: '1', label: '出手', kind: 'story' }, { id: 'T', label: '【跳过当天，进行修炼】', kind: 'training' }],
         panel: CHARACTER_SNAPSHOT, combat: null,
       })
@@ -996,6 +999,40 @@ test('三栏各自独立滚动（长内容不会把整页顶开）', () => {
   assert.match(block('.side'), /overflow-y:\s*auto/, '状态栏应当独立滚动')
   assert.match(block('.combat-side'), /overflow-y:\s*auto/, '战斗栏应当独立滚动')
   assert.match(block('.log'), /overflow-y:\s*auto/, '剧情区应当独立滚动')
+})
+
+test('选项上方显示本回合局面提要', async () => {
+  await enterGame()
+  // 开局那条 recap 应当已经在
+  let recap = dom.window.document.querySelector('.recap')
+  assert.ok(recap, '选项上方没有局面提要')
+  assert.match(recap.textContent, /局面/, '缺少标识')
+  assert.match(recap.textContent, /杉泽第三高中/, '没有显示开局提要内容')
+
+  // 它必须在选项列表之前
+  const choices = dom.window.document.querySelector('.choices')
+  const order = [...choices.children].map((c) => c.className)
+  assert.ok(order.indexOf('recap') < order.indexOf('choices-head'),
+    '提要应当排在选项之前')
+
+  // 推一回合后要换成新的提要
+  click(findButton('前进'))
+  await waitFor('咒灵退进地下', { timeout: 15000 })
+  recap = dom.window.document.querySelector('.recap')
+  assert.match(recap.textContent, /咒灵退进地下/, '推回合后提要不更新')
+  assert.ok(!/杉泽第三高中/.test(recap.textContent), '提要还是上一回合的')
+})
+
+test('正文与台词不受影响，提要是额外加的一行', async () => {
+  await enterGame()
+  click(findButton('前进'))
+  await waitFor('咒灵退进地下', { timeout: 15000 })
+
+  // 台词块要照旧存在 —— 提要是补充，不是替换
+  const log = dom.window.document.querySelector('.log')
+  assert.ok(log.querySelector('.narr'), '正文没了')
+  assert.ok(log.querySelector('.line .who'), '台词没了')
+  assert.ok(log.querySelector('.line .what'), '台词内容没了')
 })
 
 test('选项栏每次都有自定义行动输入', async () => {

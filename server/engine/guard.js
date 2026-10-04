@@ -54,16 +54,29 @@ export const PROTECTED_CHARACTERS = {
   夜蛾正道: '涩谷事变',
 }
 
-export function checkEnemyLegality(enemyName, timeline) {
+export function checkEnemyLegality(enemyName, timeline, playerInput = '') {
   for (const [who, requiredNode] of Object.entries(PROTECTED_CHARACTERS)) {
     if (!String(enemyName || '').includes(who)) continue
+
+    // 玩家自己点名要打的，一律放行。
+    // 这道护栏是防"模型自作主张把同伴派成敌人"的，不是用来否决玩家的 ——
+    // 玩家有权改写任何人的命运，包括原作主角。之前没做这个区分，
+    // 导致玩家写"我要杀了虎杖"时敌人被偷偷换成无名咒灵，行动等于没执行。
+    //
+    // 匹配要宽松：玩家写"杀了虎杖"时不会写全名"虎杖悠仁"，
+    // 所以姓氏（前两字）也要认。
+    const input = String(playerInput || '')
+    if (input && (input.includes(who) || input.includes(who.slice(0, 2)))) {
+      return { ok: true, playerInitiated: true }
+    }
+
     const nodeState = timeline?.nodes?.[requiredNode]
     if (nodeState === '已发生' || nodeState === '已改变') {
       return { ok: true } // 对应节点已发生，站在对立面是合理的
     }
     return {
       ok: false,
-      reason: `「${who}」不能在这个时间点成为敌人（需要「${requiredNode}」已发生，当前为「${nodeState || '未发生'}」）`,
+      reason: `「${who}」不能在这个时间点成为敌人（需要「${requiredNode}」已发生，当前为「${nodeState || '未发生'}」）—— 模型自作主张，玩家没点名`,
     }
   }
   return { ok: true }
@@ -98,11 +111,17 @@ export function clampProposal(proposal, state) {
 
   const awakeningDelta = Math.max(-10, Math.min(10, num(p.sukunaAwakeningDelta)))
 
+  // 死亡是永久事实，引擎自己记一份 —— 光靠模型记住迟早会让人复活
+  const deaths = Array.isArray(p.deaths)
+    ? p.deaths.slice(0, 5).map((x) => String(x).trim()).filter((x) => x.length >= 2 && x.length <= 12)
+    : []
+
   return {
     hpDelta: Math.round(hp),
     ceDelta: Math.round(ce),
     relationDelta,
     sukunaAwakeningDelta: awakeningDelta,
+    deaths,
     flags: Array.isArray(p.flags) ? p.flags.slice(0, 8).map(String) : [],
     timeAdvance: ['1d', '3d', '1w', '0'].includes(p.timeAdvance) ? p.timeAdvance : '0',
     notes,

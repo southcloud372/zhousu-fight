@@ -89,6 +89,10 @@ export const submitTurn = {
         type: 'string',
         description: '本回合正文。分镜级叙事，战斗/冲突占 70% 以上，日常一句带过。不要写数值变化。',
       },
+      recap: {
+        type: 'string',
+        description: '本回合的一句话概括（20~60 字），显示在选项上方。只讲当前状态：谁在哪、发生了什么、手上有什么、接下来要面对什么。不写描写、不复述对话。',
+      },
       dialogue: {
         type: 'array',
         description: 'NPC 台词。极简，每句不超过两行。禁止出现弱特级/标特级/超特级/龙级。',
@@ -120,10 +124,11 @@ export const submitTurn = {
             additionalProperties: { type: 'integer' },
           },
           sukunaAwakeningDelta: { type: 'integer', description: '宿傩觉醒度变化，0~100 的绝对值增量' },
+          deaths: { type: 'array', items: { type: 'string' }, description: '本回合确认死亡的角色全名。引擎会永久记下，后续不会再让这个人出现。' },
           flags: { type: 'array', items: { type: 'string' }, description: '剧情标记，如"少年院任务_开始"' },
           timeAdvance: { type: 'string', enum: ['0', '1d', '3d', '1w'], description: '时间推进量' },
         },
-        required: ['hpDelta', 'ceDelta', 'relationDelta', 'sukunaAwakeningDelta', 'flags', 'timeAdvance'],
+        required: ['hpDelta', 'ceDelta', 'relationDelta', 'sukunaAwakeningDelta', 'deaths', 'flags', 'timeAdvance'],
       },
       combatRequest: {
         type: ['object', 'null'],
@@ -143,7 +148,7 @@ export const submitTurn = {
         required: ['enemyName', 'enemyGrade', 'enemyTechniqueName', 'enemyTechniqueEffect', 'enemyDomainName', 'reason'],
       },
     },
-    required: ['narration', 'dialogue', 'choices', 'proposal', 'combatRequest'],
+    required: ['narration', 'recap', 'dialogue', 'choices', 'proposal', 'combatRequest'],
   },
 }
 
@@ -158,6 +163,7 @@ export const submitCustomTime = {
         enum: ['start', 'juvenile', 'sisters', 'shibuya-eve', 'shibuya', 'culling', 'final'],
         description: '最接近的既有时间点。原作进度与危险度都继承自它，所以必须选最贴近玩家描述的那个。',
       },
+      // 说明：submitCustomTime 不需要 recap；下面是 submitOpeningScene 的字段
       date: {
         type: 'string',
         description: '玩家实际落地日期，YYYY-MM-DD，必须落在 2018-06-05 ~ 2019-12-31 之间',
@@ -181,6 +187,10 @@ export const submitOpeningScene = {
         type: 'string',
         description: '开局情境。直接切入战斗或高张力冲突，不要铺垫。',
       },
+      recap: {
+        type: 'string',
+        description: '开局局面的一句话概括（20~60 字），显示在选项上方。只讲当前状态：你在哪、正在发生什么、手上有什么。',
+      },
       dialogue: {
         type: 'array',
         items: {
@@ -197,10 +207,11 @@ export const submitOpeningScene = {
           ceDelta: { type: 'integer' },
           relationDelta: { type: 'object', additionalProperties: { type: 'integer' } },
           sukunaAwakeningDelta: { type: 'integer' },
+          deaths: { type: 'array', items: { type: 'string' }, description: '本回合确认死亡的角色全名。引擎会永久记下。' },
           flags: { type: 'array', items: { type: 'string' } },
           timeAdvance: { type: 'string', enum: ['0', '1d', '3d', '1w'] },
         },
-        required: ['hpDelta', 'ceDelta', 'relationDelta', 'sukunaAwakeningDelta', 'flags', 'timeAdvance'],
+        required: ['hpDelta', 'ceDelta', 'relationDelta', 'sukunaAwakeningDelta', 'deaths', 'flags', 'timeAdvance'],
       },
       combatRequest: {
         type: ['object', 'null'],
@@ -215,6 +226,6 @@ export const submitOpeningScene = {
         required: ['enemyName', 'enemyGrade', 'enemyTechniqueName', 'enemyTechniqueEffect', 'enemyDomainName', 'reason'],
       },
     },
-    required: ['narration', 'dialogue', 'choices', 'proposal', 'combatRequest'],
+    required: ['narration', 'recap', 'dialogue', 'choices', 'proposal', 'combatRequest'],
   },
 }

@@ -38,7 +38,7 @@ test('submit_turn 声明了代码会读的每一个字段', () => {
 test('proposal 的字段必须覆盖 clampProposal 读取的全部字段', () => {
   const proposalProps = Object.keys(submitTurn.input_schema.properties.proposal.properties)
   // clampProposal 实际读取的字段（见 guard.js）
-  const read = ['hpDelta', 'ceDelta', 'relationDelta', 'sukunaAwakeningDelta', 'flags', 'timeAdvance']
+  const read = ['hpDelta', 'ceDelta', 'relationDelta', 'sukunaAwakeningDelta', 'deaths', 'flags', 'timeAdvance']
   for (const k of read) {
     assert.ok(proposalProps.includes(k), `proposal 声明里缺少 ${k}，clampProposal 会读到 undefined`)
   }
@@ -148,6 +148,17 @@ test('设定原文被真的读进来了', () => {
   for (const kw of ['咒术师等级', '宿傩', '领域展开', '生得术式']) {
     assert.ok(CORE_RULES.includes(kw), `设定原文里缺少关键词 ${kw}`)
   }
+})
+
+test('契约声明了自定义内容的最高优先级', () => {
+  // 玩家自己写的东西是指令而不是建议，这条必须在契约里说死
+  assert.ok(CONTRACT.includes('内容优先级'), '契约里没有优先级章节')
+  assert.match(CONTRACT, /【我的行动】/, '没有说明玩家自定行动的标记')
+  assert.match(CONTRACT, /压倒性/, '没有把优先级说成压倒性的')
+  assert.match(CONTRACT, /按玩家的来/, '没有说明冲突时以玩家为准')
+  assert.match(CONTRACT, /不要回一句/, '没有禁止用不符合设定敷衍过去')
+  // 边界也要写清楚，否则模型可能把它当成放弃判断的许可
+  assert.match(CONTRACT, /自身的行为准则/, '没有划清适用范围')
 })
 
 test('引擎契约包含四条硬性规则', () => {
