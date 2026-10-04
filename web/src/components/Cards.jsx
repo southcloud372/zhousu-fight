@@ -186,6 +186,32 @@ export function CustomCard({ kind, brief, setBrief, generated, onGenerate, onPic
   )
 }
 
+/**
+ * 游玩模式选择。
+ * 和故事线是两个独立的轴 —— 故事线决定"在哪条时间线上"，
+ * 模式决定"这条线怎么玩"。放在同一屏，避免多一步空点。
+ */
+export function PlayModePicker({ modes, value, onChange }) {
+  return (
+    <div className="mode-picker">
+      <div className="mode-picker-h">游玩模式</div>
+      <div className="mode-picker-row">
+        {modes.map((m) => (
+          <button
+            key={m.id}
+            className={`mode-card${value === m.id ? ' on' : ''}`}
+            onClick={() => onChange(m.id)}
+          >
+            <span className="mode-n">{m.name}</span>
+            <span className="mode-t">{m.tagline}</span>
+            <span className="mode-d">{m.desc}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** 故事线选择：开局第一屏 */
 export function StorylineCard({ s, onPick, busy }) {
   return (

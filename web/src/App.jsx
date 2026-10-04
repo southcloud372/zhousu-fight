@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import * as api from './api.js'
 import {
-  AttributeCard, IdentityCard, CustomCard, TimeCard, CustomTimeCard, StorylineCard,
+  AttributeCard, IdentityCard, CustomCard, TimeCard, CustomTimeCard, StorylineCard, PlayModePicker,
 } from './components/Cards.jsx'
 import { NarrativeLog, ChoiceList, useTypewriter } from './components/Narrative.jsx'
 import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel } from './components/Panels.jsx'
@@ -41,6 +41,8 @@ export default function App() {
   const [customIdent, setCustomIdent] = useState(null)
   const [timeProfiles, setTimeProfiles] = useState([])
   const [storylines, setStorylines] = useState([])
+  const [playModes, setPlayModes] = useState([])
+  const [playMode, setMode] = useState('story')
   const [xo, setXo] = useState(null)        // 跨篇数据（有值就说明可以跨）
   const [xoStep, setXoStep] = useState(0)   // 当前第几段历练
   const [xoOpen, setXoOpen] = useState(false)
@@ -94,6 +96,12 @@ export default function App() {
         setSessionId(id)
         setPanel(r.panel)
         takeUsage(r.usage) // 刷新后用量表要立刻恢复，不能等下一次调用
+        // 模式列表和当前模式也要恢复 —— 否则顶栏那个徽章找不到名字，
+        // 会一直显示默认的"剧情向"，切了也看不出来
+        if (r.playMode) setMode(r.playMode)
+        api.listPlayModes()
+          .then((mr) => { if (!cancelled) setPlayModes(mr.modes || []) })
+          .catch(() => {})
         if (r.phase === 'playing') {
           setEntries(entriesFromLog(r.log))
           setChoices(r.choices || [])
@@ -159,8 +167,13 @@ export default function App() {
     try {
       const { sessionId: id } = await api.newSession()
       setSessionId(id)
-      const { storylines: lines } = await api.listStorylines()
+      const [{ storylines: lines }, modeRes] = await Promise.all([
+        api.listStorylines(),
+        api.listPlayModes(),
+      ])
       setStorylines(lines || [])
+      setPlayModes(modeRes.modes || [])
+      setMode(modeRes.default || 'story')
       setPhase('storyline')
     } catch (e) {
       setError(e.message)
@@ -177,7 +190,7 @@ export default function App() {
     setBusy(true)
     setError(null)
     try {
-      const r0 = await api.chooseStoryline(sessionId, sid)
+      const r0 = await api.chooseStoryline(sessionId, sid, playMode)
       takeUsage(r0.usage)
       const { profiles, usage: u } = await api.genAttributes(sessionId)
       takeUsage(u) // 掷属性是真花钱的，漏了这一步用量表就不动
@@ -593,6 +606,18 @@ export default function App() {
     submit(choice.label) // submit 内部负责追加玩家行动那条记录
   }, [sessionId, submit, askCombatMode, tryEvade, startCombat, doTraining])
 
+  /** 开局后也能换模式 —— 点顶栏那个徽章即可 */
+  const togglePlayMode = useCallback(async () => {
+    const next = playMode === 'combat' ? 'story' : 'combat'
+    setMode(next) // 先改本地，界面立刻响应
+    try {
+      await api.setPlayMode(sessionId, next)
+    } catch (e) {
+      setMode(playMode) // 失败就退回去
+      setError(e.message)
+    }
+  }, [sessionId, playMode])
+
   /** 打开跨篇界面（走完本线衔接节点后才可用） */
   const openCrossover = useCallback(async () => {
     setBusy(true)
@@ -711,8 +736,10 @@ export default function App() {
         <div className="pick-inner">
           <h1>选择故事线</h1>
           <div className="sub">
-            两条线的时间、人物、原作节点完全不同 —— 选定后再掷属性与身份
+            先定玩法，再选线 —— 选定后才会掷属性与身份
           </div>
+
+          <PlayModePicker modes={playModes} value={playMode} onChange={setMode} />
           <div className="cards">
             {storylines.map((s) => (
               <StorylineCard key={s.id} s={s} onPick={pickStoryline} busy={busy} />
@@ -817,6 +844,15 @@ export default function App() {
         {panel?.time && <span className="date">{panel.time.date}　第 {panel.time.day} 天</span>}
         <span className="spacer" />
         {panel?.grade && <span className="date">{panel.grade}</span>}
+        <button
+          className="mode-badge"
+          onClick={togglePlayMode}
+          title="点击切换游玩模式"
+        >
+          {/* 模式列表还没拉回来时也别谎报成"剧情向" —— 战斗向的玩家会看到错的 */}
+          {playModes.find((m) => m.id === playMode)?.name
+            || (playMode === 'combat' ? '战斗向' : '剧情向')}
+        </button>
         <button className="top-btn" onClick={openCrossover} title="跨越两篇之间的时间空白">跨篇</button>
         <button className="top-btn" onClick={() => setShowSaves(true)}>存档</button>
         <button className="top-btn only-narrow" onClick={() => { setShowCombat((v) => !v); setShowSide(false) }}>

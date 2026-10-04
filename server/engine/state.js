@@ -3,6 +3,7 @@ import { sukunaAttitude, npcAttitude } from './visibility.js'
 import { DOMAIN_TIER } from './tables.js'
 import { emptyUsage } from '../pricing.js'
 import { DEFAULT_STORYLINE, storylineOf } from './storylines.js'
+import { DEFAULT_PLAY_MODE, playModeOf } from './playmodes.js'
 import { initialNodes } from './timeline.js'
 
 export const GAME_START_DATE = '2018-06-05'
@@ -13,11 +14,12 @@ export const DOMAIN_COST_RATIO = 0.08
 
 const TRAINING_ITEMS = ['体能训练', '咒力冥想', '术式演练', '反转术式修习', '领域雏形冥想', '体术实战']
 
-export function blankState(rng, storylineId = DEFAULT_STORYLINE) {
+export function blankState(rng, storylineId = DEFAULT_STORYLINE, playMode = DEFAULT_PLAY_MODE) {
   const line = storylineOf(storylineId)
   return {
     version: 1,
     storyline: line.id,
+    playMode: playModeOf(playMode).id,
     seed: Math.floor(rng() * 1e9),
     phase: 'attributes', // attributes → identities → playing
     attributeProfiles: [],
@@ -181,6 +183,7 @@ export function modelStateView(state) {
   const line = storylineOf(state.storyline)
   return {
     故事线: `${line.name}（${line.era}）`,
+    游玩模式: playModeOf(state.playMode).name,
     本线登场角色: line.characters,
     本线原作节点: line.nodes,
     日期: state.time.date,

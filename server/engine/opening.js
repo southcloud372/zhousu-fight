@@ -11,14 +11,17 @@ import {
 import { buildPlayer, GAME_START_DATE } from './state.js'
 import { pointsFor, nodesFor, applyTimeline, byId, firstPoint } from './timeline.js'
 import { storylineOf, DEFAULT_STORYLINE } from './storylines.js'
+import { playModeOf } from './playmodes.js'
 import { npcAttitude } from './visibility.js'
 
-const baseSystem = () =>
+const baseSystem = (playMode) =>
   [
     CORE_RULES,
     CONTRACT,
+    // 开局情境也要遵守游玩模式：战斗向就该一上来就在打
+    playMode ? playModeOf(playMode).rules : null,
     `## 可选天赋标签池\n${TALENT_POOL.join('、')}`,
-  ].join('\n\n---\n\n')
+  ].filter(Boolean).join('\n\n---\n\n')
 
 /**
  * 模型偶尔会交回一份空壳（正文 0 字、选项 0 个），实测端到端自检时撞到过一次。
@@ -303,7 +306,7 @@ export async function buildCharacterAndOpening(state, attrProfile, identityProfi
   )
 
   const input = await callWithRetry({
-    system: baseSystem(),
+    system: baseSystem(state.playMode),
     tool: submitOpeningScene,
     model: models.pro,
     maxTokens: 4000,

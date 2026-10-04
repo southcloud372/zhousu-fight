@@ -115,6 +115,14 @@ function makeFetchStub(log) {
     if (u.includes('/api/health')) return json({ ok: true })
     if (u.endsWith('/api/session') && method === 'POST') return json({ sessionId: 'ui-test', phase: 'storyline' })
     // ---- 故事线 ----
+    if (u.endsWith('/api/play-modes')) {
+      return json({ default: 'story', modes: [
+        { id: 'story', name: '剧情向', tagline: '战斗为主线，但让剧情、关系、日常有呼吸的空间', desc: '战斗占大头。', accent: 'blood' },
+        { id: 'combat', name: '战斗向', tagline: '弱化剧情，每轮都是战斗', desc: '转场日常一句话带过。', accent: 'blood' },
+      ] })
+    }
+    if (u.includes('/play-mode')) return json({ usage: usageFixture, playMode: JSON.parse(opts.body || '{}').mode })
+
     if (u.endsWith('/api/storylines')) {
       return json({ storylines: [
         { id: 'sukuna', name: '宿傩篇', subtitle: '2018 · 诅咒之王', era: '2018 — 2019',
@@ -540,6 +548,51 @@ test('开局第一屏是故事线选择，三条线各有自己的年代与阵�
   assert.ok(!dom.window.document.querySelector('.choices'), '这时不该有游戏界面')
   click([...sukuna.querySelectorAll('button')].find((b) => b.textContent.includes('进入这条线')))
   await waitFor('第一步 · 属性', { timeout: 60000 })
+})
+
+test('第一屏能选游玩模式，默认剧情向', async () => {
+  await mount()
+  click(findButton('开始生成'), '开始生成')
+  await waitFor('选择故事线', { timeout: 60000 })
+
+  const cards = [...dom.window.document.querySelectorAll('.mode-card')]
+  assert.equal(cards.length, 2, `应有两种游玩模式，实际 ${cards.length}`)
+  const names = cards.map((c) => c.querySelector('.mode-n').textContent)
+  assert.deepEqual(names, ['剧情向', '战斗向'])
+
+  // 默认选中剧情向
+  assert.ok(cards[0].className.includes('on'), '默认应当选中剧情向')
+  assert.ok(!cards[1].className.includes('on'), '战斗向不该默认选中')
+
+  // 点一下能切
+  click(cards[1])
+  await new Promise((r) => setTimeout(r, 60))
+  const after = [...dom.window.document.querySelectorAll('.mode-card')]
+  assert.ok(after[1].className.includes('on'), '点击后没有切到战斗向')
+  assert.ok(!after[0].className.includes('on'), '剧情向应当取消选中')
+
+  // 每种模式都要有说明
+  for (const c of after) {
+    assert.ok(c.querySelector('.mode-t').textContent.trim(), '缺少一句话说明')
+    assert.ok(c.querySelector('.mode-d').textContent.trim(), '缺少详细说明')
+  }
+})
+
+test('游戏内顶栏显示当前模式，点击可切换', async () => {
+  await enterGame()
+  const badge = dom.window.document.querySelector('.mode-badge')
+  assert.ok(badge, '顶栏没有模式徽章')
+  assert.match(badge.textContent, /剧情向/, '默认应显示剧情向')
+
+  click(badge)
+  await new Promise((r) => setTimeout(r, 200))
+  assert.match(dom.window.document.querySelector('.mode-badge').textContent, /战斗向/,
+    '点击后应当切到战斗向')
+
+  click(dom.window.document.querySelector('.mode-badge'))
+  await new Promise((r) => setTimeout(r, 200))
+  assert.match(dom.window.document.querySelector('.mode-badge').textContent, /剧情向/,
+    '再点一次应当切回剧情向')
 })
 
 test('穿越时间：三选一，保底含最开篇，按时间排序', async () => {

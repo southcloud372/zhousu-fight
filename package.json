@@ -23,7 +23,7 @@
     "server": "node --watch server/index.js",
     "web": "vite",
     "build": "vite build",
-    "test": "node --test tests/engine.test.mjs tests/llm.test.mjs tests/contract.test.mjs tests/runtime.test.mjs tests/constants.test.mjs tests/typewriter.test.mjs tests/crossover.test.mjs",
+    "test": "node --test tests/engine.test.mjs tests/llm.test.mjs tests/contract.test.mjs tests/runtime.test.mjs tests/constants.test.mjs tests/typewriter.test.mjs tests/crossover.test.mjs tests/playmode.test.mjs",
     "test:e2e": "node tests/e2e.mjs",
     "test:ui": "vite build && node --test tests/ui.test.mjs",
     "test:all": "npm test && npm run test:ui",

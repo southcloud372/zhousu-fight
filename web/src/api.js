@@ -11,8 +11,11 @@ async function req(url, opts = {}) {
 
 export const newSession = () => req('/api/session', { method: 'POST' })
 export const listStorylines = () => req('/api/storylines')
-export const chooseStoryline = (id, sid) =>
-  req(`/api/session/${id}/choose-storyline`, { method: 'POST', headers: J, body: JSON.stringify({ id: sid }) })
+export const listPlayModes = () => req('/api/play-modes')
+export const setPlayMode = (id, mode) =>
+  req(`/api/session/${id}/play-mode`, { method: 'POST', headers: J, body: JSON.stringify({ mode }) })
+export const chooseStoryline = (id, sid, playMode) =>
+  req(`/api/session/${id}/choose-storyline`, { method: 'POST', headers: J, body: JSON.stringify({ id: sid, playMode }) })
 
 export const genAttributes = (id) => req(`/api/session/${id}/attributes`, { method: 'POST' })
 export const customAttribute = (id, brief) =>

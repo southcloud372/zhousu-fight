@@ -601,6 +601,58 @@ body::before {
 }
 .pcard .pick-btn:hover { background: var(--blood); color: #fff; }
 
+/* 游玩模式选择 */
+.mode-picker { margin: 0 0 22px; }
+.mode-picker-h {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+  text-align: center;
+}
+.mode-picker-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 13px 15px;
+  text-align: left;
+  background: var(--bg-2);
+  border: 2px solid var(--line);
+  border-radius: 5px;
+  color: var(--ink);
+  transition: border-color 0.14s, background 0.14s, transform 0.1s;
+}
+.mode-card:hover { border-color: var(--blood-bright); transform: translateY(-1px); }
+.mode-card.on {
+  border-color: var(--blood);
+  background: #fdf6f5;
+  box-shadow: 0 0 0 3px rgba(168, 35, 27, 0.09);
+}
+.mode-n { font-family: var(--font-narr); font-size: 17px; letter-spacing: 0.08em; }
+.mode-card.on .mode-n { color: var(--blood); }
+.mode-t { font-size: 12px; color: var(--ink-dim); line-height: 1.5; }
+.mode-d { font-size: 11.5px; color: var(--ink-faint); line-height: 1.6; }
+
+/* 顶栏上的模式徽章 */
+.mode-badge {
+  padding: 3px 10px;
+  border: 1px solid var(--tier);
+  border-radius: 3px;
+  background: rgba(107, 53, 150, 0.07);
+  color: var(--tier);
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  transition: background 0.12s;
+}
+.mode-badge:hover { background: var(--tier); color: #fff; }
+
 /* 跨篇衔接 */
 .crossover { background: var(--bg); }
 .xo-progress {

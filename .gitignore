@@ -16,6 +16,10 @@ dist/
 server/saves/
 *.save
 
+# 临时脚本与输出（本机调试用，不进仓库）
+*-out.txt
+pm*.mjs
+
 # 日志
 *.log
 npm-debug.log*

@@ -19,6 +19,7 @@ import { submitTurn } from './engine/schemas.js'
 import { rollEnemy } from './engine/rolls.js'
 import { byId, pointsFor, initialNodes } from './engine/timeline.js'
 import { DEFAULT_STORYLINE, STORYLINES, storylineBriefs, storylineOf } from './engine/storylines.js'
+import { PLAY_MODES, playModeOf, playModeBriefs, DEFAULT_PLAY_MODE } from './engine/playmodes.js'
 import { canTrain, rollTraining, applyTraining, TRAINING_TABLE } from './engine/commands.js'
 import {
   stagesFor, FOCUSES, focusById, rollStage, applyStage, completeCrossover, crossoverReady,
@@ -78,6 +79,10 @@ const withUsage = (state, payload) => ({ ...payload, usage: usageSnapshot(state.
 // ---------------------------------------------------------------- 开局
 
 /** 可选故事线（开局第一屏用） */
+app.get('/api/play-modes', (req, res) => {
+  res.json({ modes: playModeBriefs(), default: DEFAULT_PLAY_MODE })
+})
+
 app.get('/api/storylines', (req, res) => {
   res.json({ storylines: storylineBriefs() })
 })
@@ -106,6 +111,9 @@ app.post('/api/session/:id/choose-storyline', asyncRoute(async (req, res) => {
   const id = String(req.body?.id || '')
   const line = STORYLINES[id]
   if (!line) return res.status(400).json({ error: '未知的故事线' })
+  // 游玩模式和故事线在同一屏选，一起提交
+  const mode = String(req.body?.playMode || '')
+  if (mode && PLAY_MODES[mode]) state.playMode = mode
   if (state.attributeProfiles?.length && state.storyline !== id) {
     return res.status(409).json({ error: '已经生成过档案了，换线请重新开一局' })
   }
@@ -226,6 +234,17 @@ app.post('/api/session/:id/time/custom', asyncRoute(async (req, res) => {
   persist(state)
   res.json(withUsage(state, { point }))
 }))
+
+/** 随时切换游玩模式 */
+app.post('/api/session/:id/play-mode', (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  const mode = String(req.body?.mode || '')
+  if (!PLAY_MODES[mode]) return res.status(400).json({ error: '未知的游玩模式' })
+  state.playMode = mode
+  persist(state)
+  res.json(withUsage(state, { playMode: mode }))
+})
 
 /** 第三步：选定穿越时间 → 组合最终档案 → 生成开局情境 */
 app.post('/api/session/:id/choose-time', asyncRoute(async (req, res) => {
@@ -494,7 +513,9 @@ function gatingLabel(gate) {
 }
 
 function turnSystem(state) {
-  const parts = [CORE_RULES, CONTRACT, turnStatePrompt(modelStateView(state))]
+  // 游玩模式放在契约之后 —— 越靠后的内容对模型的约束越强，
+  // 而战斗向的配比是要盖过设定原文那套默认比例的
+  const parts = [CORE_RULES, CONTRACT, playModeOf(state.playMode).rules, turnStatePrompt(modelStateView(state))]
   if (state.chronicle) parts.push(`## 前情提要\n${state.chronicle}`)
   if (state.pendingCombat) {
     parts.push(
@@ -513,6 +534,7 @@ function combatSystem(state, extra) {
   return [
     CORE_RULES,
     CONTRACT,
+    playModeOf(state.playMode).rules,
     turnStatePrompt(modelStateView(state)),
     `## 战斗叙事规则
 - 面板已经显示了所有数值。**你在叙事里绝对不要重复任何数字**（不要写"造成 340 点伤害"）。
@@ -941,6 +963,7 @@ app.get('/api/session/:id/state', (req, res) => {
     attributeProfiles: state.attributeProfiles,
     identityProfiles: state.identityProfiles,
     timeProfiles: state.timeProfiles || [],
+    playMode: state.playMode,
     log: state.log,
     panel: panelSnapshot(state),
     choices: state.phase === 'playing' && lastTurn ? withTrainingOption(lastTurn.choices || [], state) : [],
