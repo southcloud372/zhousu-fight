@@ -14,6 +14,7 @@
   --blood-bright: #c0392b;
   --cursed: #156a8a;
   --gold: #7a5c0a;
+  --gold-dim: #ecdfb6;       /* 轮盘上"这次落点"那一块的底色 */
   --tier: #6b3596;
   --ok: #2b6e46;
 
@@ -1074,4 +1075,146 @@ body::before {
     background: rgba(40, 34, 26, 0.35);
     z-index: 39;
   }
+}
+
+/* ---------------------------------------------------------- 日常轮盘（战斗向） */
+
+/*
+ * 两段剧情之间的空闲时间全靠它推进，所以它长在正文和选项之间、占满整栏宽度，
+ * 而不是缩在右侧那条窄状态栏里。
+ */
+.wheel-panel {
+  border-top: 1px solid var(--line);
+  background: var(--bg-3);
+  padding: 9px 24px 11px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.wheel-panel.ready {
+  background: linear-gradient(90deg, rgba(168, 35, 27, 0.07), transparent 65%);
+  border-top-color: var(--blood);
+}
+
+.wheel-left { flex: none; line-height: 0; }
+.wheel-svg { overflow: visible; }
+
+.wheel-mid { flex: 1; min-width: 0; }
+
+.wheel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.wheel-title { font-size: 12px; letter-spacing: 0.22em; color: var(--ink-dim); }
+.wheel-days { font-size: 12px; color: var(--ink-faint); }
+.wheel-fatigue { font-size: 12px; color: var(--ink-faint); cursor: help; }
+
+.wheel-next { font-size: 13.5px; color: var(--ink-dim); }
+.wheel-next b { color: var(--ink); }
+.wheel-next b.hot { color: var(--blood); }
+.wheel-sub { margin-left: 8px; font-size: 12px; color: var(--ink-faint); }
+
+.wheel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.wheel-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--ink);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.wheel-btn:hover:not(:disabled) { border-color: var(--ink-dim); }
+.wheel-btn.primary { border-color: var(--blood); color: var(--blood); }
+.wheel-btn.primary:hover:not(:disabled) { background: rgba(168, 35, 27, 0.06); }
+.wheel-btn:disabled { opacity: 0.45; }
+.wheel-block { font-size: 12px; color: var(--ink-faint); }
+.wheel-block.hot { color: var(--blood); }
+
+/*
+ * 六条成长进度条。
+ * 属性攒满 100% 才跳一次，所以"练到了没有"全靠这条进度条说话 ——
+ * 轮盘面板里是紧凑版（只有短名），右侧状态栏里是完整版（带说明）。
+ */
+.grow-bars { display: flex; flex-direction: column; gap: 3px; margin: 7px 0 0; }
+.grow-bars.compact { margin: 6px 0 0; }
+.grow-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  cursor: help;
+}
+.grow-name { flex: none; width: 26px; color: var(--ink-faint); }
+.grow-bars:not(.compact) .grow-name { width: 82px; text-align: left; white-space: nowrap; }
+.grow-track {
+  flex: 1;
+  min-width: 40px;
+  height: 4px;
+  background: var(--track);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.grow-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--gold);
+  transition: width 0.45s ease;
+}
+.grow-pct { flex: none; width: 32px; text-align: right; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+
+/* 轮盘一天的落点记录（正文里那块） */
+.wheel-log { border-left-color: var(--gold); }
+.wheel-log .wheel-log-head {
+  color: var(--gold);
+  letter-spacing: 0.1em;
+  margin-bottom: 4px;
+}
+.wheel-log .wheel-sectors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 3px 0;
+}
+.wheel-log .wheel-sectors span { color: var(--ink); }
+.wheel-log .wheel-sectors i { color: var(--ink-faint); font-style: normal; }
+
+/* 反转术式这类"不占回合"的行动 */
+.free-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--line);
+}
+.free-label { font-size: 11px; letter-spacing: 0.18em; color: var(--ink-faint); }
+.choice.free { border-color: var(--cursed); color: var(--cursed); }
+.choice.free:hover:not(:disabled) { background: rgba(21, 106, 138, 0.07); }
+.choice.free:disabled { opacity: 0.5; }
+.free-note {
+  font-size: 12.5px;
+  color: var(--cursed);
+  margin: 6px 0;
+}
+
+/* 选项为什么点不了，写在选项上 */
+.choice-reason { color: var(--ink-faint); font-size: 12px; }
+
+@media (max-width: 900px) {
+  .wheel-panel { padding: 8px 14px 10px; gap: 10px; }
+  .wheel-svg { width: 96px; height: 96px; }
 }

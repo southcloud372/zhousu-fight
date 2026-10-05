@@ -4,8 +4,9 @@ import {
   AttributeCard, IdentityCard, CustomCard, TimeCard, CustomTimeCard, StorylineCard, PlayModePicker,
 } from './components/Cards.jsx'
 import { NarrativeLog, ChoiceList, useTypewriter } from './components/Narrative.jsx'
-import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel } from './components/Panels.jsx'
+import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel, GrowthPanel } from './components/Panels.jsx'
 import { ActionBar } from './components/CombatPanel.jsx'
+import { WheelPanel } from './components/WheelPanel.jsx'
 import { SaveModal } from './components/SaveModal.jsx'
 import { CombatSidebar } from './components/CombatSidebar.jsx'
 import { CrossoverScreen, CrossoverResult } from './components/Crossover.jsx'
@@ -13,11 +14,15 @@ import { UsageMeter } from './components/UsageMeter.jsx'
 
 /** 存档里的 log 还原成界面条目 */
 function entriesFromLog(log) {
-  return (log || []).map((e) =>
-    e.type === 'training'
-      ? { kind: 'training', ...e }
-      : { kind: 'turn', turn: e.turn, narration: e.narration, recap: e.recap, dialogue: e.dialogue, notes: e.notes },
-  )
+  return (log || []).map((e) => {
+    if (e.type === 'training') return { ...e, kind: 'training' }
+    // 轮盘记录的 kind 装的是 'train' / 'rest' / 'advance'（这天干了什么），
+    // 所以分派用的 kind 换一个格子放，把原值搬到 mode 上。
+    // 顺序不能反：e 里自带 kind，摊在后面会把 'wheel' 冲掉。
+    if (e.type === 'wheel') return { ...e, kind: 'wheel', mode: e.kind }
+    if (e.type === 'recovery') return { ...e, kind: 'recovery' }
+    return { kind: 'turn', turn: e.turn, narration: e.narration, recap: e.recap, dialogue: e.dialogue, notes: e.notes }
+  })
 }
 
 export default function App() {
@@ -50,6 +55,12 @@ export default function App() {
   const [xoLast, setXoLast] = useState(null) // 上一段的成长结算
   const [customTime, setCustomTime] = useState(null)
   const [usage, setUsage] = useState(null) // 本局 token 用量与费用
+  // 战斗向：日常轮盘 + 不占回合的自由行动（反转术式）
+  const [wheel, setWheel] = useState(null)
+  const [wheelGate, setWheelGate] = useState(null)
+  const [freeActions, setFreeActions] = useState([])
+  // 成长面板的六行标题（服务端给，静态），进度值在 panel.training 里
+  const [growth, setGrowth] = useState(null)
 
   // 打字机：把成块到达的文字按节奏吐出来，而不是一块块往外蹦
   const tw = useTypewriter()
@@ -64,6 +75,11 @@ export default function App() {
     setRecap(r.recap || '')
     setChoices(r.choices || [])
     setPanel(r.panel)
+    if (r.playMode) setMode(r.playMode)
+    setWheel(r.wheel || null)
+    setWheelGate(r.wheelGate || null)
+    setFreeActions(r.freeActions || [])
+    if (r.growth) setGrowth(r.growth)
     askCombatEnter(r.combat)
     takeUsage(r.usage)
     setLiveCombat(null)
@@ -108,6 +124,10 @@ export default function App() {
           setEntries(entriesFromLog(r.log))
           setRecap(r.recap || '') // 刷新后选项上方那句提要也要恢复
           setChoices(r.choices || [])
+          setWheel(r.wheel || null)
+          setWheelGate(r.wheelGate || null)
+          if (r.growth) setGrowth(r.growth)
+          setFreeActions(r.freeActions || r.inCombat?.freeActions || [])
           askCombatEnter(r.combat)
           if (r.inCombat) {
             setLiveCombat({ mode: r.inCombat.mode, panel: r.inCombat.panel, narration: '', actions: r.inCombat.actions })
@@ -289,6 +309,8 @@ export default function App() {
       setRecap(res.recap || '')
       setChoices(res.choices || [])
       setPanel(res.panel)
+      setWheel(res.wheel || null)
+      setWheelGate(res.wheelGate || null)
       askCombatEnter(res.combat)
       setPhase('playing')
     } catch (e) {
@@ -324,6 +346,11 @@ export default function App() {
       const r = await api.getState(sessionId)
       if (r.panel) setPanel(r.panel)
       if (r.choices?.length) setChoices(r.choices)
+      // 轮盘和疗伤入口也一并捞回来 —— 报错重同步后它们不能凭空消失
+      if (r.wheel !== undefined) setWheel(r.wheel || null)
+      if (r.wheelGate !== undefined) setWheelGate(r.wheelGate || null)
+      if (r.growth) setGrowth(r.growth)
+      if (r.freeActions !== undefined) setFreeActions(r.freeActions || [])
       askCombatEnter(r.combat)
       setLiveCombat(
         r.inCombat
@@ -369,6 +396,10 @@ export default function App() {
         ])
         setChoices(data.choices || [])
         setPanel(data.panel)
+        // 这一轮剧情可能把日期往前推了，轮盘上的倒计时要跟着变
+        if (data.wheel !== undefined) setWheel(data.wheel || null)
+        if (data.wheelGate !== undefined) setWheelGate(data.wheelGate || null)
+        if (data.freeActions !== undefined) setFreeActions(data.freeActions || [])
         askCombatEnter(data.combat)
         setBusy(false)
       },
@@ -461,6 +492,7 @@ export default function App() {
         if (!data.over) {
           // 只在服务端确实给了行动列表时才覆盖，否则会把行动栏清空
           applyActions(data.actions)
+          setFreeActions(data.freeActions || [])
           if (data.snapshot) setPanel(data.snapshot) // 角色快照，不是战斗回合面板
           setBusy(false)
           return
@@ -471,6 +503,7 @@ export default function App() {
         }
         archiveLive()
         setLiveCombat(null) // 收工时整块清掉，streaming 标志随之消失
+        setFreeActions([])
         setEntries((prev) => [
           ...prev,
           { kind: 'combatResult', outcome: data.outcome, summary: data.summary, rewards: data.rewards, ups: data.ups },
@@ -528,7 +561,7 @@ export default function App() {
     setBusy(true)
     setError(null)
     let acc = ''
-    setLiveCombat((prev) => (prev ? { ...prev, actions: null, narration: '' } : prev))
+    setLiveCombat((prev) => (prev ? { ...prev, actions: null, narration: '', freeLines: [] } : prev))
 
     await api.combatAction(sessionId, type, {
       onPanel: ({ panel: cp }) => {
@@ -546,12 +579,14 @@ export default function App() {
         if (!data.over) {
           setLiveCombat((prev) => (prev ? { ...prev, streaming: false } : prev))
           applyActions(data.actions)
+          setFreeActions(data.freeActions || [])
           setPanel(data.panel)
           setBusy(false)
           return
         }
         archiveLive()
         setLiveCombat(null) // 收工时整块清掉，streaming 标志随之消失
+        setFreeActions([])
         setEntries((prev) => [
           ...prev,
           { kind: 'combatResult', outcome: data.outcome, summary: data.summary, rewards: data.rewards, ups: data.ups },
@@ -567,6 +602,104 @@ export default function App() {
       },
     })
   }, [sessionId, submit, archiveLive, resync, applyActions, takeUsage, tw])
+
+  // ------------------------------------------------- 战斗向：轮盘
+
+  /**
+   * 转一天 / 一路练到剧情当天。
+   *
+   * 引擎全算完再回来，所以这里不用等模型 —— 数字立刻落在日志里，
+   * 玩家看得见每天练到了哪儿。练到剧情当天时服务端顺手把这一仗挂上，
+   * 走的是和遭遇战同一条"要不要打"的询问流程。
+   */
+  const doWheel = useCallback(async (mode) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = mode === 'advance' ? await api.wheelAdvance(sessionId) : await api.wheelSpin(sessionId)
+      takeUsage(r.usage)
+
+      if (mode === 'advance') {
+        // 一天都没推（已经在当天了）就不留空条目
+        if (r.summary?.days > 0) {
+          // 注意顺序：summary 自带 kind:'advance'，摊在后面会把分派用的 'wheel' 冲掉
+          setEntries((prev) => [...prev, { ...r.summary, kind: 'wheel', mode: 'advance' }])
+        }
+      } else {
+        const rep = r.report || {}
+        setEntries((prev) => [...prev, {
+          ...rep,
+          kind: 'wheel',
+          mode: rep.kind,
+          // 单天的升级是一句话，整段的是一串 —— 统一成数组给日志渲染
+          gradeUps: rep.gradeUp ? [rep.gradeUp] : undefined,
+        }])
+      }
+
+      setWheel(r.wheel)
+      setPanel(r.panel)
+      // 闸门必须跟着刷新：这一天可能正好走到剧情节点当天了，
+      // 不刷的话轮盘会继续摆着可点的"转一天"，一按就把节点那天转过去了
+      if (r.gate) setWheelGate(r.gate)
+      if (r.combat) askCombatEnter(r.combat)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [sessionId, takeUsage, askCombatEnter])
+
+  // ------------------------------------------------- 疗伤
+
+  /**
+   * 处理身上的伤。
+   *
+   * 数值由引擎直接结算（不走模型）—— 玩家按下"反转术式"要的是当场看见血条动。
+   * 结算完再补一个静默回合规剧情，和修炼一样。
+   */
+  const doRecovery = useCallback(async (id) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await api.recovery(sessionId, id)
+      takeUsage(res.usage)
+      setEntries((prev) => [...prev, { ...res, kind: 'recovery' }])
+      setPanel(res.panel)
+      await submit('（处理身上的伤）', { silent: true })
+    } catch (e) {
+      setError(e.message)
+      setBusy(false)
+    }
+  }, [sessionId, submit, takeUsage])
+
+  // ------------------------------------------------- 不占回合的行动
+
+  /**
+   * 反转术式。
+   *
+   * 和服务端约定好：这条接口**不推进回合** —— 敌方不动，玩家接着出招。
+   * 返回里带角色快照，拿到就立刻刷右侧状态栏（这正是之前"用了技能血条不动"的修法）。
+   */
+  const doFreeAction = useCallback(async (type) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await api.combatFreeAction(sessionId, type)
+      takeUsage(r.usage)
+      if (r.snapshot) setPanel(r.snapshot)
+      applyActions(r.actions)
+      setFreeActions(r.freeActions || [])
+      if (r.lines?.length) {
+        setLiveCombat((prev) => (prev ? { ...prev, freeLines: [...(prev.freeLines || []), ...r.lines] } : prev))
+      }
+    } catch (e) {
+      setError(e.message)
+      // 按钮状态可能已经过期（比如上一回合用过了），重新问一次服务端
+      resync()
+    } finally {
+      setBusy(false)
+    }
+  }, [sessionId, takeUsage, applyActions, resync])
 
   const onPick = useCallback(async (choice) => {
     // 遭遇战：先问要不要打
@@ -608,11 +741,47 @@ export default function App() {
     }
     if (choice.kind === 'training-item') return doTraining(choice.item)
 
+    // 疗伤：和修炼一样先在日志里问一句，再把这几个方法摆成选项
+    if (choice.kind === 'recovery') {
+      try {
+        const opts = await api.recoveryOptions(sessionId)
+        if (!opts.items?.length) {
+          setError('现在没有可用的疗伤手段')
+          return
+        }
+        setEntries((prev) => [...prev, {
+          kind: 'inquiry',
+          inquiry: {
+            tag: '疗伤',
+            title: '处理身上的伤',
+            lines: [
+              '反转术式当场就能用，但吃咒力；静养和找家入硝子要花掉一天。',
+              '花掉的那一天，剧情会按原作时间线自己往前走。',
+            ],
+            hint: '选一种。',
+            tone: 'calm',
+          },
+        }])
+        setChoices(opts.items.map((it) => ({
+          id: `r-${it.id}`,
+          label: `${it.name}（${it.desc}）`,
+          kind: 'recovery-item',
+          item: it.id,
+          disabled: !it.enabled,
+          reason: it.reason || '',
+        })))
+      } catch (e) {
+        setError(e.message)
+      }
+      return
+    }
+    if (choice.kind === 'recovery-item') return doRecovery(choice.item)
+
     // 自己写的行动要带标记 —— 模型得能分辨"玩家点了选项"和"玩家自己写了指令"，
     // 后者在契约里是最高优先级
     const isCustom = choice.id === 'free'
     submit(isCustom ? `【我的行动】${choice.label}` : choice.label)
-  }, [sessionId, submit, askCombatMode, tryEvade, startCombat, doTraining])
+  }, [sessionId, submit, askCombatMode, tryEvade, startCombat, doTraining, doRecovery])
 
   /** 开局后也能换模式 —— 点顶栏那个徽章即可 */
   const togglePlayMode = useCallback(async () => {
@@ -620,6 +789,13 @@ export default function App() {
     setMode(next) // 先改本地，界面立刻响应
     try {
       await api.setPlayMode(sessionId, next)
+      // 切进战斗向要立刻把轮盘拉出来，否则得等下一次出招才看得见
+      const r = await api.getWheel(sessionId)
+      setWheel(r.wheel || null)
+      setWheelGate(r.gate || null)
+      if (r.panel) setPanel(r.panel)
+      // 切回剧情向就把轮盘收掉，免得挂着一块不生效的操作台
+      if (next !== 'combat') { setWheel(null); setWheelGate(null) }
     } catch (e) {
       setMode(playMode) // 失败就退回去
       setError(e.message)
@@ -881,8 +1057,27 @@ export default function App() {
           liveCombat={liveCombat}
         />
 
+        {/*
+          战斗向的日常轮盘：两段剧情之间的空档就在这里一天一天过。
+          只在非战斗时出现 —— 打起来之后操作台是左边那张战斗面板。
+        */}
+        {playMode === 'combat' && !liveCombat && !pending && wheel && (
+          <WheelPanel
+            wheel={wheel}
+            gate={wheelGate}
+            busy={busy || tw.shown !== null}
+            onSpin={() => doWheel('spin')}
+            onAdvance={() => doWheel('advance')}
+          />
+        )}
+
         {liveCombat?.mode === 'manual' && liveCombat.actions?.length ? (
-          <ActionBar actions={liveCombat.actions} onAct={doAction} disabled={busy} />
+          <ActionBar
+            actions={liveCombat.actions}
+            freeActions={freeActions}
+            onAct={(type, opts) => (opts?.free ? doFreeAction(type) : doAction(type))}
+            disabled={busy}
+          />
         ) : (
           <ChoiceList
             choices={choices}
@@ -895,6 +1090,7 @@ export default function App() {
 
       <div className={`side${showSide ? ' open' : ''}`}>
         <StatusPanel panel={panel} />
+        <GrowthPanel rows={growth} training={panel?.training} days={wheel?.days} />
         <RelationPanel relations={panel?.relations} />
         <SukunaPanel sukuna={panel?.sukuna} />
         <TimelinePanel timeline={panel?.timeline} />

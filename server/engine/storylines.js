@@ -31,16 +31,38 @@ const SUKUNA = {
   },
   accent: 'blood',
 
-  /** 原作节点，按时间先后 —— 时间线追踪器就照这个列 */
-  nodes: [
-    '虎杖吞手指', '死刑缓期', '高专入学', '少年院任务', '宿傩夺舍',
-    '京都姊妹校交流', '涩谷事变前夜', '涩谷事变', '死灭回游', '最终决战',
+  /**
+   * 原作节点排期 —— 时间线追踪器照这个列，战斗向的轮盘也按它停。
+   *
+   * 每个节点都是**自己那一天的一场仗**。早先轮盘只在 timePoints（穿越时间点）
+   * 那七站停，于是「虎杖吞手指」「死刑缓期」「高专入学」「宿傩夺舍」这四个
+   * 夹在两个时间点中间的节点，无论玩家练多久都不会触发 —— 追踪器上永远挂着
+   * "未发生"。危险度决定介入战的对手等级（见 wheel.interventionGrade）。
+   *
+   * 日期必须和 timePoints 的 nodesDone 对得上：某个时间点的 nodesDone 里列出的
+   * 节点，日期一定要早于那个时间点。constants.test.mjs 有一条专门守这个。
+   */
+  nodeSchedule: [
+    { node: '虎杖吞手指', date: '2018-06-08', danger: 1, dangerLabel: '序章' },
+    { node: '死刑缓期', date: '2018-06-12', danger: 2, dangerLabel: '险局' },
+    { node: '高专入学', date: '2018-06-15', danger: 2, dangerLabel: '险局' },
+    { node: '少年院任务', date: '2018-06-24', danger: 3, dangerLabel: '暗流' },
+    // 宿傩夺舍就在少年院那一晚 —— 同一天连着两场，轮盘打完第一场会立刻指着第二场
+    { node: '宿傩夺舍', date: '2018-06-24', danger: 4, dangerLabel: '地狱' },
+    { node: '京都姊妹校交流', date: '2018-07-12', danger: 3, dangerLabel: '暗流' },
+    { node: '涩谷事变前夜', date: '2018-08-20', danger: 3, dangerLabel: '暗流' },
+    { node: '涩谷事变', date: '2018-10-31', danger: 4, dangerLabel: '地狱' },
+    { node: '死灭回游', date: '2018-11-20', danger: 5, dangerLabel: '绝境' },
+    { node: '最终决战', date: '2019-03-10', danger: 5, dangerLabel: '终局' },
   ],
 
   /** 登场角色：关系网的初始名单，也是模型该用的人 */
   characters: [
     '虎杖悠仁', '伏黑惠', '钉崎野蔷薇', '五条悟', '七海建人',
     '宿傩', '禅院真希', '狗卷棘', '熊猫', '夜蛾正道',
+    // 高专的校医。她不在名单里的话，"去高专找家入硝子疗伤"这条恢复路线
+    // 在本线永远灰着 —— 而这是本条时间线上最顺理成章的一条
+    '家入硝子',
   ],
 
   /** 可拜师的对象（写进提示词，避免模型乱找不存在的人） */
@@ -122,9 +144,17 @@ const KAIGYOKU = {
   },
   accent: 'tier',
 
-  nodes: [
-    '天内理子护卫', '冲绳之行', '盘星教袭击', '理子之死',
-    '甚尔之战', '五条觉醒', '夏油叛逃', '玉折',
+  /** 原作节点排期 —— 见宿傩篇同名注释 */
+  nodeSchedule: [
+    { node: '天内理子护卫', date: '2006-06-05', danger: 1, dangerLabel: '序章' },
+    { node: '冲绳之行', date: '2006-07-10', danger: 2, dangerLabel: '险局' },
+    { node: '盘星教袭击', date: '2006-08-05', danger: 4, dangerLabel: '地狱' },
+    { node: '理子之死', date: '2006-08-15', danger: 5, dangerLabel: '绝境' },
+    // 甚尔之战与五条觉醒是同一个晚上 —— 原作里他刚咽气就睁眼了
+    { node: '甚尔之战', date: '2006-08-20', danger: 5, dangerLabel: '绝境' },
+    { node: '五条觉醒', date: '2006-08-20', danger: 4, dangerLabel: '地狱' },
+    { node: '夏油叛逃', date: '2007-06-15', danger: 4, dangerLabel: '地狱' },
+    { node: '玉折', date: '2007-09-01', danger: 5, dangerLabel: '终局' },
   ],
 
   characters: [
@@ -201,8 +231,14 @@ const FUTURE = {
   crossoverGap: null,
   crossoverNode: null,
 
-  nodes: [
-    '咒术界重组', '残秽扩散', '新容器现身', '第二座涩谷', '因果清算', '终局',
+  /** 原作节点排期 —— 见宿傩篇同名注释。本线是原创推演，日期没有原作依据 */
+  nodeSchedule: [
+    { node: '咒术界重组', date: '2029-04-05', danger: 2, dangerLabel: '险局' },
+    { node: '残秽扩散', date: '2029-08-15', danger: 3, dangerLabel: '暗流' },
+    { node: '新容器现身', date: '2030-02-01', danger: 4, dangerLabel: '地狱' },
+    { node: '第二座涩谷', date: '2030-10-31', danger: 5, dangerLabel: '绝境' },
+    { node: '因果清算', date: '2031-06-01', danger: 5, dangerLabel: '终局' },
+    { node: '终局', date: '2031-09-01', danger: 5, dangerLabel: '终局' },
   ],
 
   characters: [
@@ -254,6 +290,13 @@ const FUTURE = {
 export const STORYLINES = { sukuna: SUKUNA, kaigyoku: KAIGYOKU, future: FUTURE }
 export const STORYLINE_LIST = [SUKUNA, KAIGYOKU, FUTURE]
 export const DEFAULT_STORYLINE = 'sukuna'
+
+/**
+ * 节点名从排期里推出来 —— 两者手抄两份迟早会对不上：
+ * 加了节点忘了补排期，那一站轮盘就永远不停，追踪器上却挂着一条"未发生"。
+ * 顺序也归排期管：排期是按原作时间先后写的。
+ */
+for (const line of STORYLINE_LIST) line.nodes = line.nodeSchedule.map((n) => n.node)
 
 export const storylineOf = (id) => STORYLINES[id] || STORYLINES[DEFAULT_STORYLINE]
 

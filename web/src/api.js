@@ -41,6 +41,20 @@ export const train = (id, item) =>
   req(`/api/session/${id}/train`, { method: 'POST', headers: J, body: JSON.stringify({ item }) })
 export const trainingOptions = (id) => req(`/api/session/${id}/training-options`)
 
+// 疗伤：受伤时选项栏里的【疗伤】。纯引擎结算，不走模型，点完立刻能看到血条变化
+export const recoveryOptions = (id) => req(`/api/session/${id}/recovery-options`)
+export const recovery = (id, item) =>
+  req(`/api/session/${id}/recovery`, { method: 'POST', headers: J, body: JSON.stringify({ id: item }) })
+
+// 战斗向的日常轮盘：两段剧情之间一天一转，练到节点当天再介入
+export const getWheel = (id) => req(`/api/session/${id}/wheel`)
+export const wheelSpin = (id) => req(`/api/session/${id}/wheel/spin`, { method: 'POST' })
+export const wheelAdvance = (id) => req(`/api/session/${id}/wheel/advance`, { method: 'POST' })
+
+// 不占回合的自由行动（反转术式）：回合数不变，敌方不动，回来之后照常出招
+export const combatFreeAction = (id, action) =>
+  req(`/api/session/${id}/combat/free-action`, { method: 'POST', headers: J, body: JSON.stringify({ action }) })
+
 /**
  * 通用的 SSE 推流。服务端每吐一段事件就回调一次，
  * 前端直接把 narration 追加进去，不需要额外的打字机动画。

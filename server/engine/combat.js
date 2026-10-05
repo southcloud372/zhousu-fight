@@ -1,8 +1,10 @@
 import {
-  techniqueDamage, physicalStrike, techniqueCost, hpStatus, suppression,
+  techniqueDamage, physicalStrike, techniqueCost, hpStatus, suppression, REVERSE_TABLE,
 } from './formula.js'
 import { ENEMY_ARCHETYPES } from './rolls.js'
-import { GRADES, RANGES, TECH_MULT, gradeIndex, isTier } from './tables.js'
+import { GRADES, gradeIndex } from './tables.js'
+import { applyGradeUp } from './state.js'
+import { completeIntervention } from './wheel.js'
 import { rint } from './dice.js'
 
 /**
@@ -31,11 +33,17 @@ const DEFEND_REDUCTION = 0.35
 /** 领域可持续回合数，档位越高越久 */
 const DOMAIN_DURATION = { 弱特级: 5, 标特级: 6, 超特级: 7, 龙级: 8 }
 
-const REVERSE_TABLE = {
-  初步: { heal: 0.15, cost: 0.25 },
-  熟练: { heal: 0.30, cost: 0.20 },
-  精通: { heal: 0.50, cost: 0.15 },
-}
+// 反转术式的档位表来自 formula.js —— 战斗外的疗伤（recovery.js）用的是同一张表，
+// 免得同一招在战斗里外回血不一样
+
+/**
+ * 反转术式一回合能用几次。
+ *
+ * 它**不占回合数** —— 用完之后照常出招，这是它和普通行动的区别。
+ * 唯一的闸门是咒力，所以再给一道次数限制，免得"奶满再打"变成唯一解。
+ * 想放开就把这个数调大（设成 99 约等于无限）。
+ */
+export const FREE_REVERSE_PER_ROUND = 1
 
 export function unitSpeed(u) {
   return u.physicalDamage.value * 0.5 + u.efficiency.value * 100
@@ -48,16 +56,20 @@ function estimateCe(unit, rng) {
   return Math.max(0, Math.round(v / mag) * mag)
 }
 
-export function initCombat(state, rng, { mode, enemy, reason }) {
+export function initCombat(state, rng, { mode, enemy, reason, intervention = null }) {
   state.player.domain.active = false // 每场战斗重新展开
   state.combat = {
     mode,
     reason,
     turn: 1,
     enemy,
+    // 战斗向的介入战：打完之后要把「这一天」记进时间线（见 finishCombat）
+    intervention,
     playerFirst: unitSpeed(state.player) >= unitSpeed(enemy),
     over: false,
     outcome: null,
+    freeUsed: 0, // 本回合已用的不占回合行动（反转术式）
+    freeLog: [],
     log: [],
     stats: {
       usedTechnique: false,
@@ -85,15 +97,65 @@ function spendCe(unit, amount) {
   return { overdraft }
 }
 
-function reverseHeal(unit) {
-  const row = REVERSE_TABLE[unit.reverseCursedTechnique?.level]
+/** 一次反转术式要烧多少咒力、回多少血 —— 面板和按钮提示都要显示，所以单独给出来 */
+export function reversePreview(unit) {
+  const row = REVERSE_TABLE[unit?.reverseCursedTechnique?.level]
   if (!row) return null
-  const cost = Math.round(unit.ce.max * row.cost)
-  if (unit.ce.cur < cost) return null
-  unit.ce.cur -= cost
+  return {
+    cost: Math.round(unit.ce.max * row.cost),
+    heal: Math.round(unit.hp.max * row.heal),
+    level: unit.reverseCursedTechnique.level,
+  }
+}
+
+function reverseHeal(unit) {
+  const pv = reversePreview(unit)
+  if (!pv) return null
+  if (unit.ce.cur < pv.cost) return null
+  unit.ce.cur -= pv.cost
   const before = unit.hp.cur
-  unit.hp.cur = Math.min(unit.hp.max, Math.round(unit.hp.cur + unit.hp.max * row.heal))
-  return { healed: unit.hp.cur - before, cost }
+  unit.hp.cur = Math.min(unit.hp.max, unit.hp.cur + pv.heal)
+  return { healed: unit.hp.cur - before, cost: pv.cost }
+}
+
+/**
+ * 反转术式（不占回合的自由行动）。
+ *
+ * 玩家在出招前后都能按，按完照样出手 —— 这是它和普通行动唯一的区别，
+ * 也是它值得单独走一条接口的原因：它不能推进回合，也就不能触发敌方行动。
+ * 失败时一定给理由（咒力不够 / 本回合用过了 / 血是满的），
+ * 不能再出现"点了没反应、还以为状态栏坏了"的情况。
+ */
+export function freeReverse(state) {
+  const c = state.combat
+  const p = state.player
+  if (!c || c.over) return { ok: false, reason: '当前不在战斗中' }
+
+  const pv = reversePreview(p)
+  if (!pv) return { ok: false, reason: '尚未掌握反转术式' }
+  if ((c.freeUsed || 0) >= FREE_REVERSE_PER_ROUND) {
+    return { ok: false, reason: `本回合已经用过一次（每回合 ${FREE_REVERSE_PER_ROUND} 次）` }
+  }
+  if (p.hp.cur >= p.hp.max) return { ok: false, reason: '血条已经满了' }
+  if (p.ce.cur < pv.cost) return { ok: false, reason: `咒力不足（需 ${pv.cost}，现有 ${p.ce.cur}）` }
+
+  const before = p.hp.cur
+  p.ce.cur -= pv.cost
+  p.hp.cur = Math.min(p.hp.max, p.hp.cur + pv.heal)
+  const healed = p.hp.cur - before
+
+  c.freeUsed = (c.freeUsed || 0) + 1
+  c.freeLog.push({ turn: c.turn, healed, cost: pv.cost })
+  c.stats.usedReverse = true
+  c.stats.lowestHpRatio = Math.min(c.stats.lowestHpRatio, p.hp.cur / p.hp.max)
+  p.status = hpStatus(p.hp)
+
+  return {
+    ok: true,
+    healed,
+    cost: pv.cost,
+    lines: [`反转术式发动（不占回合），回复 ${healed} 点生命，消耗 ${pv.cost} 点咒力`],
+  }
 }
 
 /** 结算一次伤害；防御姿态减伤，领域展开时防御减半（必中） */
@@ -266,6 +328,9 @@ export function runRound(state, rng, playerAction, { autoPlayer = false } = {}) 
 
   if (c.over) return { events, over: true, outcome: c.outcome }
 
+  c.freeUsed = 0 // 新回合，不占回合的行动次数恢复
+  c.freeLog ||= []
+
   const playerPick = autoPlayer || !playerAction ? choosePlayerAutoAction(state, rng) : playerAction
 
   const doPlayer = () => {
@@ -320,6 +385,11 @@ export function buildPanel(state, events, notes = []) {
 
   const txt = (side) => events.filter((x) => x.side === side).flatMap((x) => x.lines).join('；') || '——'
   const dmgEvent = events.find((x) => x.side === 'player' && x.damage)
+  // 本回合里玩家按过的"不占回合"行动（反转术式）
+  const freeText = (c.freeLog || [])
+    .filter((f) => f.turn === c.turn)
+    .map((f) => `反转术式（不占回合）回复 ${f.healed} 点生命，消耗 ${f.cost} 点咒力`)
+    .join('；')
 
   return {
     turn: c.turn,
@@ -343,6 +413,7 @@ export function buildPanel(state, events, notes = []) {
     },
     actionText: txt('player'),
     enemyActionText: txt('enemy'),
+    freeActionText: freeText,
     breakdown: dmgEvent?.breakdown || null,
     damage: dmgEvent?.damage || 0,
     notes,
@@ -451,21 +522,7 @@ export function applyRewards(state, rewards) {
 
   if (rewards.gradeUp) {
     // 直接升一级：数值抬到新等级的区间起点，避免越级虚高
-    const g = rewards.gradeUp
-    const r = RANGES[g]
-    p.grade = g
-    p.hp.max = Math.max(p.hp.max, r.hp[0])
-    p.ce.max = Math.max(p.ce.max, r.ce[0])
-    p.cursedDamage.value = Math.max(p.cursedDamage.value, r.cd[0])
-    p.physicalDamage.value = Math.max(p.physicalDamage.value, r.pd[0])
-    p.hp.grade = p.ce.grade = p.cursedDamage.grade = p.physicalDamage.grade = g
-    p.technique.multiplier = TECH_MULT[g]
-    p.technique.grade = g
-    if (isTier(g) && !p.domain.unlocked) {
-      // 领域仍按第五节自己的四种触发方式领悟；这里只把进度顶到临界，算个提示
-      p.domain = { unlocked: false, progress: 90, active: false }
-    }
-    ups.push(`综合等级提升至 ${g}`)
+    ups.push(`综合等级提升至 ${applyGradeUp(p, rewards.gradeUp)}`)
   }
 
   return ups
@@ -476,6 +533,8 @@ export function finishCombat(state, outcome) {
   const won = outcome?.winner === 'player'
   const enemyName = state.combat?.enemy?.name || '敌人'
   const enemyGrade = state.combat?.enemy?.grade || ''
+  // 介入战要留个记号：战斗态马上就被清空了，之后再想问"这场是不是节点战"就晚了
+  const intervention = state.combat?.intervention || null
   state.combat = null
   state.player.domain.active = false
   state.player._defending = false
@@ -493,6 +552,11 @@ export function finishCombat(state, outcome) {
     summary = `与${enemyName}的战斗未分胜负`
   }
   if (state.timeline.newEvents.length > 40) state.timeline.newEvents.shift()
+
+  // 战斗向的介入战：把「这一天」记进时间线，并清掉修炼疲劳（新的空档重新开始）
+  if (intervention) {
+    summary += `。${completeIntervention(state, intervention, outcome)}`
+  }
 
   // 濒死必须显式告诉模型，否则它会照着"无事发生"往下写。
   // 设定：血条归零为濒死，未及时治疗则死亡（第一节）。

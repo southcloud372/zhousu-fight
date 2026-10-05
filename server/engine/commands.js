@@ -14,8 +14,8 @@ export const TRAINING_TABLE = {
   体术实战: { range: [0.12, 0.20], targets: ['physicalDamage'], cost: '体力+可能受伤', needPartner: true },
 }
 
-/** 天赋标签带来的额外加成（第八节第 1 小节） */
-const TALENT_BONUS = {
+/** 天赋标签带来的额外加成（第八节第 1 小节）。轮盘也按这张表加权，别改坏了 */
+export const TALENT_BONUS = {
   战斗直觉: ['体术实战', '体能训练'],
   咒力感知异常: ['咒力冥想', '领域雏形冥想'],
   命硬: ['体术实战', '体能训练'],
@@ -116,6 +116,18 @@ export function applyTraining(state, result) {
       } else if (t === 'techniqueMastery') {
         p.technique.mastery = Math.min(1, (p.technique.mastery || 0) + 0.1)
         ups.push(`术式熟练度 → ${Math.round(p.technique.mastery * 100)}%`)
+      } else if (t === 'domainProgress') {
+        // 这条以前是空的：领域雏形冥想练满 100% 也不会有任何变化，
+        // 等于白花一天。改成推进 domain.progress（只到 99%，领悟仍走第五节的四种契机）。
+        const d = p.domain
+        if (d.unlocked) {
+          ups.push('领域已领悟，冥想只能算温养')
+        } else {
+          d.progress = Math.min(99, (d.progress || 0) + 10)
+          ups.push(d.progress >= 90
+            ? `领域雏形进度 ${d.progress}%（只差一次契机）`
+            : `领域雏形进度 → ${d.progress}%`)
+        }
       } else if (t === 'reverseCursedTechnique') {
         p.reverseCursedTechnique.progress = Math.min(100, p.reverseCursedTechnique.progress + 10)
         if (p.reverseCursedTechnique.progress >= 100 && p.reverseCursedTechnique.level === '未掌握') {

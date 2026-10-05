@@ -104,3 +104,44 @@ test('所有服务端模块都能加载（无循环依赖 / 无语法错误）',
     assert.ok(Object.keys(m).length > 0, `${f}.js 没有任何导出`)
   }
 })
+
+test('三条线的节点排期自洽：每个节点都有那一天，快照不会漏掉过去的节点', async () => {
+  const { STORYLINE_LIST } = await import('../server/engine/storylines.js')
+
+  for (const line of STORYLINE_LIST) {
+    const rows = line.nodeSchedule
+    assert.ok(rows?.length, `${line.name} 没有节点排期`)
+    assert.deepEqual(rows.map((r) => r.node), line.nodes,
+      `${line.name} 的节点表与排期对不上 —— 两者必须同源`)
+
+    const dates = rows.map((r) => r.date)
+    assert.deepEqual(dates, [...dates].sort(), `${line.name} 的排期不是按时间先后写的`)
+
+    for (const r of rows) {
+      assert.match(r.date, /^\d{4}-\d{2}-\d{2}$/, `${line.name}「${r.node}」日期格式不对：${r.date}`)
+      assert.ok(r.date >= line.dateRange[0] && r.date <= line.dateRange[1],
+        `${line.name}「${r.node}」排到了本篇之外：${r.date}`)
+      assert.ok(r.danger >= 1 && r.danger <= 5, `${line.name}「${r.node}」危险度越界：${r.danger}`)
+      assert.ok(r.dangerLabel, `${line.name}「${r.node}」没有危险度标签`)
+    }
+
+    // 穿越时间点是一张"那天之前发生了什么"的快照，必须和排期严格对齐：
+    //   它标成已发生的节点，日期得早于它；
+    //   反过来，日期早于它的节点也必须都在里面 —— 否则选它开场就会留下一个
+    //   "日期已经过去、却还挂着未发生"的节点，而轮盘永远不会为它停下
+    const byNode = new Map(rows.map((r) => [r.node, r.date]))
+    for (const pt of line.timePoints) {
+      for (const n of pt.nodesDone) {
+        assert.ok(byNode.has(n), `${line.name}：时间点 ${pt.id} 写了一个不存在的节点「${n}」`)
+        assert.ok(byNode.get(n) < pt.date,
+          `${line.name}：${pt.id}(${pt.date}) 把「${n}」当成已发生，但排期是 ${byNode.get(n)}`)
+      }
+      for (const [n, d] of byNode) {
+        if (d < pt.date) {
+          assert.ok(pt.nodesDone.includes(n),
+            `${line.name}：在 ${pt.id}(${pt.date}) 开场，「${n}」(${d}) 已经过去，却还挂着未发生`)
+        }
+      }
+    }
+  }
+})

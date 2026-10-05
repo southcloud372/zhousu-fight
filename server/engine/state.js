@@ -1,10 +1,10 @@
 import { hpStatus } from './formula.js'
 import { sukunaAttitude, npcAttitude } from './visibility.js'
-import { DOMAIN_TIER } from './tables.js'
+import { DOMAIN_TIER, GRADES, RANGES, TECH_MULT, gradeIndex, isTier } from './tables.js'
 import { emptyUsage } from '../pricing.js'
 import { DEFAULT_STORYLINE, storylineOf } from './storylines.js'
 import { DEFAULT_PLAY_MODE, playModeOf } from './playmodes.js'
-import { initialNodes } from './timeline.js'
+import { initialNodes, nextMilestone, firstPoint } from './timeline.js'
 
 export const GAME_START_DATE = '2018-06-05'
 
@@ -34,7 +34,11 @@ export function blankState(rng, storylineId = DEFAULT_STORYLINE, playMode = DEFA
       nodes: initialNodes(line.id),
       changed: [], deaths: [], newEvents: [],
     },
-    time: { date: line.startDate, day: 1, skipStreak: 0 },
+    // point = 当前章节，只给界面看；战斗向"还差几天到下一个节点"走的是
+    // storylines.nodeSchedule（见 timeline.nextMilestone）
+    time: { date: line.startDate, day: 1, skipStreak: 0, point: firstPoint(line.id).id },
+    // 战斗向的日常轮盘：累计训练天数、各方向落点、疲劳系数（见 wheel.js）
+    wheel: { days: 0, sectors: {}, lastItem: null, lastUps: [], fatigue: 1, interventions: [] },
     log: [],       // 界面渲染用
     history: [],   // 喂给模型的对话历史
     chronicle: '', // 更早剧情的压缩摘要
@@ -161,6 +165,45 @@ export function applyProposal(state, prop) {
   return notes
 }
 
+/**
+ * 把角色抬到指定等级：数值抬到新等级区间的起点，避免越级虚高。
+ * 从 combat.js 的 applyRewards 里抽出来，好让轮盘也能用同一条升级路径。
+ */
+export function applyGradeUp(p, g) {
+  const r = RANGES[g]
+  p.grade = g
+  p.hp.max = Math.max(p.hp.max, r.hp[0])
+  p.ce.max = Math.max(p.ce.max, r.ce[0])
+  p.cursedDamage.value = Math.max(p.cursedDamage.value, r.cd[0])
+  p.physicalDamage.value = Math.max(p.physicalDamage.value, r.pd[0])
+  p.hp.grade = p.ce.grade = p.cursedDamage.grade = p.physicalDamage.grade = g
+  p.technique.multiplier = TECH_MULT[g]
+  p.technique.grade = g
+  if (isTier(g) && !p.domain.unlocked) {
+    // 领域仍按第五节自己的四种方式领悟；这里只把进度顶到临界，算个提示
+    p.domain = { unlocked: false, progress: 90, active: false }
+  }
+  return g
+}
+
+/**
+ * 靠积累升级：四项属性的上限都够到了下一级的区间起点，就升。
+ * 这是"堆够了就直接升级、没有专属突破剧情"的落地方式 ——
+ * 等级是练出来的，不是等剧情发下来的。
+ */
+export function promoteGrade(state) {
+  const p = state.player
+  if (!p) return null
+  const gi = gradeIndex(p.grade)
+  if (gi < 0 || gi >= GRADES.length - 1) return null
+  const next = GRADES[gi + 1]
+  const r = RANGES[next]
+  const ready = p.hp.max >= r.hp[0] && p.ce.max >= r.ce[0]
+    && p.cursedDamage.value >= r.cd[0] && p.physicalDamage.value >= r.pd[0]
+  if (!ready) return null
+  return applyGradeUp(p, next)
+}
+
 export function advanceTime(state, amount) {
   const days = { '1d': 1, '3d': 3, '1w': 7 }[amount] ?? 0
   if (!days) return
@@ -186,9 +229,26 @@ export function modelStateView(state) {
   )
 
   const line = storylineOf(state.storyline)
+
+  // 战斗向多一层"修炼循环"的真值：模型得知道玩家刚练了多久、
+  // 不然它会把一个练了三个月的角色写成昨天才起床。
+  let wheelView = null
+  if (state.playMode === 'combat' && p) {
+    const w = state.wheel || {}
+    const ms = nextMilestone(state)
+    wheelView = {
+      累计训练天数: w.days || 0,
+      各方向落点: w.sectors || {},
+      最近一次落点: w.lastItem || '无',
+      疲劳系数: Number((w.fatigue ?? 1).toFixed(2)),
+      距下一剧情节点: ms ? `${ms.daysLeft} 天（${ms.date}「${ms.node}」）` : '已无排期节点',
+    }
+  }
+
   return {
     故事线: `${line.name}（${line.era}）`,
     游玩模式: playModeOf(state.playMode).name,
+    ...(wheelView ? { 修炼循环: wheelView } : {}),
     本线登场角色: line.characters,
     本线原作节点: line.nodes,
     日期: state.time.date,

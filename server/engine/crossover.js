@@ -1,7 +1,7 @@
 import { RANGES, TECH_MULT, GRADES, gradeIndex, isTier } from './tables.js'
 import { rfloat } from './dice.js'
 import { storylineOf } from './storylines.js'
-import { initialNodes } from './timeline.js'
+import { initialNodes, pointsFor } from './timeline.js'
 import { hpStatus } from './formula.js'
 
 /**
@@ -165,6 +165,7 @@ export function completeCrossover(state, rng) {
   state.timeline.newEvents = []
   state.time.date = to.startDate
   state.time.day = 1
+  state.time.point = pointsFor(to.id)[0].id // 新篇从第一章重新算起
   state.crossover = null
 
   // 这些年不是白过的：等级提一级（没有突破门槛，能一路提到龙级）

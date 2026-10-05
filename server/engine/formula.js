@@ -48,6 +48,24 @@ export const DEFENSE_EFFICIENCY_RATIO = 0.2
 export const MIN_DAMAGE_RATIO = 0.1
 
 /**
+ * 反转术式的档位表（第五节）。
+ *
+ * 放在公式里而不是各自的模块里，是因为它有两个使用现场：
+ * 战斗内（combat.js，匆忙施术）与战斗外（recovery.js，能静下来做）。
+ * 早先两边各写了一张表，数值不一样 —— 同一招在战斗里外回血不同，
+ * 玩家一眼就看得出是 bug。现在只有这一张表，战斗外按 OUT_OF_COMBAT_HEAL_MULT 加成。
+ *   heal / cost 都是"占血条上限 / 咒力上限"的比例
+ */
+export const REVERSE_TABLE = {
+  初步: { heal: 0.15, cost: 0.25 },
+  熟练: { heal: 0.30, cost: 0.20 },
+  精通: { heal: 0.50, cost: 0.15 },
+}
+
+/** 战斗外不受打断，反转术式的效果按这个倍数放大 */
+export const OUT_OF_COMBAT_HEAL_MULT = 1.5
+
+/**
  * 等级压制系数。
  * 返回 { atkMul, defMul, nullify, domainLock, note }
  *   atkMul 作用于攻方输出，defMul 作用于守方防御值。

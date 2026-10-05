@@ -31,6 +31,64 @@ function Notes({ notes }) {
   )
 }
 
+/**
+ * 轮盘日报。
+ *
+ * 单转一天和"一路练到剧情当天"共用这一块：
+ * 前者是「第 N 天 · 落点 体能 +6.2%」，后者是「19 天 · 体能 ×7 术式 ×4 …」。
+ * 逐天铺十九行流水账没人要看，所以合并成一张卡。
+ */
+function WheelLog({ e }) {
+  // 单天（train / rest）还是整段（advance）。mode 由 entriesFromLog / App 搬进来，
+  // 因为 kind 这一格已经被 'wheel' 占了（Entry 靠它分派）
+  const single = (e.mode || e.kind) !== 'advance' ? e : null
+  const head = single
+    ? (single.sector ? `第 ${single.day} 天 · 落点 ${single.sector.short}` : `第 ${single.day} 天 · 养伤`)
+    : `${e.from} → ${e.to}　共 ${e.days} 天`
+
+  return (
+    <div className="notes wheel-log">
+      <div className="wheel-log-head">轮盘 · {head}</div>
+
+      {/* 只说"进度 +6.2%"的话，玩家会去右边找那条属性 —— 找不到就以为没生效。
+          把这条进度条现在到哪儿了、练满给什么，一次说清楚 */}
+      {single?.sector && (
+        <div>
+          进度 +{single.progress}%
+          {typeof single.progressNow === 'number' && <>　→　<b className="up">{single.progressNow}%</b></>}
+          （{single.sector.effect}）
+        </div>
+      )}
+
+      {!single && Object.keys(e.sectors || {}).length > 0 && (
+        <div className="wheel-sectors">
+          {Object.entries(e.sectors).map(([k, v]) => (
+            <span key={k}>{k} <i>×{v}</i></span>
+          ))}
+        </div>
+      )}
+
+      {/* 整段练完，六条进度条各自到哪儿了 */}
+      {!single && e.progress && (
+        <div className="wheel-sectors">
+          {Object.entries(e.progress).map(([k, v]) => (
+            <span key={k}>{k} <i>{v}%</i></span>
+          ))}
+        </div>
+      )}
+
+      {e.ups?.map((u, i) => <div key={i} className="up">· {u}</div>)}
+      {e.notes?.map((n, i) => <div key={`n${i}`}>· {n}</div>)}
+      {e.rest > 0 && <div>· 其中 {e.rest} 天在养伤</div>}
+      {e.healed > 0 && <div className="up">· 养伤回血 {e.healed}</div>}
+      {e.damage > 0 && <div style={{ color: 'var(--blood-bright)' }}>· 对练受伤 {e.damage}</div>}
+      {e.gradeUps?.length > 0 && (
+        <div className="up">★ 等级提升：{e.gradeUps.join(' → ')}</div>
+      )}
+    </div>
+  )
+}
+
 function Entry({ e }) {
   if (e.kind === 'player') {
     return <div className="player-input">{e.text}</div>
@@ -58,6 +116,22 @@ function Entry({ e }) {
         {e.ups?.map((u, i) => <div key={i} className="up">· {u}</div>)}
         {e.notes?.map((n, i) => <div key={`n${i}`}>· {n}</div>)}
         {e.hpDelta ? <div style={{ color: 'var(--blood-bright)' }}>· 受伤 {e.hpDelta}</div> : null}
+      </div>
+    )
+  }
+  if (e.kind === 'wheel') {
+    return <WheelLog e={e} />
+  }
+  if (e.kind === 'recovery') {
+    return (
+      <div className="notes" style={{ borderColor: 'var(--ok)' }}>
+        <div style={{ color: 'var(--ok)', letterSpacing: '0.1em', marginBottom: 4 }}>
+          疗伤 · {e.name}
+          {e.healed > 0 ? `　生命 +${e.healed}` : ''}
+          {e.days > 0 ? `　耗时 ${e.days} 天` : '　不占时间'}
+        </div>
+        {e.notes?.map((n, i) => <div key={i}>· {n}</div>)}
+        <div>· 血条 {e.hp?.cur} / {e.hp?.max}　咒力 {e.ce?.cur} / {e.ce?.max}　{e.status}</div>
       </div>
     )
   }
@@ -209,7 +283,7 @@ export function NarrativeLog({ entries, streaming, busy, liveCombat }) {
         <div className="log-inner">
           {entries.map((e, i) => (
             <React.Fragment key={i}>
-              {i > 0 && !['training', 'combat', 'combatResult', 'inquiry', 'crossover'].includes(e.kind) && (
+              {i > 0 && !['training', 'recovery', 'wheel', 'combat', 'combatResult', 'inquiry', 'crossover'].includes(e.kind) && (
                 <div className="turn-sep">第 {e.turn ?? ''} 回合</div>
               )}
               <Entry e={e} />
@@ -224,6 +298,11 @@ export function NarrativeLog({ entries, streaming, busy, liveCombat }) {
               {liveCombat.streaming && <span className="caret" />}
             </p>
           )}
+
+          {/* 不占回合的行动（反转术式）当场落在正文下面 —— 玩家按了就看得见 */}
+          {liveCombat?.freeLines?.map((t, i) => (
+            <div className="free-note" key={i}>↺ {t}</div>
+          ))}
 
           {streaming !== null && (
             <p className="narr">
@@ -306,6 +385,8 @@ export function ChoiceList({ choices, onPick, disabled, recap }) {
                   （修炼项是 t-体能训练 这种），当成序号显示会变成 "t-体能训练.体能训练" */}
               <span className="idx">{c.kind === 'training' ? '※' : i + 1}.</span>
               {c.label}
+              {/* 点不了的原因要说在明处：只挂在 title 上，触屏玩家永远看不到 */}
+              {c.disabled && c.reason && <span className="choice-reason">（{c.reason}）</span>}
             </button>
           ))}
         </div>

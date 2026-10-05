@@ -1,11 +1,39 @@
 import React from 'react'
 import { GradeTag } from './Panels.jsx'
 
-export function ActionBar({ actions, onAct, disabled }) {
+/**
+ * 回合行动栏。
+ *
+ * freeActions 是"不占回合"的那一类（目前只有反转术式）：按下去之后
+ * 回合数不变、敌方不动，玩家照样从下面挑一个行动。所以它单独占一行，
+ * 和普通行动视觉上分开 —— 否则玩家会以为按了它这一回合就过去了。
+ */
+export function ActionBar({ actions, freeActions, onAct, disabled }) {
   if (!actions?.length) return null
+  const frees = (freeActions || []).filter(Boolean)
+
   return (
     <div className="choices">
       <div className="choices-inner">
+        {frees.length > 0 && (
+          <div className="free-row">
+            <span className="free-label">不占回合</span>
+            {frees.map((f) => (
+              <button
+                key={f.type}
+                className="choice free"
+                style={{ marginBottom: 0, padding: '5px 12px', fontSize: 13 }}
+                disabled={disabled || !f.enabled}
+                title={f.note || ''}
+                onClick={() => onAct(f.type, { free: true })}
+              >
+                ↺ {f.label}
+                {f.note && <span style={{ color: 'var(--ink-faint)', fontSize: 11.5 }}>（{f.note}）</span>}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div style={{ fontSize: 11, letterSpacing: '0.2em', color: 'var(--ink-faint)', marginBottom: 8 }}>
           选择行动
         </div>

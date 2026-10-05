@@ -129,6 +129,26 @@ if (pending) {
   ok('done 携带行动栏（否则开打瞬间行动栏会消失）', Array.isArray(startDone?.actions) && startDone.actions.length >= 4)
   ok('panel 事件的形状是战斗回合面板', !!startPanel?.turn && !!startPanel?.player && !!startPanel?.enemy)
 
+  // 反转术式：不占回合的自由行动。代价与回血由服务端算好放在按钮上，
+  // 按下去必须当场带回角色快照 —— 之前就是血条不动，玩家以为技能没生效。
+  // 没练成也必须有这一格（灰着 + 写清楚去哪儿练），所以这里查的是"在不在"。
+  const free0 = startDone?.freeActions?.[0]
+  ok('开打时给出不占回合的反转术式位', free0?.type === 'reverse' && free0?.free === true,
+     free0 ? `${free0.label} / ${free0.note}` : '缺失')
+  if (free0?.enabled) {
+    const hpBefore = startDone.snapshot.hp.cur
+    const fr = await post(`/api/session/${sessionId}/combat/free-action`, { action: 'reverse' })
+    ok('反转术式当场回血', fr.snapshot.hp.cur > hpBefore, `HP ${hpBefore} → ${fr.snapshot.hp.cur}`)
+    ok('反转术式不占回合', fr.combat?.turn === 1 && fr.combat?.stats?.usedMelee === false,
+       `turn=${fr.combat?.turn} usedMelee=${fr.combat?.stats?.usedMelee}`)
+    const again = await fetch(`${B}/api/session/${sessionId}/combat/free-action`,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'reverse' }) })
+    ok('同一回合不能用第二次', again.status === 400)
+  } else {
+    // 灰着的那一格必须给得出理由（没练成 / 血满 / 咒力不够），而且真按下去要被拒
+    ok('灰着的反转术式写明了原因', !!free0?.note, free0?.note)
+  }
+
   let rounds = 0, over = false, fin = null
   while (rounds < 15 && !over) {
     const pick = actions.find(a=>a.type==='domain'&&a.enabled) ? 'domain'
@@ -149,6 +169,57 @@ if (pending) {
   ok('战后 HP 未越界', fin.panel.hp.cur >= 0 && fin.panel.hp.cur <= fin.panel.hp.max)
   ok('战后咒力未越界', fin.panel.ce.cur >= 0 && fin.panel.ce.cur <= fin.panel.ce.max)
 }
+
+hdr('6.5 战斗向：日常轮盘与疗伤')
+// 轮盘和疗伤都是纯引擎结算，不调模型 —— 这几条是廉价的，但能守住接口形状
+await post(`/api/session/${sessionId}/play-mode`, { mode: 'combat' })
+const w0 = await (await fetch(`${B}/api/session/${sessionId}/wheel`)).json()
+ok('切成战斗向后轮盘可用', w0.gate?.ok === true, w0.gate?.reason || '')
+ok('闸门分开给"能不能转"和"能不能推"',
+   typeof w0.gate?.spin === 'boolean' && typeof w0.gate?.advance === 'boolean', JSON.stringify(w0.gate))
+ok('轮盘给出下一个剧情节点', !!w0.wheel?.milestone?.node, w0.wheel?.milestone?.node)
+ok('轮盘六个方向都带权重', w0.wheel?.sectorsTable?.length === 6,
+   w0.wheel?.sectorsTable?.map(s=>s.short).join('/'))
+ok('每个方向都带自己的成长进度', w0.wheel?.sectorsTable?.every(s => typeof s.progress === 'number'),
+   (w0.wheel?.sectorsTable||[]).map(s=>`${s.short} ${s.progress}%`).join(' / '))
+ok('成长面板的六行标题跟着状态一起来', w0.growth?.length === 6, (w0.growth||[]).map(g=>g.id).join('/'))
+const spin = await post(`/api/session/${sessionId}/wheel/spin`)
+// 重伤 / 濒死的那天只能躺着养伤，这时候没有落点是正确行为，不是丢数据
+const sec = spin.report?.sector
+ok('转一天要么落在某个方向上、要么躺着养伤', !!(sec?.short || spin.report?.kind === 'rest'),
+   sec ? `${sec.short} +${spin.report.progress}%` : `养伤（${spin.report?.notes?.[0] || '…'}）`)
+ok('转一天只走一天', spin.wheel?.days === (w0.wheel?.days || 0) + 1, `累计 ${spin.wheel?.days} 天`)
+ok('转一天带出角色快照', !!spin.panel?.hp)
+// 转完这一天可能正好落在剧情节点当天 —— 闸门必须当场跟着回来，否则界面还留着可点的「转一天」
+ok('转一天把闸门一起带回来', typeof spin.gate?.spin === 'boolean', JSON.stringify(spin.gate))
+const adv = await post(`/api/session/${sessionId}/wheel/advance`)
+if (adv.summary?.days > 0) {
+  ok('练到剧情当天会合并成一张日报', !!adv.summary.from && !!adv.summary.to,
+     `${adv.summary.from} → ${adv.summary.to} 共 ${adv.summary.days} 天`)
+  ok('日报里各方向天数加养伤天数等于总天数',
+     Object.values(adv.summary.sectors||{}).reduce((a,b)=>a+b,0) + (adv.summary.rest||0) === adv.summary.days,
+     `${JSON.stringify(adv.summary.sectors)} + 养伤 ${adv.summary.rest||0} = ${adv.summary.days} 天`)
+  ok('日报带出六条进度条各自到哪儿了', Object.keys(adv.summary.progress||{}).length === 6,
+     JSON.stringify(adv.summary.progress))
+  ok('练到当天就把介入战挂上', !!adv.combat?.enemy?.name, adv.combat?.enemy?.name || '未挂上')
+} else {
+  ok('已经贴在剧情当天，练不进更远', true, '当天转不动是正确行为')
+}
+ok('推进后闸门也一起回来', typeof adv.gate?.spin === 'boolean', JSON.stringify(adv.gate))
+const ro = await (await fetch(`${B}/api/session/${sessionId}/recovery-options`)).json()
+ok('疗伤清单三项齐全', ro.items?.length === 3, ro.items?.map(i=>i.id).join('/'))
+ok('每一项都给出能不能用', ro.items?.every(i => typeof i.enabled === 'boolean' && typeof i.reason === 'string'))
+// 疗伤入口是跟着伤势开关的：血条见底才该冒出来（刚被宿傩打了一顿，这里通常是开着的）
+const st65 = await (await fetch(`${B}/api/session/${sessionId}/state`)).json()
+const hurt = st65.panel.status !== '正常' || st65.panel.hp.cur < st65.panel.hp.max * 0.6
+ok('疗伤清单与伤势对得上', ro.needed === hurt,
+   `needed=${ro.needed} HP ${st65.panel.hp.cur}/${st65.panel.hp.max} ${st65.panel.status}`)
+ok('受伤时选项里才多出疗伤入口',
+   (st65.choices||[]).some(c => c.kind === 'recovery') === hurt,
+   (st65.choices||[]).map(c=>c.kind).join(','))
+await post(`/api/session/${sessionId}/play-mode`, { mode: 'story' })
+const back = await (await fetch(`${B}/api/session/${sessionId}/wheel`)).json()
+ok('切回剧情向后轮盘关掉', back.gate?.ok === false, back.gate?.reason)
 
 hdr('7. 存档槽位')
 const sv = await post(`/api/session/${sessionId}/save`, { name: '自检存档' })
@@ -175,6 +246,8 @@ const r2 = await fetch(`${B}/api/session/不存在的会话/state`)
 ok('未知会话返回 404', r2.status === 404)
 const r3 = await fetch(`${B}/api/session/${sessionId}/combat/action`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'technique'})})
 ok('非战斗中禁止出招', r3.status === 400)
+const r3b = await fetch(`${B}/api/session/${sessionId}/combat/free-action`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'reverse'})})
+ok('非战斗中禁止用反转术式', r3b.status === 400)
 
 console.log(`\n═══ 自检结果：${pass} 通过 / ${fail} 失败 ═══`)
 process.exit(fail ? 1 : 0)

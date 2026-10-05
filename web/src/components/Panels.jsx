@@ -103,6 +103,42 @@ export function StatusPanel({ panel }) {
   )
 }
 
+/**
+ * 成长面板 —— 六个修炼方向的进度条。
+ *
+ * 属性不是"转一天加一点"，而是**攒满 100% 才跳一次**（血条上限 +10%、
+ * 术式熟练 +10%……），轮盘一天只推几个点。不把进度摆出来的话，玩家转完一天
+ * 回头看右边，数字纹丝不动，只会以为轮盘白转了 —— "加了属性右边怎么没更新"
+ * 说的就是这件事。进度条就是那句"我确实练到了"。
+ */
+export function GrowthPanel({ rows, training, days }) {
+  if (!rows?.length) return null
+  const list = rows.map((r) => ({ ...r, progress: Math.round(training?.[r.id] || 0) }))
+  // 一次都没练过就别占地方 —— 开局六条全 0 的进度条只是噪音
+  if (!list.some((r) => r.progress > 0) && !days) return null
+
+  return (
+    <div className="panel">
+      <h3>成长{days > 0 ? ` · 修炼 ${days} 天` : ''}</h3>
+      <div className="card">
+        {list.map((r) => (
+          <div className="grow-row" key={r.id} title={`练满 100% 给：${r.effect}`}>
+            <span className="grow-name">{r.id}</span>
+            <span className="grow-track">
+              <i className="grow-fill" style={{ width: `${Math.max(0, Math.min(100, r.progress))}%` }} />
+            </span>
+            <span className="grow-pct">{r.progress}%</span>
+          </div>
+        ))}
+        <div style={{ fontSize: 11, color: 'var(--ink-faint)', marginTop: 6, lineHeight: 1.6 }}>
+          攒满 100% 当场结算：血条上限 / 咒力上限 / 伤害 +10%，咒力效率 +5%，
+          术式熟练、领域雏形、反转术式按各自的档位走
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function RelationPanel({ relations }) {
   if (!relations) return null
   const rows = Object.entries(relations).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))

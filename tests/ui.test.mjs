@@ -57,6 +57,10 @@ let usageFixture = USAGE
 let evadeSucceeds = false // 脱离判定结果，测试里可切换
 let turnHasCombat = true  // 这一回合是否触发遭遇战
 let crossoverDone = 0      // 跨篇历练已完成的段数
+let playModeFixture = 'story' // /state 报的当前模式
+let wounded = false       // 角色是否带伤（触发疗伤入口）
+let wheelReady = false    // 轮盘是否已经走到剧情当天
+let reverseUnknown = false // 角色还没练成反转术式（自由行动那一格该灰着）
 
 const CHARACTER_SNAPSHOT = {
   name: '测试者', age: 17, grade: '一级', backgroundType: '自由派', background: 'b',
@@ -72,8 +76,88 @@ const CHARACTER_SNAPSHOT = {
   sukuna: { fingersCollected: 1, fingersEaten: 1, awakening: 5, attitude: '无视' },
   timeline: { nodes: { 虎杖吞手指: '已发生' }, changed: [], deaths: [], newEvents: [] },
   time: { date: '2018-06-05', day: 1, skipStreak: 0 },
-  training: {}, combat: null, pendingCombat: null, combatLog: [],
+  // 六条成长进度（0~100）。属性是攒满才跳一次的，这几个数就是玩家唯一
+  // 能看见"轮盘没白转"的地方 —— 少了它，右边状态栏一整天都不动
+  training: { 体能训练: 38, 咒力冥想: 12, 术式演练: 0, 体术实战: 0, 反转术式修习: 0, 领域雏形冥想: 0 },
+  combat: null, pendingCombat: null, combatLog: [],
 }
+
+/** 成长面板的六行标题 —— 服务端每次 /state 都会带下来 */
+const GROWTH = [
+  { id: '体能训练', short: '体能', effect: '血条上限 · 体术伤害' },
+  { id: '咒力冥想', short: '冥想', effect: '咒力上限 · 咒力效率' },
+  { id: '术式演练', short: '术式', effect: '咒术伤害 · 术式熟练' },
+  { id: '体术实战', short: '实战', effect: '体术伤害（有受伤风险）' },
+  { id: '反转术式修习', short: '反转', effect: '反转术式熟练度' },
+  { id: '领域雏形冥想', short: '领域', effect: '领域雏形进度' },
+]
+
+/** 带伤的角色快照 —— 疗伤/反转术式要看得见血条变化 */
+let hpCur = 40
+const woundedSnapshot = (cur = hpCur) => ({
+  ...CHARACTER_SNAPSHOT,
+  hp: { cur, max: 100, grade: '一级' },
+  status: cur >= 100 ? '正常' : cur >= 60 ? '轻伤' : cur >= 25 ? '重伤' : '濒死',
+})
+const snapshotFor = () => (wounded ? woundedSnapshot() : CHARACTER_SNAPSHOT)
+
+/** 轮盘快照：界面要拿它画六个扇区、疲劳、以及"还差几天" */
+const wheelFixture = (ready = false) => ({
+  days: 12,
+  sectors: { 体能训练: 5, 咒力冥想: 4 },
+  lastItem: '体能训练',
+  lastUps: [],
+  fatigue: 0.86,
+  interventions: [],
+  milestone: {
+    id: '少年院任务', label: '2018年6月24日 · 少年院任务', date: '2018-06-24',
+    node: '少年院任务', danger: 2, dangerLabel: '危险', daysLeft: ready ? 0 : 19,
+  },
+  ready,
+  // 六条进度条：右边成长面板和轮盘里的细条都读这一份
+  progress: { 体能: 38, 冥想: 12, 术式: 0, 实战: 0, 反转: 0, 领域: 0 },
+  sectorsTable: [
+    { id: '体能训练', short: '体能', effect: '血条上限', count: 5, weight: 1.3, progress: 38 },
+    { id: '咒力冥想', short: '冥想', effect: '咒力上限', count: 4, weight: 1.2, progress: 12 },
+    { id: '术式演练', short: '术式', effect: '术式伤害', count: 2, weight: 1.2, progress: 0 },
+    { id: '体术实战', short: '体术', effect: '体术伤害', count: 1, weight: 1.1, progress: 0 },
+    { id: '反转术式修习', short: '反转', effect: '反转掌握度', count: 0, weight: 0.7, progress: 0 },
+    { id: '领域雏形冥想', short: '领域', effect: '领域雏形', count: 0, weight: 0.5, progress: 0 },
+  ],
+})
+
+/**
+ * 轮盘闸门：ok=这套玩法现在能不能用，spin/advance=两个按钮各自能不能按。
+ * 到剧情节点当天时 spin 关掉、advance 留着 —— 一起禁掉的话玩家会卡在节点当天。
+ */
+const wheelGateFixture = (ready = wheelReady) =>
+  playModeFixture !== 'combat'
+    ? { ok: false, spin: false, advance: false, reason: '日常轮盘只在战斗向里跑' }
+    : ready
+      ? { ok: true, spin: false, advance: true, reason: '「少年院任务」就是今天 —— 先打完这一场' }
+      : { ok: true, spin: true, advance: true, reason: '' }
+
+/** 战斗行动列表 —— 自由行动那一条单独给 */
+const COMBAT_ACTIONS = [
+  { type: 'physical', label: '体术攻击', enabled: true },
+  { type: 'technique', label: '生得术式·测试术式', enabled: true },
+  { type: 'defend', label: '防御（回复咒力）', enabled: true },
+  { type: 'flee', label: '脱离战斗', enabled: true },
+]
+const FREE_REVERSE = (used = false) => (reverseUnknown ? ([
+  // 没练成的角色：这一格照样在，只是灰着并写明去哪儿练 ——
+  // 之前这里返回空数组，玩家打完了都不知道战斗栏本该有个不占回合的技能
+  {
+    type: 'reverse', label: '反转术式·未掌握', free: true, enabled: false,
+    note: '先修炼「反转术式修习」，练到初步就能用', cost: 0, heal: 0,
+  },
+]) : ([
+  {
+    type: 'reverse', label: '反转术式·初步', free: true,
+    enabled: !used, note: used ? '本回合已用过' : '消耗 50 咒力，回复 30 生命',
+    cost: 50, heal: 30,
+  },
+]))
 
 /** 造一个够用的假后端 */
 function makeFetchStub(log) {
@@ -157,8 +241,11 @@ function makeFetchStub(log) {
             { id: '1', label: '迎战', kind: 'story' },
             { id: 'T', label: '【跳过当天，进行修炼】', kind: 'training' },
           ],
-          panel: null,
+          panel: snapshotFor(),
           usage: usageFixture,
+          wheel: playModeFixture === 'combat' ? wheelFixture(wheelReady) : null,
+          wheelGate: playModeFixture === 'combat' ? wheelGateFixture() : null,
+          freeActions: [],
           combat: turnHasCombat
             ? { enemyName: '腐骨咒灵', enemyGrade: '二级', enemyTechnique: '蚀骨', reason: '它挡在路上' }
             : null,
@@ -190,14 +277,9 @@ function makeFetchStub(log) {
         }
         return sse([
           ['panel', { panel, text: '', mode: 'manual' }],
-          ['awaiting', { actions: [
-            { type: 'physical', label: '体术攻击', enabled: true },
-            { type: 'technique', label: '生得术式·测试术式', enabled: true },
-            { type: 'defend', label: '防御（回复咒力）', enabled: true },
-            { type: 'flee', label: '脱离战斗', enabled: true },
-          ] }],
+          ['awaiting', { actions: COMBAT_ACTIONS, freeActions: FREE_REVERSE(false) }],
           // 契约：done.snapshot 是角色快照；战斗回合面板只走 panel 事件
-          ['done', { over: false, snapshot: CHARACTER_SNAPSHOT, text: '' }],
+          ['done', { over: false, snapshot: snapshotFor(), text: '', freeActions: FREE_REVERSE(false) }],
         ])
       }
       return sse([
@@ -231,6 +313,86 @@ function makeFetchStub(log) {
       ])
     }
 
+    // ---- 不占回合的自由行动（反转术式）----
+    if (u.endsWith('/combat/free-action')) {
+      const action = JSON.parse(opts.body || '{}').action
+      // 治疗真的落到角色身上 —— 后面的快照都要带着这个新血量
+      if (action === 'reverse') hpCur = 70
+      return json({
+        usage: usageFixture,
+        ok: true, healed: 30, cost: 50,
+        lines: [`反转术式铺开：${action === 'reverse' ? '伤口在数秒内收拢' : '无事发生'}`],
+        // 关键：这条接口不推进回合，但必须带角色快照 —— 血条要当场动
+        snapshot: woundedSnapshot(),
+        actions: COMBAT_ACTIONS,
+        freeActions: FREE_REVERSE(true),
+      })
+    }
+
+    // ---- 疗伤 ----
+    if (u.includes('/recovery-options')) {
+      return json({
+        needed: wounded,
+        items: [
+          { id: 'reverse', name: '反转术式', cost: 50, time: 0, desc: '消耗 50 咒力，回复 30 生命（不占时间）', enabled: true, reason: '' },
+          { id: 'rest', name: '静养一天', cost: 0, time: 1, desc: '休息一天，回复 18 生命', enabled: true, reason: '' },
+          { id: 'shoko', name: '找家入硝子', cost: 0, time: 1, desc: '一天，几乎治好', enabled: false, reason: '你和她的关系还不够' },
+        ],
+      })
+    }
+    if (u.endsWith('/recovery') && method === 'POST') {
+      const id = JSON.parse(opts.body || '{}').id
+      hpCur = 58
+      return json({
+        usage: usageFixture, id, name: '静养一天', healed: 18, cost: 0, days: 1,
+        notes: ['睡了一整天，伤口不再渗血'], status: '轻伤',
+        hp: { cur: hpCur, max: 100 }, ce: { cur: 120, max: 200 },
+        panel: { ...woundedSnapshot(), ce: { cur: 120, max: 200, grade: '一级' } },
+      })
+    }
+
+    // ---- 战斗向：日常轮盘 ----
+    if (u.endsWith('/wheel') && method === 'GET') {
+      return json({
+        usage: usageFixture, enabled: playModeFixture === 'combat',
+        gate: wheelGateFixture(), wheel: wheelFixture(wheelReady), panel: snapshotFor(),
+        growth: playModeFixture === 'combat' ? GROWTH : null,
+      })
+    }
+    if (u.endsWith('/wheel/spin')) {
+      return json({
+        usage: usageFixture,
+        report: {
+          day: 13, date: '2018-06-06', kind: 'train',
+          sector: { id: '体能训练', short: '体能', effect: '血条上限' },
+          progress: 6.2, progressNow: 44, healed: 0, ups: ['血条上限 → 1,240'],
+          notes: [], hpDelta: 0, gradeUp: null,
+        },
+        wheel: wheelFixture(wheelReady), combat: null, panel: snapshotFor(),
+        // 闸门跟着回来：转完这一天可能正好落在剧情节点当天
+        gate: wheelGateFixture(),
+        growth: GROWTH,
+      })
+    }
+    if (u.endsWith('/wheel/advance')) {
+      return json({
+        usage: usageFixture,
+        summary: {
+          kind: 'advance', from: '2018-06-05', to: '2018-06-24', days: 19, rest: 0,
+          sectors: { 体能训练: 7, 术式演练: 4, 咒力冥想: 3 },
+          ups: ['血条上限 → 1,340'], notes: [], healed: 0, damage: 0, gradeUps: [], status: '正常',
+          progress: { 体能: 52, 冥想: 30, 术式: 18, 实战: 5, 反转: 2, 领域: 0 },
+        },
+        wheel: wheelFixture(true),
+        // 练到当天，服务端顺势把这场仗挂上
+        combat: { enemyName: '少年院特级咒胎', enemyGrade: '特级', enemyTechnique: '变形', reason: '「少年院任务」就在今天' },
+        panel: snapshotFor(),
+        // 当天闸门：不许再往后转，但这一场要打得成
+        gate: wheelGateFixture(true),
+        growth: GROWTH,
+      })
+    }
+
     // ---- 修炼 ----
     if (u.includes('/training-options')) {
       return json({
@@ -254,12 +416,22 @@ function makeFetchStub(log) {
     if (u.endsWith('/state')) {
       return json({
         phase: 'playing',
+        playMode: playModeFixture,
         log: [{ type: 'turn', turn: 1, narration: '测试正文。', recap: '你落在杉泽第三高中外的巷口，虎杖刚从墙里翻出来。', dialogue: [{ speaker: '宿傩', text: '特级？' }], notes: [], choices: ['前进', '后退', '观察'] }],
         recap: '你落在杉泽第三高中外的巷口，虎杖刚从墙里翻出来。',
-        panel: CHARACTER_SNAPSHOT,
+        panel: snapshotFor(),
         usage: usageFixture,
-        choices: [{ id: '1', label: '前进', kind: 'story' }],
+        choices: [
+          { id: '1', label: '前进', kind: 'story' },
+          // 受伤时服务端会在末尾追加疗伤入口
+          ...(wounded ? [{ id: 'R', label: '【疗伤】处理身上的伤（反转术式 / 静养 / 家入硝子）', kind: 'recovery' }] : []),
+        ],
         actions: null, combat: null, inCombat: null,
+        // 战斗向才有轮盘，剧情向这两个字段是 null
+        wheel: playModeFixture === 'combat' ? wheelFixture(wheelReady) : null,
+        wheelGate: playModeFixture === 'combat' ? wheelGateFixture() : null,
+        // 成长面板的六行标题（进度条本身在 panel.training 里）
+        growth: playModeFixture === 'combat' ? GROWTH : null,
       })
     }
     // ---- 自主定义 ----
@@ -1305,4 +1477,196 @@ test('修炼也是对话流里的询问，不是弹窗', async () => {
   } finally {
     turnHasCombat = true
   }
+})
+
+// ---------------------------------------------------------------- 战斗向
+
+test('战斗向：主界面有日常轮盘，转一天落一个方向', async () => {
+  playModeFixture = 'combat'
+  try {
+    await enterGame()
+    const wp = dom.window.document.querySelector('.wheel-panel')
+    assert.ok(wp, '战斗向的主界面没有日常轮盘')
+
+    const t = wp.textContent
+    assert.match(t, /日常轮盘/, '没有标题')
+    assert.match(t, /累计修炼 12 天/, '没有累计天数')
+    assert.match(t, /疲劳/, '没有疲劳系数')
+    assert.match(t, /少年院任务/, '没有显示下一个剧情节点')
+    assert.match(t, /还有\s*19\s*天/, `没有显示倒计时：${t.slice(0, 80)}`)
+
+    // 六个扇区都画出来，落点计数跟着走
+    const labels = [...wp.querySelectorAll('svg text')].map((n) => n.textContent)
+    assert.equal(labels.length, 6, `轮盘应有 6 个扇区，实际 ${labels.length}`)
+    assert.ok(labels.some((l) => l.includes('体能') && l.includes('×5')), '扇区没有标出落点次数')
+
+    // 右边状态栏的成长面板：属性是攒满 100% 才跳一次的，进度条就是那句
+    // "我确实练到了"。没有它，玩家转完一天回头看右边，数字纹丝不动，以为白转了
+    const side = () => dom.window.document.querySelector('.side')
+    const rows = [...side().querySelectorAll('.grow-row')]
+    assert.equal(rows.length, 6, `右侧栏应有六条成长进度，实际 ${rows.length}`)
+    assert.match(side().textContent, /成长 · 修炼 12 天/, '成长面板没标出累计天数')
+    assert.match(rows[0].textContent, /38%/, `体能那条进度不对：${rows[0].textContent}`)
+
+    // 转一天：引擎算完就落进日志，不用等模型
+    click(findButton('转一天'))
+    await waitFor('落点 体能', { timeout: 15000 })
+    const log = dom.window.document.querySelector('.log').textContent
+    assert.match(log, /第 13 天/, '没有记下这一天')
+    assert.match(log, /进度 \+6\.2%/, '没有渲染当天的进度')
+    assert.match(log, /44%/, '没有显示这条进度条现在到哪儿了')
+    assert.match(log, /血条上限/, '没有渲染属性提升')
+  } finally {
+    playModeFixture = 'story'
+  }
+})
+
+test('战斗向：练到剧情当天，轮盘变成「介入这场战斗」', async () => {
+  playModeFixture = 'combat'
+  try {
+    await enterGame()
+    const btn = findButton('练到剧情当天')
+    assert.ok(btn, '没有「练到剧情当天」按钮')
+    assert.match(btn.textContent, /19\s*天/, '没有标出还要练几天')
+
+    click(btn)
+    await waitFor('共 19 天', { timeout: 20000 })
+
+    // 合并成一张日报，而不是十九行流水账
+    const log = dom.window.document.querySelector('.log').textContent
+    assert.match(log, /2018-06-05\s*→\s*2018-06-24/, '没有显示练过的日期区间')
+    assert.match(log, /体能训练\s*×7/, '没有合并各方向的天数')
+    assert.match(log, /血条上限/, '没有显示成长')
+    assert.match(log, /52%/, '日报没带出六条进度条各自到哪儿了')
+
+    // 到当天就该打起来：轮盘当场让位给这场仗的询问 —— 而不是继续摆着
+    // 一个可点的「转一天」让人接着转（那正是"到节点了还在让我转轮盘"的病灶）
+    await waitFor('少年院特级咒胎', { timeout: 15000 })
+    assert.equal(dom.window.document.querySelector('.wheel-panel'), null,
+      '介入战都挂上了，轮盘还摆在那儿让人接着转')
+    assert.ok(dom.window.document.querySelector('.log .inquiry'), '介入战的询问块没进对话流')
+    assert.ok(findButton('迎战'), '介入战缺少迎战选项')
+    assert.ok(findButton('尝试脱离'), '介入战缺少脱离选项')
+  } finally {
+    playModeFixture = 'story'
+  }
+})
+
+test('战斗向：开局就站在剧情节点当天，轮盘直接锁住等开打', async () => {
+  playModeFixture = 'combat'
+  wheelReady = true
+  try {
+    await enterGame()
+
+    const wp = dom.window.document.querySelector('.wheel-panel')
+    assert.match(wp.textContent, /「少年院任务」就在今天/, `没认出今天就是剧情节点：${wp.textContent.slice(0, 80)}`)
+
+    const btn = (label) => [...wp.querySelectorAll('.wheel-btn')].find((b) => b.textContent.includes(label))
+    assert.ok(btn('转一天').disabled, '节点当天「转一天」还能点')
+    assert.ok(!btn('介入这场战斗').disabled, '节点当天「介入这场战斗」被禁掉了 —— 人就卡在这儿了')
+    assert.match(wp.textContent, /先打完这一场/, '没有把原因说出来')
+  } finally {
+    playModeFixture = 'story'
+    wheelReady = false
+  }
+})
+
+// ---------------------------------------------------------------- 反转术式 / 疗伤
+
+test('反转术式不占回合：按下去血条当场动，回合数不动', async () => {
+  wounded = true
+  hpCur = 40
+  try {
+    await enterGame()
+    click(findButton('前进'))
+    await waitFor('遭遇', { timeout: 15000 })
+    click(findButton('迎战'))
+    await waitFor('选择战斗模式', { timeout: 15000 })
+    click(findButton('手动模式'))
+    await new Promise((r) => setTimeout(r, 250))
+
+    // 自由行动单独占一行，和普通行动分开 —— 否则玩家以为按了这回合就过去了
+    const free = dom.window.document.querySelector('.free-row')
+    assert.ok(free, '行动栏上方没有"不占回合"那一行')
+    assert.match(free.textContent, /不占回合/)
+    assert.match(free.textContent, /反转术式·初步/, '没有反转术式按钮')
+    assert.match(free.textContent, /消耗 50 咒力/, '没有写明代价')
+
+    const side = () => dom.window.document.querySelector('.side').textContent
+    assert.match(side(), /40 \/ 100/, '按之前状态栏应当显示带伤')
+
+    click(findButton('反转术式·初步'))
+    await waitFor('伤口在数秒内收拢', { timeout: 15000 })
+
+    // 关键：血条当场走到 70，回合还是第 1 回合
+    assert.match(side(), /70 \/ 100/, `状态栏没有实时更新血条：${side().slice(0, 120)}`)
+    assert.match(dom.window.document.querySelector('.combat-side').textContent, /第 1 回合/,
+      '反转术式不该推进回合')
+    // 本回合用过了要说清楚，而不是按钮还亮着点了没反应
+    const again = dom.window.document.querySelector('.free-row button')
+    assert.ok(again.disabled, '本回合用过一次后应当禁用')
+    assert.match(again.textContent, /本回合已用过/)
+  } finally {
+    wounded = false
+  }
+})
+
+test('还没练成反转术式时，那一格照样在，只是灰着写明去哪儿练', async () => {
+  reverseUnknown = true
+  try {
+    await enterGame()
+    click(findButton('前进'))
+    await waitFor('遭遇', { timeout: 15000 })
+    click(findButton('迎战'))
+    await waitFor('选择战斗模式', { timeout: 15000 })
+    click(findButton('手动模式'))
+    await new Promise((r) => setTimeout(r, 250))
+
+    const free = dom.window.document.querySelector('.free-row')
+    assert.ok(free, '没练成时整行都消失了 —— 玩家不会知道有这个技能')
+    assert.match(free.textContent, /未掌握/)
+    // 灰着的原因必须写在按钮上，不能只挂在 title 上（触屏看不到）
+    assert.match(free.textContent, /先修炼「反转术式修习」/)
+    assert.ok(free.querySelector('button').disabled, '没练成不该能按')
+  } finally {
+    reverseUnknown = false
+  }
+})
+
+test('受伤时多出疗伤入口，选一种当场结算', async () => {
+  wounded = true
+  hpCur = 40
+  try {
+    await enterGame()
+    const entry = findButton('疗伤')
+    assert.ok(entry, '受伤时选项栏里没有疗伤入口')
+    click(entry)
+    await waitFor('选一种', { timeout: 15000 })
+
+    assert.ok(dom.window.document.querySelector('.log .inquiry'), '疗伤询问块没进对话流')
+    assert.equal(dom.window.document.querySelector('.overlay'), null, '疗伤不该弹窗')
+
+    const t = text()
+    assert.match(t, /反转术式/, '没有列出反转术式')
+    assert.match(t, /静养一天/, '没有列出静养')
+    assert.match(t, /家入硝子/, '没有列出家入硝子')
+    // 用不了的那条要写明理由，不能只挂个 tooltip
+    assert.match(t, /你和她的关系还不够/, '用不了的方法没有说明原因')
+
+    click(findButton('静养一天'))
+    await waitFor('疗伤 · 静养一天', { timeout: 15000 })
+    const log = dom.window.document.querySelector('.log').textContent
+    assert.match(log, /生命 \+18/, '没有显示回血量')
+    assert.match(log, /耗时 1 天/, '没有显示花了几天')
+    assert.match(dom.window.document.querySelector('.side').textContent, /58 \/ 100/,
+      '状态栏没有刷新到结算后的血条')
+  } finally {
+    wounded = false
+  }
+})
+
+test('没受伤时不该挂着疗伤入口', async () => {
+  wounded = false
+  await enterGame()
+  assert.ok(!findButton('疗伤'), '满血时不该出现疗伤选项')
 })

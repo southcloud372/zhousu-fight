@@ -17,7 +17,7 @@ import { CORE_RULES, CONTRACT, turnStatePrompt } from './prompts.js'
 import { accumulate, usageSnapshot, estimateTokens } from './pricing.js'
 import { submitTurn } from './engine/schemas.js'
 import { rollEnemy } from './engine/rolls.js'
-import { byId, pointsFor, initialNodes } from './engine/timeline.js'
+import { byId, pointsFor, initialNodes, nextMilestone } from './engine/timeline.js'
 import { DEFAULT_STORYLINE, STORYLINES, storylineBriefs, storylineOf } from './engine/storylines.js'
 import { PLAY_MODES, playModeOf, playModeBriefs, DEFAULT_PLAY_MODE } from './engine/playmodes.js'
 import { canTrain, rollTraining, applyTraining, TRAINING_TABLE } from './engine/commands.js'
@@ -27,8 +27,13 @@ import {
 import {
   COMBAT_MODES, MODE_LABELS, initCombat, runRound, simulateCombat,
   summarizeRounds, computeRewards, applyRewards, finishCombat,
-  buildPanel, renderPanelText, unitSpeed,
+  buildPanel, renderPanelText, unitSpeed, freeReverse, reversePreview, FREE_REVERSE_PER_ROUND,
 } from './engine/combat.js'
+import {
+  wheelSnapshot, spinWheel, advanceToMilestone, startIntervention,
+  WHEEL_SECTORS, MAX_DAYS_PER_CALL,
+} from './engine/wheel.js'
+import { recoveryOptions, applyRecovery, needsRecovery } from './engine/recovery.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -270,8 +275,13 @@ app.post('/api/session/:id/choose-time', asyncRoute(async (req, res) => {
   res.json(withUsage(state, {
     ...cleaned,
     recap: cleaned.recap,
-    choices: withTrainingOption(cleaned.choices, state),
+    choices: withExtras(cleaned.choices, state),
     panel: panelSnapshot(state),
+    // 选战斗向开局的话，第一屏就该看见轮盘倒数
+    wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
+    wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
+    // 成长面板的六行标题。轮盘一转就得出进度条，不能等玩家刷新页面才认得这几行
+    growth: state.playMode === 'combat' ? GROWTH_ROWS : null,
     combat: state.pendingCombat,
   }))
 }))
@@ -445,10 +455,14 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
       turn: state.turn,
       dialogue: entry.dialogue,
       recap: entry.recap,
-      choices: withTrainingOption(entry.choices, state),
+      choices: withExtras(entry.choices, state),
       notes: entry.notes,
       panel: panelSnapshot(state),
       combat: state.pendingCombat,
+      // 战斗向：这一轮剧情可能推进了日期，轮盘上"还差几天"要跟着变
+      wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
+      wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
+      freeActions: freeActions(state),
       chronicleReady: state.history.length > HISTORY_LIMIT,
       usage: usageSnapshot(state.usage),
     })
@@ -509,19 +523,35 @@ async function compressHistory(state) {
   persist(state)
 }
 
-/** 第八节第 8 小节：这个选项永远作为最后一个出现 */
-function withTrainingOption(choices, state) {
-  const gate = canTrain(state)
-  return [
-    ...choices.map((c, i) => ({ id: String(i + 1), label: c, kind: 'story' })),
-    {
+/**
+ * 模型给的选项 + 引擎追加的固定项。
+ *
+ * 追加项永远排在最后：修炼（第八节第 8 小节），以及受伤时才出现的疗伤。
+ * 疗伤是有条件出现的 —— 满血的时候挂一个"疗伤"在那里只会占地方。
+ */
+function withExtras(choices, state) {
+  const out = choices.map((c, i) => ({ id: String(i + 1), label: c, kind: 'story' }))
+
+  // 战斗向的修炼走轮盘（每天随机一个方向），不该再挂一个"指定方向练一天"的按钮 ——
+  // 两个入口并存的话，指定方向永远更划算，轮盘就没人转了
+  if (state.playMode !== 'combat') {
+    const gate = canTrain(state)
+    out.push({
       id: 'T',
       label: gatingLabel(gate),
       kind: 'training',
       disabled: !gate.ok,
       reason: gate.reason || '',
-    },
-  ]
+    })
+  }
+  if (needsRecovery(state)) {
+    out.push({
+      id: 'R',
+      label: '【疗伤】处理身上的伤（反转术式 / 静养 / 家入硝子）',
+      kind: 'recovery',
+    })
+  }
+  return out
 }
 
 function gatingLabel(gate) {
@@ -594,6 +624,9 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
       reason: state.combat.reason,
       mode: null,
       sinceTurn: state.turn,
+      // 介入标记要跟着一起捡回来，否则中途重开这一场，
+      // 打完之后"这一天"就记不进时间线了
+      intervention: state.combat.intervention || null,
     }
   }
 
@@ -604,8 +637,8 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
 
   const rng = makeRng(state.seed + state.turn * 101)
-  const { enemy, reason } = state.pendingCombat
-  initCombat(state, rng, { mode, enemy, reason })
+  const { enemy, reason, intervention } = state.pendingCombat
+  initCombat(state, rng, { mode, enemy, reason, intervention })
   state.lastEnemyName = enemy.name
 
   try {
@@ -614,14 +647,20 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
       persist(state)
       // ⚠️ 约定：panel 事件里的是"战斗回合面板"，done 里的 panel 永远是"角色快照"。
       // 早先 done 里两种形状混用，前端拿它去喂角色侧栏，一开打就崩。
-      send('panel', { panel: roundPanel, text: renderPanelText(roundPanel), mode })
-      send('awaiting', { actions: availableActions(state) })
+      // snapshot 跟着 panel 一起发：角色侧栏要在这一回合判定的当下就更新，
+      // 而不是等模型把演出写完（那要好几秒，看起来就像"状态栏没反应"）。
+      send('panel', {
+        panel: roundPanel, snapshot: panelSnapshot(state),
+        text: renderPanelText(roundPanel), mode,
+      })
+      send('awaiting', { actions: availableActions(state), freeActions: freeActions(state) })
       // actions 必须在 done 里也带一份：前端会用 done.actions 覆盖本地状态，
       // 漏掉就会把刚渲染出来的行动栏清成 undefined。
       send('done', {
         over: false,
         snapshot: panelSnapshot(state),
         actions: availableActions(state),
+        freeActions: freeActions(state),
         text: renderPanelText(roundPanel),
         usage: usageSnapshot(state.usage),
       })
@@ -708,11 +747,11 @@ app.post('/api/session/:id/combat/action', asyncRoute(async (req, res) => {
     const enemyGradeBefore = state.combat.enemy.grade
     const { panel, over, outcome } = runRound(state, rng, { type })
 
-    send('panel', { panel, text: renderPanelText(panel) })
+    send('panel', { panel, snapshot: panelSnapshot(state), text: renderPanelText(panel) })
 
     // 模型只写这一回合的演出
     const prompt = `第 ${panel.turn} 回合刚结算完。请用 2~4 句写出这一回合的交锋，分镜感要强。不要重复数字。
-
+${panel.freeActionText ? `\n（这一回合玩家还先用了反转术式，且没有占用出手机会：${panel.freeActionText}）\n` : ''}
 ${renderPanelText(panel)}`
 
     let narration = ''
@@ -754,6 +793,7 @@ ${renderPanelText(panel)}`
         panel: panelSnapshot(state),
         combat: state.combat,
         actions: availableActions(state),
+        freeActions: freeActions(state),
         usage: usageSnapshot(state.usage),
       })
     }
@@ -762,6 +802,42 @@ ${renderPanelText(panel)}`
   } finally {
     res.end()
   }
+}))
+
+/**
+ * 不占回合的自由行动 —— 目前只有反转术式。
+ *
+ * 关键点：**不跑 runRound**。玩家按一下，只结算治疗，回合数不变、敌方不动，
+ * 之后照常出招。返回值里带上角色快照，前端拿到就立刻刷右侧状态栏 ——
+ * 之前治疗混在普通行动里，玩家按下去要么因为咒力不够静默失败，
+ * 要么要等模型把这一回合的演出写完（好几秒）才看到血条变化。
+ */
+app.post('/api/session/:id/combat/free-action', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  if (!state.combat || state.combat.over) return res.status(400).json({ error: '当前不在战斗中' })
+  if (state.combat.mode !== 'manual') return res.status(400).json({ error: '只有手动模式需要逐回合操作' })
+
+  const type = String(req.body?.action || '')
+  if (type !== 'reverse') return res.status(400).json({ error: `未知的自由行动：${type}` })
+
+  const r = freeReverse(state)
+  if (!r.ok) return res.status(400).json({ error: r.reason })
+
+  // 不进战斗历史：freeLog 已经记了这一笔，下一回合的 buildPanel 会把它
+  // 作为"本回合行动"的一部分带给模型和界面。往 log 里塞会多出一行同回合的记录。
+  persist(state)
+
+  res.json(withUsage(state, {
+    ok: true,
+    healed: r.healed,
+    cost: r.cost,
+    lines: r.lines,
+    snapshot: panelSnapshot(state),
+    actions: availableActions(state),
+    freeActions: freeActions(state),
+    combat: state.combat,
+  }))
 }))
 
 /**
@@ -785,9 +861,15 @@ app.post('/api/session/:id/combat/evade', asyncRoute(async (req, res) => {
   const success = rng() < chance
 
   const enemyLabel = `${e.name}（${e.grade}）`
+  // 战斗向的介入战：脱离了就等于这一天没赶上，节点照常发生（不是被改写了）
+  const missed = state.pendingCombat.intervention || null
   let note
   if (success) {
     note = `避开了与${enemyLabel}的正面冲突`
+    if (missed && state.timeline.nodes[missed] === '未发生') {
+      state.timeline.nodes[missed] = '已发生'
+      note += `。「${missed}」如期发生，你不在场`
+    }
     state.timeline.newEvents.push(note)
     if (state.timeline.newEvents.length > 40) state.timeline.newEvents.shift()
     state.pendingCombat = null
@@ -868,7 +950,7 @@ app.post('/api/session/:id/crossover/advance', asyncRoute(async (req, res) => {
   }))
 }))
 
-/** 玩家在当前局面下实际能用的行动 */
+/** 玩家在当前局面下实际能用的行动。这些都会推进一个回合。 */
 function availableActions(state) {
   const p = state.player
   const out = [{ type: 'physical', label: '体术攻击', enabled: true }]
@@ -888,11 +970,55 @@ function availableActions(state) {
       usage: usageSnapshot(state.usage),
     })
   }
-  if (p.reverseCursedTechnique.level !== '未掌握') {
-    out.push({ type: 'reverse', label: `反转术式（${p.reverseCursedTechnique.level}）`, enabled: true })
-  }
   out.push({ type: 'flee', label: '脱离战斗', enabled: true })
   return out
+}
+
+/**
+ * 不占回合的自由行动 —— 目前只有反转术式。
+ *
+ * 它和上面那批的区别是：按下去之后**回合不会推进**，敌方不会动，
+ * 玩家照样出招。所以它得单独一条接口，也单独渲染在行动栏上方。
+ * 咒力不够/本回合用过了都要在这里说清楚，不能等玩家点了才知道。
+ */
+function freeActions(state) {
+  const p = state.player
+  const c = state.combat
+  if (!c || c.over) return []
+
+  const pv = reversePreview(p)
+  // 还没练成也把这一格摆出来。技能栏里空着的话，玩家不会知道"有个不占回合的
+  // 技能存在、只是我还没学会"，只会以为战斗栏就只有那五个按钮。灰着 + 写清楚
+  // 去哪儿练，比什么都不显示有用。
+  if (!pv) {
+    return [{
+      type: 'reverse',
+      label: '反转术式·未掌握',
+      free: true,
+      enabled: false,
+      note: '先修炼「反转术式修习」，练到初步就能用',
+      cost: 0,
+      heal: 0,
+    }]
+  }
+
+  const usedUp = (c.freeUsed || 0) >= FREE_REVERSE_PER_ROUND
+  const full = p.hp.cur >= p.hp.max
+  const poor = p.ce.cur < pv.cost
+  const note = usedUp ? '本回合已用过'
+    : full ? '血条已满'
+      : poor ? `咒力不足（需 ${pv.cost}）`
+        : `消耗 ${pv.cost} 咒力，回复 ${pv.heal} 生命`
+
+  return [{
+    type: 'reverse',
+    label: `反转术式·${pv.level}`,
+    free: true,
+    enabled: !usedUp && !full && !poor,
+    note,
+    cost: pv.cost,
+    heal: pv.heal,
+  }]
 }
 
 function gradeIndexOf(g) {
@@ -952,6 +1078,130 @@ app.post('/api/session/:id/train', asyncRoute(async (req, res) => {
   res.json(withUsage(state, { ...entry, panel: panelSnapshot(state) }))
 }))
 
+// ---------------------------------------------------------------- 疗伤
+
+app.get('/api/session/:id/recovery-options', (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  res.json({ needed: needsRecovery(state), items: recoveryOptions(state) })
+})
+
+/**
+ * 疗伤。不走模型 —— 这是纯数值操作，玩家要的是立刻看到血条动。
+ * 之后前端会补一个静默回合让剧情接上（和修炼一样）。
+ */
+app.post('/api/session/:id/recovery', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  if (state.combat && !state.combat.over) {
+    return res.status(400).json({ error: '战斗中请用行动栏上的反转术式（不占回合）' })
+  }
+
+  const id = String(req.body?.id || '')
+  const r = applyRecovery(state, id)
+  if (!r) {
+    const opt = recoveryOptions(state).find((o) => o.id === id)
+    return res.status(400).json({ error: opt?.reason || '这个方法现在用不了' })
+  }
+
+  state.turn += 1
+  const entry = { type: 'recovery', ...r }
+  state.log.push(entry)
+  persist(state)
+  res.json(withUsage(state, { ...entry, panel: panelSnapshot(state) }))
+}))
+
+// ---------------------------------------------------------------- 战斗向：日常轮盘
+
+/**
+ * 战斗向的循环：两段剧情之间的空闲时间，一天转一次轮盘。
+ * 见 engine/wheel.js 顶部的说明。
+ *
+ * 返回值除了 ok 还带 spin / advance：**到剧情当天时"不能再往后转"不等于
+ * "什么都干不了"** —— 那天要打的那一场正等着你。早先只有一个 ok，
+ * 界面只好把两个按钮一起禁用，玩家就卡在节点当天动不了了。
+ */
+function wheelGate(state) {
+  const no = (reason) => ({ ok: false, reason, spin: false, advance: false })
+  if (state.phase !== 'playing') return no('游戏还没开始')
+  if (state.playMode !== 'combat') return no('日常轮盘只在战斗向里跑')
+  if (state.combat && !state.combat.over) return no('战斗还没打完')
+  if (state.pendingCombat) return no('有一场遭遇还没处理 —— 先决定打还是走')
+
+  const ms = nextMilestone(state)
+  // 排期走完就该换篇了。早先这里不拦，玩家在最后一场打完可以无限地转下去：
+  // 一天一天地练，什么都不会发生，也没有任何提示
+  if (!ms) return no('这条线上排到的剧情节点都打完了 —— 点顶栏「跨篇」接着走，或切回剧情向自由发挥')
+  // 今天就是节点当天：再往后转一天，这一天就没了（节点会被记成"错过"）
+  if (ms.daysLeft <= 0) {
+    return { ok: true, spin: false, advance: true, reason: `「${ms.node}」就是今天 —— 先打完这一场` }
+  }
+  return { ok: true, spin: true, advance: true, reason: '' }
+}
+
+/** 右侧状态栏的成长面板用：六个方向的名字与它们练满之后给什么 */
+const GROWTH_ROWS = WHEEL_SECTORS.map(({ id, short, effect }) => ({ id, short, effect }))
+
+app.get('/api/session/:id/wheel', (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  res.json(withUsage(state, {
+    enabled: state.playMode === 'combat',
+    gate: wheelGate(state),
+    wheel: wheelSnapshot(state),
+    panel: panelSnapshot(state),
+    growth: state.playMode === 'combat' ? GROWTH_ROWS : null,
+  }))
+})
+
+app.post('/api/session/:id/wheel/spin', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  const gate = wheelGate(state)
+  if (!gate.spin) return res.status(400).json({ error: gate.reason })
+
+  // 种子带上已经转过的天数：同一天不会因为重放而转出两个结果
+  const rng = makeRng(state.seed + state.turn * 977 + (state.wheel?.days || 0) * 13)
+  const report = spinWheel(state, rng)
+  state.turn += 1
+  state.log.push({ type: 'wheel', ...report })
+
+  // 正好落在剧情当天就把仗挂上，前端会弹"要不要打"的询问
+  const combat = startIntervention(state, rng)
+  persist(state)
+
+  res.json(withUsage(state, {
+    report, wheel: wheelSnapshot(state), combat, panel: panelSnapshot(state),
+    growth: GROWTH_ROWS,
+    // 闸门要跟着回来：转完这一天可能就到节点当天了，
+    // 前端不刷新它的话，轮盘会继续摆着可点的"转一天"
+    gate: wheelGate(state),
+  }))
+}))
+
+/** 一口气练到剧情当天 —— 逐天算，但只返回合并后的日报 */
+app.post('/api/session/:id/wheel/advance', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  const gate = wheelGate(state)
+  if (!gate.advance) return res.status(400).json({ error: gate.reason })
+
+  const rng = makeRng(state.seed + state.turn * 613 + (state.wheel?.days || 0) * 13)
+  const summary = advanceToMilestone(state, rng)
+  if (summary.days > 0) {
+    state.turn += 1
+    state.log.push({ type: 'wheel', ...summary })
+  }
+  const combat = startIntervention(state, rng)
+  persist(state)
+
+  res.json(withUsage(state, {
+    summary, wheel: wheelSnapshot(state), combat, panel: panelSnapshot(state), limit: MAX_DAYS_PER_CALL,
+    growth: GROWTH_ROWS,
+    gate: wheelGate(state),
+  }))
+}))
+
 app.get('/api/session/:id/training-options', (req, res) => {
   const state = load(req.params.id)
   if (!state) return res.status(404).json({ error: '会话不存在' })
@@ -983,11 +1233,23 @@ app.get('/api/session/:id/state', (req, res) => {
     log: state.log,
     recap: [...(state.log || [])].reverse().find((e) => e.recap)?.recap || '',
     panel: panelSnapshot(state),
-    choices: state.phase === 'playing' && lastTurn ? withTrainingOption(lastTurn.choices || [], state) : [],
+    choices: state.phase === 'playing' && lastTurn ? withExtras(lastTurn.choices || [], state) : [],
     actions: state.combat && !state.combat.over ? availableActions(state) : null,
+    freeActions: state.combat && !state.combat.over ? freeActions(state) : null,
+    // 战斗向的轮盘面板刷新后要能立刻恢复，不能等玩家点一下才拉
+    wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
+    wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
+    // 成长面板的六行标题。进度条本身在 panel.training 里（0~100），
+    // 少了这张表，界面就不知道该拿这几个数字去对应哪条属性
+    growth: GROWTH_ROWS,
     combat: state.pendingCombat,
     inCombat: state.combat && !state.combat.over
-      ? { mode: state.combat.mode, panel: state.combat.log.at(-1) || null, actions: availableActions(state) }
+      ? {
+          mode: state.combat.mode,
+          panel: state.combat.log.at(-1) || null,
+          actions: availableActions(state),
+          freeActions: freeActions(state),
+        }
       : null,
   }))
 })
@@ -1071,9 +1333,14 @@ app.post('/api/saves/:sid/load', (req, res) => {
   res.json(withUsage(state, {
     sessionId: newId,
     phase: state.phase,
+    playMode: state.playMode,
     log: state.log,
-    choices: lastTurn ? withTrainingOption(lastTurn.choices || [], state) : [],
+    choices: lastTurn ? withExtras(lastTurn.choices || [], state) : [],
     panel: panelSnapshot(state),
+    // 读档后轮盘和疗伤入口要立刻回来，否则玩家得先随便点一下才看得见
+    wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
+    wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
+    growth: GROWTH_ROWS,
     combat: state.pendingCombat,
   }))
 })

@@ -18,6 +18,8 @@ import { rollAttributeProfile, rollIdentity, rollIdentityKind, rollInitialRelati
 import { GRADES, RANGES, TECH_MULT } from '../server/engine/tables.js'
 import { attributeFlavorPrompt, identityFlavorPrompt, turnStatePrompt } from '../server/prompts.js'
 import { TRAINING_TABLE } from '../server/engine/commands.js'
+import { charactersFor } from '../server/engine/timeline.js'
+import { DEFAULT_STORYLINE } from '../server/engine/storylines.js'
 
 // ------------------------------------------------------------------ 夹具
 
@@ -408,9 +410,11 @@ test('身份关系初值随背景类型变化', () => {
   const original = rollInitialRelations(rng, '原作关联')
   assert.ok(original.虎杖悠仁 > 0, '原作关联应当认识虎杖')
 
+  // 覆盖范围按故事线的名单算，别写死人数 —— 名单增删时这条不该跟着红
   for (const kind of ['反派向', '自由派', '原作关联']) {
     const r = rollInitialRelations(rng, kind)
-    assert.equal(Object.keys(r).length, 10, '关系表应当覆盖十名角色')
+    assert.deepEqual(Object.keys(r).sort(), [...charactersFor(DEFAULT_STORYLINE)].sort(),
+      '关系表应当覆盖本线全部登场角色')
   }
 })
 
