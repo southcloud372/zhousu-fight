@@ -14,6 +14,7 @@
  * 断言会莫名其妙地红。
  */
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -35,6 +36,12 @@ const S = {
   hurt: `rt-${RUN}-hurt`,
   free: `rt-${RUN}-free`,
   norev: `rt-${RUN}-norev`,
+  choices: `rt-${RUN}-choices`,
+  oldsave: `rt-${RUN}-oldsave`,
+  tune: `rt-${RUN}-tune`,
+  tuneEmpty: `rt-${RUN}-tuneblank`,
+  sudden: `rt-${RUN}-sudden`,
+  suddenNone: `rt-${RUN}-suddennone`,
 }
 
 const J = { 'content-type': 'application/json' }
@@ -44,6 +51,10 @@ const post = async (u, body) => {
 }
 const get = async (u) => {
   const r = await fetch(B + u)
+  return { status: r.status, j: await r.json().catch(() => null) }
+}
+const del = async (u, body) => {
+  const r = await fetch(B + u, { method: 'DELETE', headers: J, body: body ? JSON.stringify(body) : undefined })
   return { status: r.status, j: await r.json().catch(() => null) }
 }
 
@@ -202,6 +213,243 @@ ok('没练成也留着那一格', nvSlot?.type === 'reverse', JSON.stringify(nv?
 ok('灰着，并写明去哪儿练', nvSlot?.enabled === false && /反转术式修习/.test(nvSlot?.note || ''), nvSlot?.note)
 const nvTry = await post(`/api/session/${S.norev}/combat/free-action`, { action: 'reverse' })
 ok('真按下去会被明确拒绝', nvTry.status === 400, nvTry.j?.error)
+
+// 选项的生命周期：什么时候该交出来、什么时候必须清掉
+console.log('\n──── 剧情选项：过期就得清掉 ────')
+{
+  const write = (id, mutate) => {
+    const s = mkState(id)
+    mutate(s)
+    fs.writeFileSync(path.join(SAVES, `${id}.json`), JSON.stringify(s, null, 2), 'utf8')
+  }
+
+  write(S.choices, (s) => {
+    s.choices = [
+      { id: '1', label: '前进', kind: 'story' },
+      { id: '9', label: '迎战', kind: 'combat-enter' },
+    ]
+  })
+  const c1 = (await get(`/api/session/${S.choices}/state`)).j
+  ok('/state 交得出当前可选项', c1?.choices?.length === 2, JSON.stringify(c1?.choices))
+
+  /*
+   * 转一天之后世界往前走了，上一轮的选项过期 —— 里面还混着"迎战"这种
+   * 带引擎语义的，留着就会被重复触发：玩家会再打一遍已经打完的那场遭遇。
+   */
+  await post(`/api/session/${S.choices}/wheel/spin`)
+  const c2 = (await get(`/api/session/${S.choices}/state`)).j
+  ok('转完一天，陈旧选项不再被交出来', (c2?.choices || []).length === 0, JSON.stringify(c2?.choices))
+
+  // 老存档（写这次改动之前存的）没有 choices 字段，得从日志里捞回来
+  write(S.oldsave, (s) => {
+    delete s.choices
+    s.log = [
+      { type: 'turn', turn: 1, narration: '一。', choices: ['前进'] },
+      { type: 'turn', turn: 2, narration: '二。', choices: ['回头', '继续走'] },
+    ]
+  })
+  const c3 = (await get(`/api/session/${S.oldsave}/state`)).j
+  ok('老存档从日志里捞回最后一批选项',
+    c3?.choices?.length === 2 && c3.choices[1].label === '继续走',
+    JSON.stringify(c3?.choices))
+
+  // 战斗挂起时选项栏必须空着 —— 这里摆着剧情选项，玩家会以为可以绕开这一仗
+  write(S.choices, (s) => {
+    s.choices = [{ id: '1', label: '前进', kind: 'story' }]
+    initCombat(s, makeRng(31), { mode: 'manual', enemy: rollEnemy(makeRng(37), s.player.grade), reason: '联调' })
+  })
+  const c4 = (await get(`/api/session/${S.choices}/state`)).j
+  ok('有遭遇没处理时，选项栏是空的', (c4?.choices || []).length === 0, JSON.stringify(c4?.choices))
+}
+
+// ---------------------------------------------------------------- 开局自由度
+/*
+ * 两条新接口都是**纯引擎**的：
+ *   /attributes/custom/tune   等级由数字反推，不调模型
+ *   /identities/sudden        故意不调模型（让模型写背景，它一定会补出一个身份）
+ *
+ * 唯一会打到模型的分支是"改完跨进了特级、而这份档案还没有领域名"——
+ * 那一步在这里**不测**：它要花钱，而它的判据（needDomain）是纯函数，
+ * tests/creation.test.mjs 已经从两边夹住了。
+ * 这里给出去的那份档案预先带好领域名，于是走的仍是免费分支。
+ *
+ * 每一种起始状态都用一个**自己的会话 id**：服务端把会话缓存在内存里，
+ * 同一个 id 第二次请求拿的是缓存，往磁盘上重写存档是无效的。
+ */
+console.log('\n──── 自定义属性：玩家直接填数字 ────')
+{
+  const { RANGES, ATTR_GRADE_CAP } = await import('../server/engine/tables.js')
+  const { charactersFor } = await import('../server/engine/timeline.js')
+
+  // 一份已经写好领域的自定义档案 —— 名字在，所以调数值永远不会触发模型
+  const withDomain = () => {
+    const p = rollAttributeProfile(makeRng(2025), '自定义')
+    return {
+      ...p,
+      ce: { ...p.ce, value: 500, grade: '三级' },
+      hp: { ...p.hp, value: 150, grade: '三级' },
+      cursedDamage: { ...p.cursedDamage, value: 30, grade: '三级' },
+      physicalDamage: { ...p.physicalDamage, value: 15, grade: '三级' },
+      efficiency: { ...p.efficiency, value: 0.6, grade: '三级' },
+      overallGrade: '三级',
+      domainUnlocked: false,
+      domainTierName: null,
+      domain: { unlocked: false, name: '伏魔御厨子·残', sureHit: '必中斩击', cost: '咒力见底', tierName: '完整领域', type: '伤害型' },
+      brief: '近身格斗',
+    }
+  }
+
+  const seed = (id, mutate) => {
+    const s = mkState(id)
+    mutate(s)
+    fs.writeFileSync(path.join(SAVES, `${id}.json`), JSON.stringify(s, null, 2), 'utf8')
+    return s
+  }
+  const onDisk = (id) => JSON.parse(fs.readFileSync(path.join(SAVES, `${id}.json`), 'utf8'))
+
+  seed(S.tune, (s) => { s.attributeProfiles = [withDomain()] })
+
+  const t1 = await post(`/api/session/${S.tune}/attributes/custom/tune`, { numbers: { ce: 5000, hp: 1200 } })
+  const p1 = t1.j?.profile
+  ok('填了的项按玩家给的数走', p1?.ce?.value === 5000 && p1?.hp?.value === 1200,
+    `ce=${p1?.ce?.value} hp=${p1?.hp?.value}`)
+  ok('没填的项保持原样', p1?.cursedDamage?.value === 30 && p1?.physicalDamage?.value === 15,
+    `cd=${p1?.cursedDamage?.value} pd=${p1?.physicalDamage?.value}`)
+  ok('等级由数字反推，不是玩家点单的', p1?.ce?.grade === '一级' && p1?.hp?.grade === '一级',
+    `ce=${p1?.ce?.grade} hp=${p1?.hp?.grade}`)
+
+  /*
+   * 跨进特级要**五项一起顶**：综合等级取的是五项的中位数，
+   * 只把咒力拉满、其余四项还在三级，中位数仍然是三级 —— 那是设计如此。
+   */
+  const t2 = await post(`/api/session/${S.tune}/attributes/custom/tune`, {
+    numbers: {
+      ce: 1e15, hp: 1e15, cursedDamage: 1e15, physicalDamage: 1e15, efficiency: 1e15,
+    },
+  })
+  ok('越界的数字夹到开局上限（超特级）', t2.j?.profile?.ce?.value === RANGES[ATTR_GRADE_CAP].ce[1],
+    String(t2.j?.profile?.ce?.value))
+  ok('五项全顶格就当场觉醒，档位名跟着综合等级走',
+    t2.j?.profile?.overallGrade === '超特级' && t2.j?.profile?.domainUnlocked === true &&
+      t2.j?.profile?.domain?.tierName === '规则级领域',
+    `${t2.j?.profile?.overallGrade} / ${t2.j?.profile?.domainTierName} / ${t2.j?.profile?.domain?.tierName}`)
+  ok('已经有名字的领域不会被重写', t2.j?.profile?.domain?.name === '伏魔御厨子·残', t2.j?.profile?.domain?.name)
+
+  const t3 = await post(`/api/session/${S.tune}/attributes/custom/tune`, { numbers: { ce: 'abc', hp: null, efficiency: '' } })
+  ok('脏数据当作没填，不会把数值打成 0',
+    t3.j?.profile?.ce?.value === t2.j?.profile?.ce?.value && t3.j?.profile?.hp?.value === t2.j?.profile?.hp?.value,
+    `ce=${t3.j?.profile?.ce?.value} hp=${t3.j?.profile?.hp?.value}`)
+
+  const saved = onDisk(S.tune).attributeProfiles?.[0]
+  ok('调完落了盘（服务端重启也读得到）', saved?.ce?.value === t3.j?.profile?.ce?.value,
+    String(saved?.ce?.value))
+
+  seed(S.tuneEmpty, (s) => { s.attributeProfiles = [] })
+  const t4 = await post(`/api/session/${S.tuneEmpty}/attributes/custom/tune`, { numbers: { ce: 1 } })
+  ok('没生成过自定义档案时，说清楚要先做什么', t4.status === 400, t4.j?.error)
+  ok('会话不存在时给 404，不是 500',
+    (await post('/api/session/nope-xyz/attributes/custom/tune', { numbers: {} })).status === 404)
+
+  console.log('\n──── 第五个身份：突然出现的人 ────')
+  seed(S.suddenNone, (s) => { s.identityProfiles = [] })
+  const s0 = await post(`/api/session/${S.suddenNone}/identities/sudden`, {})
+  ok('还没到选身份这一步就拒绝，而不是凭空造一份', s0.status === 409, s0.j?.error)
+
+  seed(S.sudden, (s) => { s.identityProfiles = [{ slot: '甲', kind: '原作关联' }] })
+  const s1 = await post(`/api/session/${S.sudden}/identities/sudden`, { name: '  林岸  ', age: 23, brief: '从便利店走出来的' })
+  const id1 = s1.j?.identity
+  ok('槽位与类型都标成「穿越者」', id1?.slot === '穿越者' && id1?.kind === '穿越者', `${id1?.slot}/${id1?.kind}`)
+  ok('名字去掉首尾空白', id1?.name === '林岸', JSON.stringify(id1?.name))
+  ok('年龄按玩家填的走', id1?.age === 23, String(id1?.age))
+
+  const names = charactersFor(onDisk(S.sudden).storyline)
+  const rel = id1?.initialRelations || {}
+  ok('关系值整张留 0 —— 这条线上没有人认识他',
+    Object.keys(rel).length === names.length && Object.values(rel).every((v) => v === 0),
+    JSON.stringify(rel))
+  ok('没有身份、没有立场，这三条不是模型发挥的地方',
+    /没有任何关系/.test(id1?.mainlineRelation || '') && !!id1?.openingSituation && !!id1?.hook)
+
+  const s2 = await post(`/api/session/${S.sudden}/identities/sudden`, { name: '   ', age: 999 })
+  ok('什么都不填也成立：无名之客', s2.j?.identity?.name === '无名之客', JSON.stringify(s2.j?.identity?.name))
+  ok('年龄夹在 10~80', s2.j?.identity?.age === 80, String(s2.j?.identity?.age))
+
+  const kept = onDisk(S.sudden).identityProfiles
+  ok('落盘了，且不把预设那份挤掉',
+    kept?.length === 2 && kept.some((p) => p.slot === '甲') && kept.some((p) => p.slot === '穿越者'),
+    JSON.stringify(kept?.map((p) => p.slot)))
+
+  ok('会话不存在时给 404', (await post('/api/session/nope-xyz/identities/sudden', {})).status === 404)
+}
+
+/*
+ * 清空全部数据。
+ *
+ * ⚠️ 这是全套测试里唯一会**真的删东西**的一条 —— 它删的就是 server/saves/。
+ * 所以先整份备份到临时目录，跑完（哪怕中途抛了）再放回去。
+ * 备份是必要的：这里躺着的可能是玩家真实的进度，一个测试没有资格把它抹掉。
+ *
+ * 不存在"只在一份假目录上测"的取巧办法：这个接口的价值恰恰在于
+ * 它动的是真目录；用一个假目录去验，验的是另一样东西。
+ */
+console.log('\n──── 清空全部数据 ────')
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sunuo-backup-'))
+  const snapshot = []
+  const takeBackup = () => {
+    for (const rel of ['', 'slots']) {
+      const d = path.join(SAVES, rel)
+      if (!fs.existsSync(d)) continue
+      for (const f of fs.readdirSync(d)) {
+        if (!f.endsWith('.json')) continue
+        const src = path.join(d, f)
+        const dst = path.join(tmp, rel || '.', f)
+        fs.mkdirSync(path.dirname(dst), { recursive: true })
+        fs.copyFileSync(src, dst)
+        snapshot.push([src, dst])
+      }
+    }
+  }
+  const restore = () => {
+    for (const [src, dst] of snapshot) {
+      try {
+        fs.mkdirSync(path.dirname(src), { recursive: true })
+        fs.copyFileSync(dst, src)
+      } catch {}
+    }
+    try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {}
+  }
+  takeBackup()
+  process.on('exit', restore)
+
+  const before = fs.readdirSync(SAVES).filter((f) => f.endsWith('.json')).length
+
+  // 没带口令一律不动手，且一个文件都不许少
+  const noConfirm = await del('/api/data', {})
+  ok('不带确认口令就拒绝', noConfirm.status === 400, noConfirm.j?.error)
+  const wrongWord = await del('/api/data', { confirm: true })
+  ok('布尔值不算确认（那太容易顺手带上）', wrongWord.status === 400)
+  ok('拒绝的时候一个文件都没动',
+    fs.readdirSync(SAVES).filter((f) => f.endsWith('.json')).length === before,
+    `${before} → ${fs.readdirSync(SAVES).filter((f) => f.endsWith('.json')).length}`)
+
+  // 确认之后真删，并且报出删了多少
+  const wiped = await del('/api/data', { confirm: '清除' })
+  ok('确认之后清空', wiped.status === 200 && wiped.j?.ok === true, JSON.stringify(wiped.j))
+  ok('报出了清掉的会话数（界面要拿它写回执）', typeof wiped.j?.sessions === 'number', String(wiped.j?.sessions))
+  ok('会话文件一个不剩', fs.readdirSync(SAVES).filter((f) => f.endsWith('.json')).length === 0)
+  ok('存档槽位也清了（目录本身留着）',
+    !fs.existsSync(path.join(SAVES, 'slots')) || fs.readdirSync(path.join(SAVES, 'slots')).length === 0)
+
+  // 内存缓存必须一起清：只删磁盘的话，旧 id 还能拿到"已经删掉"的那一局
+  const gone = await get(`/api/session/${S.wheel}/state`)
+  ok('清掉之后旧会话 id 立刻失效（内存缓存也清了）', gone.status === 404, String(gone.status))
+
+  restore()
+  ok('备份放回去了（这条测试不该带走真实进度）',
+    fs.readdirSync(SAVES).filter((f) => f.endsWith('.json')).length === before,
+    `${fs.readdirSync(SAVES).filter((f) => f.endsWith('.json')).length} / ${before}`)
+}
 
 console.log(`\n${fail === 0 ? '全部通过' : '有失败'}：${pass} 通过 / ${fail} 失败\n`)
 cleanup()

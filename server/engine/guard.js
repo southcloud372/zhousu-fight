@@ -1,4 +1,5 @@
 import { TIER_GRADES } from './tables.js'
+import { nextMilestone } from './timeline.js'
 
 /**
  * 设定铁律（第七节第 257 行）：NPC 永远只说"特级"，
@@ -82,6 +83,36 @@ export function checkEnemyLegality(enemyName, timeline, playerInput = '') {
   return { ok: true }
 }
 
+const TIME_RANK = { 0: 0, '1d': 1, '3d': 3, '1w': 7 }
+
+/**
+ * 时间推进的闸门：**不许跨过还没发生的剧情节点**。
+ *
+ * 战斗向的时间只有一个时钟 —— 轮盘，一天一转。可是剧情回合自己也会带回
+ * timeAdvance（模型觉得"这段日子过去了"就写个 1w），日期一旦被推过节点那一天，
+ * nextMilestone() 就再也看不到它，missedNodes() 转手把它记成「已发生」——
+ * 玩家在轮盘上等了半天的那场仗，就这么无声无息地没了。这是"剧情和轮盘出现的
+ * 时机别扭"最伤人的一种：不是时机不对，是内容直接蒸发。
+ *
+ * 所以按"离下一个节点还有几天"把推进量夹住：走得再快，也只能停在节点当天。
+ * 到了当天（daysLeft = 0）一律夹成 0 —— 这一天是留给那场仗的。
+ */
+function clampTimeAdvance(raw, state) {
+  const want = ['1d', '3d', '1w'].includes(raw) ? raw : '0'
+  if (want === '0') return { value: '0', clamped: false }
+
+  const ms = nextMilestone(state)
+  if (!ms) return { value: want, clamped: false }
+
+  const left = ms.daysLeft
+  // 今天就是剧情当天：原地不动，先把这一场打完
+  if (left <= 0) return { value: '0', clamped: true }
+
+  const allowed = left >= 7 ? '1w' : left >= 3 ? '3d' : '1d'
+  if (TIME_RANK[want] <= TIME_RANK[allowed]) return { value: want, clamped: false }
+  return { value: allowed, clamped: true }
+}
+
 /**
  * 把模型提议的数值变更夹到合法范围内。
  * 模型可能返回 -99999 的 hpDelta 或超出 ±100 的好感度，这里兜住。
@@ -116,6 +147,11 @@ export function clampProposal(proposal, state) {
     ? p.deaths.slice(0, 5).map((x) => String(x).trim()).filter((x) => x.length >= 2 && x.length <= 12)
     : []
 
+  const time = clampTimeAdvance(p.timeAdvance, state)
+  if (time.clamped) {
+    notes.push(`时间推进被节点挡住：「${nextMilestone(state)?.node}」就在前面，已改为 ${time.value}`)
+  }
+
   return {
     hpDelta: Math.round(hp),
     ceDelta: Math.round(ce),
@@ -123,7 +159,7 @@ export function clampProposal(proposal, state) {
     sukunaAwakeningDelta: awakeningDelta,
     deaths,
     flags: Array.isArray(p.flags) ? p.flags.slice(0, 8).map(String) : [],
-    timeAdvance: ['1d', '3d', '1w', '0'].includes(p.timeAdvance) ? p.timeAdvance : '0',
+    timeAdvance: time.value,
     notes,
   }
 }

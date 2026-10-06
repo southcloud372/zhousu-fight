@@ -92,6 +92,87 @@ export function gradeIndex(g) {
   return GRADES.indexOf(g)
 }
 
+// ------------------------------------------------------- 数值 ←→ 等级（反向查表）
+
+/**
+ * 玩家自己填数值时，等级只能**由数字反推**，不能反过来让玩家点单等级。
+ *
+ * 原因：跨级压制表（SUPPRESSION / TIER_SUPPRESSION）、敌人强度设计、
+ * 领域觉醒判定全部按等级索引。数字和等级一旦能各说各话，
+ * 一个"四级"字头的角色可以带着标特级的血条进场，所有压制计算当场失真。
+ * 所以这里只提供单向映射：数字是真值，等级是它的标签。
+ *
+ * 九级区间在 tests/constants.test.mjs 里被断言为相邻不重叠，
+ * 所以每个合法值都恰好落进一档；越界值夹到两端。
+ */
+export const ATTR_KEYS = ['ce', 'hp', 'cd', 'pd']
+
+/**
+ * 数字输入的统一口子。
+ *
+ * 存在的理由是一个很安静的坑：`Number(null)` 是 **0**，`Number('  ')` 也是 0。
+ * 界面上把输入框清空、或者请求里漏了一个字段，直接 Number() 下去不会报错，
+ * 只会把那一项变成 0 —— 对血条来说是"从 30000 掉到 50"，玩家会以为引擎坏了。
+ * 所以这里把 null / 空串 / 非数字统统归成 NaN，让调用方明确地"当作没填"。
+ */
+export function numeric(v) {
+  if (v === null || v === undefined) return NaN
+  if (typeof v === 'string') {
+    const t = v.trim()
+    if (!t) return NaN
+    return Number.isFinite(Number(t)) ? Number(t) : NaN
+  }
+  if (typeof v !== 'number') return NaN
+  return Number.isFinite(v) ? v : NaN
+}
+
+export function gradeForValue(key, value) {
+  const v = numeric(value)
+  if (Number.isNaN(v)) return null
+  for (const g of GRADES) {
+    const [lo, hi] = RANGES[g][key]
+    if (v >= lo && v <= hi) return g
+  }
+  return v < RANGES[GRADES[0]][key][0] ? GRADES[0] : ATTR_GRADE_CAP
+}
+
+/** 效率与倍率在表里是每级一个定值（不是区间），所以取最接近的那一档 */
+function nearestByGrade(read, value, fallback) {
+  const v = numeric(value)
+  if (Number.isNaN(v)) return fallback
+  let best = GRADES[0]
+  let bestD = Infinity
+  for (const g of GRADES) {
+    const d = Math.abs(read(g) - v)
+    if (d < bestD) { bestD = d; best = g }
+  }
+  return best
+}
+
+export const gradeForEfficiency = (v, fallback = GRADES[0]) => nearestByGrade((g) => RANGES[g].eff, v, fallback)
+export const gradeForMultiplier = (v, fallback = GRADES[0]) => nearestByGrade((g) => TECH_MULT[g], v, fallback)
+
+/**
+ * 综合等级 = 五项等级的中位数。
+ *
+ * 取中位数而不是平均数：一项拉满不该把整个人抬成超特级
+ * （五项里只有一项顶格，另外四项是四级，那不是"超特级"）。
+ * 五项全顶格时中位数自然也是顶格 —— 玩家真的全填满了，就认。
+ */
+export function overallFromGrades(grades) {
+  const idx = grades.map(gradeIndex).filter((i) => i >= 0).sort((a, b) => a - b)
+  if (!idx.length) return GRADES[0]
+  return GRADES[idx[Math.floor(idx.length / 2)]]
+}
+
+/** 单项数值的合法上下限：最低一级的下限 → 开局上限那一级的上限 */
+export function valueBounds(key) {
+  return [RANGES[GRADES[0]][key][0], RANGES[ATTR_GRADE_CAP][key][1]]
+}
+
+export const EFF_BOUNDS = [RANGES[GRADES[0]].eff, RANGES[ATTR_GRADE_CAP].eff]
+export const MULT_BOUNDS = [TECH_MULT[GRADES[0]], TECH_MULT[ATTR_GRADE_CAP]]
+
 export function shiftGrade(g, delta) {
   const i = gradeIndex(g)
   if (i < 0) return g

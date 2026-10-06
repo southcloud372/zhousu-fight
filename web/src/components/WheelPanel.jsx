@@ -10,53 +10,46 @@ import React from 'react'
  * 而不是塞进右侧那条窄状态栏里。
  */
 
-const SIZE = 132
-const CX = SIZE / 2
-const CY = SIZE / 2
-const R = 54
-
 const midAngle = (i, n) => ((i + 0.5) / n) * 360 - 90
 
-function slicePath(i, n, r = R) {
-  const a0 = ((i / n) * 2 - 0.5) * Math.PI
-  const a1 = (((i + 1) / n) * 2 - 0.5) * Math.PI
-  const x0 = CX + r * Math.cos(a0)
-  const y0 = CY + r * Math.sin(a0)
-  const x1 = CX + r * Math.cos(a1)
-  const y1 = CY + r * Math.sin(a1)
-  const large = a1 - a0 > Math.PI ? 1 : 0
-  return `M ${CX} ${CY} L ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} Z`
-}
-
-function labelPos(i, n, r = R * 0.64) {
-  const a = (midAngle(i, n) * Math.PI) / 180
-  return { x: CX + r * Math.cos(a), y: CY + r * Math.sin(a) }
-}
-
-function Wheel({ sectors, landed }) {
+function Wheel({ sectors, landed, size = 132 }) {
   const n = sectors.length
+  const cx = size / 2
+  const cy = size / 2
+  const r = size * 0.409
   const [deg, setDeg] = React.useState(0)
+  // 转到哪儿由 landed 决定，但指针每一转都要多绕一圈 —— 不绕的话
+  // 相邻两次落在邻近扇区时指针几乎不动，看起来像"没转"
+  const [spins, setSpins] = React.useState(0)
 
-  // 指针永远往前走，不要倒着转回去
+  const slicePath = (i) => {
+    const a0 = ((i / n) * 2 - 0.5) * Math.PI
+    const a1 = (((i + 1) / n) * 2 - 0.5) * Math.PI
+    const x0 = cx + r * Math.cos(a0)
+    const y0 = cy + r * Math.sin(a0)
+    const x1 = cx + r * Math.cos(a1)
+    const y1 = cy + r * Math.sin(a1)
+    const large = a1 - a0 > Math.PI ? 1 : 0
+    return `M ${cx} ${cy} L ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} Z`
+  }
+
   React.useEffect(() => {
     if (!landed) return
     const idx = sectors.findIndex((s) => s.id === landed)
     if (idx < 0) return
-    const target = midAngle(idx, n)
-    setDeg((d) => {
-      const cur = ((d % 360) + 360) % 360
-      const delta = (((target - cur) % 360) + 360) % 360
-      return d + delta + 360
-    })
+    setSpins((k) => k + 1)
+    setDeg(midAngle(idx, n))
   }, [landed, n, sectors])
 
+  const fontSize = Math.max(8, size * 0.0795)
+
   return (
-    <svg className="wheel-svg" width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} aria-hidden="true">
+    <svg className="wheel-svg" width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
       <g>
         {sectors.map((s, i) => (
           <path
             key={s.id}
-            d={slicePath(i, n)}
+            d={slicePath(i)}
             fill={s.id === landed ? 'var(--gold-dim)' : i % 2 ? 'var(--bg-2)' : 'var(--bg-3)'}
             stroke="var(--line)"
             strokeWidth="1"
@@ -64,7 +57,8 @@ function Wheel({ sectors, landed }) {
         ))}
       </g>
       {sectors.map((s, i) => {
-        const p = labelPos(i, n)
+        const a = (midAngle(i, n) * Math.PI) / 180
+        const p = { x: cx + r * 0.64 * Math.cos(a), y: cy + r * 0.64 * Math.sin(a) }
         return (
           <text
             key={s.id}
@@ -72,18 +66,24 @@ function Wheel({ sectors, landed }) {
             y={p.y}
             textAnchor="middle"
             dominantBaseline="middle"
-            fontSize="10.5"
+            fontSize={fontSize}
             fill={s.id === landed ? 'var(--ink)' : 'var(--ink-dim)'}
           >
             {s.short}
-            {s.count > 0 && <tspan fill="var(--ink-faint)" fontSize="9"> ×{s.count}</tspan>}
+            {s.count > 0 && <tspan fill="var(--ink-faint)" fontSize={fontSize * 0.86}> ×{s.count}</tspan>}
           </text>
         )
       })}
-      <g style={{ transform: `rotate(${deg}deg)`, transformOrigin: `${CX}px ${CY}px`, transition: 'transform 620ms cubic-bezier(.15,.85,.2,1)' }}>
-        <line x1={CX} y1={CY} x2={CX} y2={CY - R - 8} stroke="var(--blood-bright)" strokeWidth="3" strokeLinecap="round" />
+      <g
+        style={{
+          transform: `rotate(${deg + spins * 360}deg)`,
+          transformOrigin: `${cx}px ${cy}px`,
+          transition: 'transform 720ms cubic-bezier(.15,.85,.2,1)',
+        }}
+      >
+        <line x1={cx} y1={cy} x2={cx} y2={cy - r - 8} stroke="var(--blood-bright)" strokeWidth="3" strokeLinecap="round" />
       </g>
-      <circle cx={CX} cy={CY} r="6" fill="var(--bg)" stroke="var(--line)" strokeWidth="1.5" />
+      <circle cx={cx} cy={cy} r="6" fill="var(--bg)" stroke="var(--line)" strokeWidth="1.5" />
     </svg>
   )
 }
@@ -112,7 +112,19 @@ function Bars({ rows, compact = false }) {
   )
 }
 
-export function WheelPanel({ wheel, gate, busy, onSpin, onAdvance }) {
+/**
+ * 日常轮盘。
+ *
+ * 默认是**收起**的一条窄条：一颗小转盘 + 一行"还差几天" + 两个按钮。
+ * 为什么默认收起 —— 战斗向里，一批剧情选项和轮盘会同时存在，两个都是
+ * "接下来该干什么"的操作区，并排摆着玩家会不知道该按哪边；而轮盘原来
+ * 还占着正文上方一大块，把最该读的那一栏挤扁了。收起来之后层次就清楚了：
+ * 剧情是主线，轮盘是"我想跳过这段空档"时才伸手去够的东西。
+ *
+ * 展开后给出六条进度条 —— 它们是"我确实练到了"的唯一凭据，
+ * 但只在想看的时候看。
+ */
+export function WheelPanel({ wheel, gate, busy, onSpin, onAdvance, open, onToggle }) {
   if (!wheel) return null
 
   const ms = wheel.milestone
@@ -124,9 +136,15 @@ export function WheelPanel({ wheel, gate, busy, onSpin, onAdvance }) {
   const blocked = !gate?.ok
 
   return (
-    <div className={`wheel-panel${ready ? ' ready' : ''}`}>
+    <div className={`wheel-panel${ready ? ' ready' : ''}${open ? ' open' : ' compact'}`}>
       <div className="wheel-left">
-        <Wheel sectors={wheel.sectorsTable} landed={wheel.lastItem} />
+        <Wheel sectors={wheel.sectorsTable} landed={wheel.lastItem} size={open ? 132 : 96} />
+        {/* 收起来的时候，把这一次的落点顶在盘下面 —— 转完一天最想看的就是这个 */}
+        {!open && wheel.lastItem && (
+          <span className="wheel-landed" key={wheel.days}>
+            {wheel.sectorsTable.find((s) => s.id === wheel.lastItem)?.short || wheel.lastItem}
+          </span>
+        )}
       </div>
 
       <div className="wheel-mid">
@@ -158,7 +176,7 @@ export function WheelPanel({ wheel, gate, busy, onSpin, onAdvance }) {
           )}
         </div>
 
-        <Bars rows={wheel.sectorsTable} compact />
+        {open && <Bars rows={wheel.sectorsTable} compact />}
 
         <div className="wheel-actions">
           <button
@@ -176,6 +194,14 @@ export function WheelPanel({ wheel, gate, busy, onSpin, onAdvance }) {
             onClick={onAdvance}
           >
             {ready ? '介入这场战斗' : ms ? `练到剧情当天（${ms.daysLeft} 天）` : '已无节点'}
+          </button>
+          <button
+            className="wheel-toggle"
+            onClick={onToggle}
+            aria-expanded={!!open}
+            title={open ? '收起轮盘，把空间还给剧情' : '展开：看六个方向的修炼进度'}
+          >
+            {open ? '收起 ▴' : '进度 ▾'}
           </button>
           {blocked && <span className="wheel-block">{gate.reason}</span>}
           {!blocked && !gate?.spin && <span className="wheel-block hot">先打完这一场</span>}

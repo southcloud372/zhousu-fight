@@ -1,5 +1,6 @@
 import React from 'react'
 import { GradeTag } from './Panels.jsx'
+import { FxBar, FloatDamage, DomainAura, BeatRow, SealChip } from './Fx.jsx'
 
 /**
  * 左侧战斗栏。
@@ -8,30 +9,48 @@ import { GradeTag } from './Panels.jsx'
  * 战斗中显示敌方档案、本回合行动与伤害计算；不在战斗时显示自己的备战数据。
  */
 
-function MiniBar({ label, cur, max, cls, suffix }) {
-  const pct = max > 0 ? Math.max(0, Math.min(100, (cur / max) * 100)) : 0
+function EnemyCard({ enemy, fx }) {
   return (
-    <div className="bar">
-      <div className="bar-head">
-        <span>{label}</span>
-        <b>{Math.round(cur).toLocaleString()} / {Math.round(max).toLocaleString()}{suffix}</b>
-      </div>
-      <div className="bar-track">
-        <div className={`bar-fill ${cls}`} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  )
-}
-
-function EnemyCard({ enemy, round }) {
-  return (
-    <div className="card">
+    <div className={`card${fx?.shake ? ` shake-${fx.shake}` : ''}`}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 3 }}>
         <span style={{ fontFamily: 'var(--font-narr)', fontSize: 16 }}>{enemy.name}</span>
         {enemy.grade && <GradeTag grade={enemy.grade} />}
       </div>
 
-      <MiniBar label="血量" cur={enemy.hp} max={enemy.hpMax} cls="hp" />
+      <div className="bar-wrap">
+        <FxBar
+          label="血量" cur={enemy.hp} max={enemy.hpMax} cls="hp"
+          flashToken={fx?.hpFlash}
+        />
+        {/* 伤害飘字：落在血条上，不用去读那一行小字 */}
+        <FloatDamage
+          token={fx?.dmgToken} value={fx?.dmgValue} kind={fx?.dmgKind}
+          max={enemy.hpMax}
+        />
+      </div>
+
+      {/* 连击：压着打的时候有个一直在涨的东西，比一行"造成 N 点伤害"有力得多 */}
+      {fx?.combo > 0 && (
+        <div className="combo-row">
+          <span className="combo-n" key={fx.combo}>{fx.combo}</span>
+          <span className="combo-lb">连击</span>
+        </div>
+      )}
+      {fx?.enemyCombo > 0 && (
+        <div className="combo-row enemy">
+          <span className="combo-n" key={fx.enemyCombo}>{fx.enemyCombo}</span>
+          <span className="combo-lb">对方连击</span>
+        </div>
+      )}
+
+      <DomainAura
+        active={fx?.enemyDomain?.active}
+        name={fx?.enemyDomain?.name}
+        turnsLeft={fx?.enemyDomain?.turnsLeft}
+        type={fx?.enemyDomain?.type}
+        side="enemy"
+      />
+
       {enemy.ceEstimate != null && (
         <div className="kv" style={{ marginTop: 6 }}>
           <span>咒力估算</span>
@@ -91,7 +110,7 @@ function Readiness({ panel }) {
   )
 }
 
-export function CombatSidebar({ panel, liveCombat, busy, open }) {
+export function CombatSidebar({ panel, liveCombat, busy, open, fx }) {
   const live = liveCombat?.panel
   const st = panel?.combat // 服务端的战斗态快照
 
@@ -126,9 +145,25 @@ export function CombatSidebar({ panel, liveCombat, busy, open }) {
               }[st.mode] || st.mode}</span>}
             </div>
 
-            <EnemyCard enemy={enemy} round={round} />
+            <EnemyCard enemy={enemy} fx={live ? fx : null} />
 
             <div className="combat-vs">— 本 回 合 —</div>
+
+            {/*
+              交手机读：引擎算完立刻就在，不用等模型把这一回合演出来。
+              放在最上面 —— 玩家按下技能之后，视线第一落点就是这里。
+            */}
+            {live && (
+              <BeatRow beat={live.beat} ticks={live.domainTicks} turn={live.turn} />
+            )}
+
+            {/* 规则型领域正在封谁。压在行动栏上方，按招之前就能看见 */}
+            {live?.seal?.player && (
+              <SealChip seal rules={live.seal.rules} mine />
+            )}
+            {live?.seal?.enemy && !live.seal.player && (
+              <SealChip seal rules={live.seal.rules} mine={false} />
+            )}
 
             {live ? (
               <div className="card" style={{ marginTop: 6 }}>
@@ -138,11 +173,36 @@ export function CombatSidebar({ panel, liveCombat, busy, open }) {
                 <div className="act-line enemy">
                   <span className="lb">敌方：</span>{live.enemyActionText}
                 </div>
+                {/*
+                  体术的 breakdown 里没有「咒术伤害 / 术式倍率 / 咒力效率」这三项，
+                  原来照术式那一行硬套，体术回合会显示成
+                  "undefined × undefined × undefined × 1 × …" —— 玩家每次贴身
+                  都在看一串 undefined。这里按实际有哪些项拼。
+                */}
                 {live.breakdown && (
                   <div className="calc">
-                    {live.breakdown.咒术伤害} × {live.breakdown.术式倍率} × {live.breakdown.咒力效率}
-                    {' × '}{live.breakdown.相性} × {live.breakdown.等级压制} × {live.breakdown.随机}
+                    {[
+                      live.breakdown.咒术伤害,
+                      live.breakdown.术式倍率,
+                      live.breakdown.咒力效率,
+                      live.breakdown.体术伤害,
+                      live.breakdown.相性,
+                      live.breakdown.等级压制,
+                      live.breakdown.领域加成,
+                      live.breakdown.随机,
+                    ].filter((v) => v !== undefined).join(' × ')}
                     {' − '}{live.breakdown.敌方防御} = <b>{live.damage}</b>
+                    {live.sureHit && <span className="calc-sure">（必中·无视防御）</span>}
+                  </div>
+                )}
+                {live.crit && (
+                  <div className={`crit-chip ${live.crit === 'player' ? 'ours' : 'theirs'}`}>
+                    {live.crit === 'player' ? '暴击！抓住破绽' : '被对方抓住破绽'}
+                  </div>
+                )}
+                {live.staggered && (
+                  <div className="crit-chip theirs">
+                    {live.staggered === 'player' ? '你被打得踉跄，这一手没递出去' : '对方被打断，这一手没能还手'}
                   </div>
                 )}
                 {live.notes?.length > 0 && (
@@ -178,9 +238,26 @@ export function CombatSidebar({ panel, liveCombat, busy, open }) {
       {inCombat && panel && (
         <div className="panel">
           <h3>我方</h3>
-          <div className="card">
-            <MiniBar label="血条" cur={panel.hp.cur} max={panel.hp.max} cls="hp" />
-            <MiniBar label="咒力" cur={panel.ce.cur} max={panel.ce.max} cls="ce" />
+          <div className={`card${fx?.selfShake ? ` shake-${fx.selfShake}` : ''}`}>
+            <DomainAura
+              active={fx?.selfDomain?.active}
+              name={fx?.selfDomain?.name}
+              turnsLeft={fx?.selfDomain?.turnsLeft}
+              type={fx?.selfDomain?.type}
+              side="self"
+            />
+            <div className="bar-wrap">
+              <FxBar label="血条" cur={panel.hp.cur} max={panel.hp.max} cls="hp" flashToken={fx?.selfHpFlash} />
+              {/*
+                自己这边的飘字。以前只有敌方血条会飘数字 ——
+                挨了一记重的，玩家只能看见血条短了一截，不知道短了多少。
+              */}
+              <FloatDamage
+                token={fx?.selfDmgToken} value={fx?.selfDmgValue}
+                kind={fx?.selfDmgKind} max={panel.hp.max}
+              />
+            </div>
+            <FxBar label="咒力" cur={panel.ce.cur} max={panel.ce.max} cls="ce" flashToken={fx?.ceFlash} />
             <div className="kv" style={{ marginTop: 7 }}>
               <span>状态</span>
               <span><span className={`status-pill s-${panel.status}`}>{panel.status}</span></span>

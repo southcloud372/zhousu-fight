@@ -1,6 +1,10 @@
 import {
-  techniqueDamage, physicalStrike, techniqueCost, hpStatus, suppression, REVERSE_TABLE,
+  techniqueDamage, physicalStrike, techniqueCost, hpStatus, suppression, REVERSE_TABLE, domainModifier,
 } from './formula.js'
+import {
+  DOMAIN_TYPE_DEFAULT, domainTypeOf, domainKit, domainOpenEffects, domainOpenLines,
+  domainTickEffects, sealOf, DOMAIN_KIT,
+} from './domains.js'
 import { ENEMY_ARCHETYPES } from './rolls.js'
 import { GRADES, gradeIndex } from './tables.js'
 import { applyGradeUp } from './state.js'
@@ -33,6 +37,32 @@ const DEFEND_REDUCTION = 0.35
 /** 领域可持续回合数，档位越高越久 */
 const DOMAIN_DURATION = { 弱特级: 5, 标特级: 6, 超特级: 7, 龙级: 8 }
 
+/**
+ * 战斗的"手感"三件套：暴击、连击、失衡。
+ *
+ * 加这三个不是为了改平衡 —— 同级同级的胜负关系由等级表决定，不能动 ——
+ * 而是因为原来的手动战斗在**读起来**是平的：每回合都是"造成 N 点伤害"，
+ * N 只在 ±10% 里晃，打到第十回合和第1回合没有任何区别，玩家感觉不到
+ * 自己在推进什么。暴击给的是"这一下不一样"，连击给的是"我占了上风"，
+ * 失衡给的是"我把它打崩了"。三者都不改期望值太多，但把曲线撑起来了。
+ *
+ * ⚠️ 它们只活在 act() 这一层，**绝不能下沉到 formula.js**：
+ *    tests/runtime.test.mjs 的平衡回归（"四级打超特级必须几乎不掉血"、
+ *    "同级术式不能超过回合上限"）直接对 techniqueDamage / physicalStrike
+ *    断言。那里必须保持纯函数，掺进随机项就没法回归了。
+ */
+/** 暴击倍率 */
+export const CRIT_MUL = 1.8
+/** 暴击率 = 基础 + 咒力效率 × 这个系数（效率越高越容易打出破绽） */
+const CRIT_BASE = 0.06
+const CRIT_EFF_COEF = 0.08
+const CRIT_CAP = 0.28
+/** 每层连击的加成，以及最多叠几层 */
+export const COMBO_STEP = 0.05
+export const COMBO_CAP = 6
+// 领域展开当回合打多少、之后每回合咬多少，按领域的三型分开了 ——
+// 见 engine/domains.js 的 DOMAIN_KIT。这里不再留一个全局比例。
+
 // 反转术式的档位表来自 formula.js —— 战斗外的疗伤（recovery.js）用的是同一张表，
 // 免得同一招在战斗里外回血不一样
 
@@ -58,6 +88,9 @@ function estimateCe(unit, rng) {
 
 export function initCombat(state, rng, { mode, enemy, reason, intervention = null }) {
   state.player.domain.active = false // 每场战斗重新展开
+  // 连击与失衡是"这一场"里的东西，不能跨场带进来
+  state.player._combo = 0
+  state.player._stagger = 0
   state.combat = {
     mode,
     reason,
@@ -158,17 +191,60 @@ export function freeReverse(state) {
   }
 }
 
-/** 结算一次伤害；防御姿态减伤，领域展开时防御减半（必中） */
+/** 当前连击加成（0 层 = ×1，6 层 = ×1.3） */
+function comboMul(unit) {
+  return 1 + Math.min(unit._combo || 0, COMBO_CAP) * COMBO_STEP
+}
+
+/**
+ * 结算一次伤害；防御姿态减伤，连击加成在这里统一乘上去。
+ *
+ * 打完记一笔：攻方连击 +1，守方清零 —— 连击是"我连着打中，没被打断"，
+ * 一旦挨了一下就断了。这条规则让"压制"变成一个玩家能看见、也能被夺走的东西。
+ *
+ * 规则型领域另外压一手：领域里的人出手打不实（见 domains.js 的 seal.damageMul）。
+ */
 function dealDamage(attacker, target, raw) {
-  let dmg = raw
-  if (attacker.domain?.active) dmg = Math.round(dmg * 1.0) // 必中：已在 formula 里由领域加成体现
+  const seal = sealOf(attacker, target)
+  let dmg = Math.round(raw * comboMul(attacker) * (seal?.damageMul ?? 1))
   if (target._defending) dmg = Math.round(dmg * (1 - DEFEND_REDUCTION))
   target.hp.cur = Math.max(0, target.hp.cur - dmg)
+  attacker._combo = (attacker._combo || 0) + 1
+  target._combo = 0
   return dmg
+}
+
+/**
+ * 暴击判定。效率越高越容易在交手里抓到破绽 —— 这也让"咒力效率"
+ * 这个原本只在公式里当乘数的属性，在手动战斗里有了手感上的存在感。
+ *
+ * 增益型领域展开期间额外加成：领域把对手的破绽放大了。
+ */
+function critRoll(actor, rng) {
+  const eff = actor.efficiency?.value ?? 0.7
+  const bonus = actor.domain?.active ? (domainKit(actor.domain).critBonus || 0) : 0
+  const cap = CRIT_CAP + bonus
+  return rng() < Math.min(cap, CRIT_BASE + eff * CRIT_EFF_COEF + bonus)
+}
+
+/**
+ * 暴击的后果：除了那 1.8 倍，还打断对方下一手。
+ *
+ * "打断"而不是"这一回合直接少打一下"，是因为先手顺序会变：如果出手方是后手，
+ * 对方这一回合已经动过了，当场结算就白暴击了。记成"下一手作废"，
+ * 谁先谁后都一样公平。
+ */
+function markCrit(actor, target, ev) {
+  ev.crit = true
+  ev.lines.push('—— 抓住破绽，这一击是暴击')
+  target._stagger = 1
+  ev.lines.push('对方被打得踉跄，下一手递不出来')
 }
 
 function act(actor, target, action, rng) {
   const ev = { type: action.type, lines: [] }
+  // 对方铺开的规则型领域：这一手能不能递出去，先看规则
+  const seal = sealOf(actor, target) || {}
 
   // 上一回合的防御姿态在自己再次行动时失效
   const wasDefending = !!actor._defending
@@ -177,6 +253,7 @@ function act(actor, target, action, rng) {
 
   switch (action.type) {
     case 'technique': {
+      if (seal.technique) { ev.lines.push('术式被领域规则封住，这一手递不出去'); return ev }
       if (actor.technique.cdLeft > 0) {
         ev.lines.push(`术式仍在冷却（剩 ${actor.technique.cdLeft} 回合），动作落空`)
         return ev
@@ -186,11 +263,13 @@ function act(actor, target, action, rng) {
       actor.technique.cdLeft = actor.technique.cooldown
 
       const r = techniqueDamage(actor, target, { rng })
-      const dmg = dealDamage(actor, target, r.damage)
+      const crit = critRoll(actor, rng)
+      const dmg = dealDamage(actor, target, crit ? Math.round(r.damage * CRIT_MUL) : r.damage)
       ev.damage = dmg
       ev.breakdown = r.breakdown
       ev.nullified = r.nullified
       ev.lines.push(`${actor.technique.name}轰出，造成 ${dmg} 点伤害`)
+      if (crit) markCrit(actor, target, ev)
       if (r.nullified) ev.lines.push('等级差距过大，术式被部分无效化')
       if (overdraft > 0) ev.lines.push(`咒力见底仍强行施术，反噬 ${overdraft} 点生命`)
       break
@@ -198,14 +277,23 @@ function act(actor, target, action, rng) {
 
     case 'physical': {
       const r = physicalStrike(actor, target, { rng })
-      const dmg = dealDamage(actor, target, r.damage)
+      const crit = critRoll(actor, rng)
+      const dmg = dealDamage(actor, target, crit ? Math.round(r.damage * CRIT_MUL) : r.damage)
       ev.damage = dmg
       ev.breakdown = r.breakdown
       ev.lines.push(`欺身而入，体术命中，造成 ${dmg} 点伤害`)
+      if (crit) markCrit(actor, target, ev)
       break
     }
 
     case 'defend': {
+      // 规则之内防御姿态不成立：咒力照收，减伤没有
+      if (seal.defense) {
+        const regen = Math.round(actor.ce.max * BASE_CE_REGEN_RATIO * actor.efficiency.value * 2)
+        actor.ce.cur = Math.min(actor.ce.max, actor.ce.cur + regen)
+        ev.lines.push(`收势卸力，回复 ${regen} 点咒力；领域规则之下，防御不成立`)
+        break
+      }
       actor._defending = true
       const regen = Math.round(actor.ce.max * BASE_CE_REGEN_RATIO * actor.efficiency.value * 2)
       actor.ce.cur = Math.min(actor.ce.max, actor.ce.cur + regen)
@@ -222,17 +310,49 @@ function act(actor, target, action, rng) {
         ev.lines.push('对方的压制太强，领域展不开')
         return ev
       }
+      // 对方已经铺开规则型领域：规则之内你的领域不成立
+      if (sealOf(actor, target)?.domain) {
+        ev.lines.push('对方的领域规则压着，你的领域展不开')
+        return ev
+      }
       const cost = techniqueCost(actor, d.cost)
       if (actor.ce.cur < cost) { ev.lines.push('咒力不足以展开领域，动作落空'); return ev }
       actor.ce.cur -= cost
       d.active = true
       d.turnsLeft = DOMAIN_DURATION[d.grade] || 5
       ev.domainOpened = true
+      ev.domainName = d.name
+      ev.sureHit = d.sureHit || ''
+      ev.domainType = domainTypeOf(d)
+
+      /*
+       * 展开当回合的效果按型走（见 domains.js）：
+       * 伤害型是一次无视防御的重击，规则型开始改写规则，增益型把自己顶起来。
+       * 这一下都不进 dealDamage —— 它不是"打中一拳"，是"规则开始生效"，
+       * 所以不吃连击、也不触发连击。
+       */
+      const out = domainOpenEffects(actor)
+      if (out.burst > 0) {
+        target.hp.cur = Math.max(0, target.hp.cur - out.burst)
+        ev.damage = out.burst
+        ev.sureHitBurst = true
+      }
+      if (out.heal > 0) actor.hp.cur = Math.min(actor.hp.max, actor.hp.cur + out.heal)
+      if (out.ce > 0) actor.ce.cur = Math.min(actor.ce.max, actor.ce.cur + out.ce)
+      ev.healed = out.heal
+      ev.recovered = out.ce
+
       ev.lines.push(`领域展开——${d.name}${d.sureHit ? `。${d.sureHit}` : ''}`)
+      ev.lines.push(...domainOpenLines(out))
       break
     }
 
     case 'reverse': {
+      /*
+       * 先判封禁再算治疗 —— reverseHeal 会真的扣咒力、加血，
+       * 反过来写的话"被封住"那一下血已经加上去了，只是没报出来。
+       */
+      if (seal.reverse) { ev.lines.push('领域内禁止治疗，反转术式用不出来'); return ev }
       const r = reverseHeal(actor)
       if (!r) { ev.lines.push('反转术式未掌握或咒力不足，动作落空'); return ev }
       ev.healed = r.healed
@@ -257,16 +377,19 @@ export function chooseEnemyAction(state, rng) {
   const e = state.combat.enemy
   const arch = ENEMY_ARCHETYPES[e.archetype] || ENEMY_ARCHETYPES.均衡
   const hpRatio = e.hp.cur / e.hp.max
+  // 被我方的规则型领域锁住的招不再往外递 —— 否则面板上会一直出现
+  // "对方又试了一次被封住的术式"，看起来像 AI 坏了
+  const seal = sealOf(e, state.player) || {}
 
-  if (hpRatio < 0.35 && e.reverseCursedTechnique?.level !== '未掌握' && e.ce.cur > e.ce.max * 0.3) {
+  if (!seal.reverse && hpRatio < 0.35 && e.reverseCursedTechnique?.level !== '未掌握' && e.ce.cur > e.ce.max * 0.3) {
     return { type: 'reverse' }
   }
-  if (e.domain?.unlocked && !e.domain.active && e.ce.cur > e.domain.cost * 2 && rng() < 0.45 * arch.aggression) {
+  if (!seal.domain && e.domain?.unlocked && !e.domain.active && e.ce.cur > e.domain.cost * 2 && rng() < 0.45 * arch.aggression) {
     return { type: 'domain' }
   }
-  const canTech = e.technique.cdLeft === 0 && e.ce.cur >= e.technique.cost
+  const canTech = !seal.technique && e.technique.cdLeft === 0 && e.ce.cur >= e.technique.cost
   if (canTech && rng() < 0.55 + 0.4 * arch.aggression) return { type: 'technique' }
-  if (hpRatio < arch.defendBelow && rng() < arch.cunning) return { type: 'defend' }
+  if (!seal.defense && hpRatio < arch.defendBelow && rng() < arch.cunning) return { type: 'defend' }
   if (canTech) return { type: 'technique' }
   return { type: 'physical' }
 }
@@ -275,16 +398,54 @@ export function chooseEnemyAction(state, rng) {
 function choosePlayerAutoAction(state, rng) {
   const p = state.player
   const hpRatio = p.hp.cur / p.hp.max
+  const seal = sealOf(p, state.combat.enemy) || {}
 
-  if (hpRatio < 0.3 && p.reverseCursedTechnique.level !== '未掌握' && p.ce.cur > p.ce.max * 0.3) {
+  if (!seal.reverse && hpRatio < 0.3 && p.reverseCursedTechnique.level !== '未掌握' && p.ce.cur > p.ce.max * 0.3) {
     return { type: 'reverse' }
   }
-  if (p.domain.unlocked && !p.domain.active && p.ce.cur > p.domain.cost * 2 && rng() < 0.6) {
+  if (!seal.domain && p.domain.unlocked && !p.domain.active && p.ce.cur > p.domain.cost * 2 && rng() < 0.6) {
     return { type: 'domain' }
   }
-  if (p.technique.cdLeft === 0 && p.ce.cur >= p.technique.cost) return { type: 'technique' }
-  if (hpRatio < 0.4 && rng() < 0.3) return { type: 'defend' }
+  if (!seal.technique && p.technique.cdLeft === 0 && p.ce.cur >= p.technique.cost) return { type: 'technique' }
+  if (!seal.defense && hpRatio < 0.4 && rng() < 0.3) return { type: 'defend' }
   return { type: 'physical' }
+}
+
+/**
+ * 领域在展开期间的持续效果。
+ *
+ * 放在双方都动完之后 —— 领域是"环境"，不是某一方的一手，谁先手都该在
+ * 这一回合结束时落下。只对还活着的对手生效：对手已经倒了还继续咬，
+ * 面板上会出现"尸体又掉了 88 点血"。
+ */
+function applyDomainTicks(state, events) {
+  const p = state.player
+  const e = state.combat.enemy
+  for (const [owner, foe, side] of [[p, e, 'player'], [e, p, 'enemy']]) {
+    if (!owner.domain?.active) continue
+    if (owner.hp.cur <= 0 || foe.hp.cur <= 0) continue
+    const tick = domainTickEffects(owner, foe)
+    if (!tick) continue
+
+    if (tick.damage) {
+      foe.hp.cur = Math.max(0, foe.hp.cur - tick.damage)
+      // 领域里躲不开的这一下同样算"挨打"：压制的节奏被它打断
+      foe._combo = 0
+    }
+    if (tick.heal) owner.hp.cur = Math.min(owner.hp.max, owner.hp.cur + tick.heal)
+    if (tick.ce) owner.ce.cur = Math.min(owner.ce.max, owner.ce.cur + tick.ce)
+
+    events.push({
+      side,
+      type: 'domain-tick',
+      domainTick: true,
+      domainType: tick.type,
+      damage: tick.damage,
+      healed: tick.heal,
+      recovered: tick.ce,
+      lines: tick.lines,
+    })
+  }
 }
 
 // ---------------------------------------------------------------- 回合
@@ -317,6 +478,19 @@ function checkOver(state) {
   return null
 }
 
+/** 被暴击打散的这一手：本回合动不了。返回 true 表示这一手被吃掉了 */
+function consumeStagger(unit, events, side, label) {
+  if (!unit._stagger) return false
+  unit._stagger = 0
+  events.push({
+    side,
+    type: 'stagger',
+    staggered: true,
+    lines: [`${label}还没站稳，这一手被压了回去`],
+  })
+  return true
+}
+
 /**
  * 推进一个回合。manual 模式下玩家传 action；autoPlayer 为 true 时玩家侧走 AI。
  */
@@ -334,6 +508,7 @@ export function runRound(state, rng, playerAction, { autoPlayer = false } = {}) 
   const playerPick = autoPlayer || !playerAction ? choosePlayerAutoAction(state, rng) : playerAction
 
   const doPlayer = () => {
+    if (consumeStagger(p, events, 'player', '你')) return
     const ev = act(p, e, playerPick, rng)
     ev.side = 'player'
     events.push(ev)
@@ -343,6 +518,7 @@ export function runRound(state, rng, playerAction, { autoPlayer = false } = {}) 
     if (ev.type === 'domain' && ev.domainOpened) c.stats.usedDomain = true
   }
   const doEnemy = () => {
+    if (consumeStagger(e, events, 'enemy', e.name)) return
     const ev = act(e, p, chooseEnemyAction(state, rng), rng)
     ev.side = 'enemy'
     events.push(ev)
@@ -355,6 +531,9 @@ export function runRound(state, rng, playerAction, { autoPlayer = false } = {}) 
     doEnemy()
     if (!checkOver(state) && !events.some((x) => x.fled)) doPlayer()
   }
+
+  // 领域是"环境"，在双方都动完之后落下（见 applyDomainTicks）
+  if (!events.some((x) => x.fled)) applyDomainTicks(state, events)
 
   const notes = [endOfRound(p), endOfRound(e)].filter(Boolean)
   p.status = hpStatus(p.hp)
@@ -377,6 +556,61 @@ export function runRound(state, rng, playerAction, { autoPlayer = false } = {}) 
   return { events, panel, over: c.over, outcome: c.outcome }
 }
 
+/** 面板上那一行交手用的招式名 */
+const ACTION_LABELS = {
+  technique: '生得术式',
+  physical: '体术',
+  defend: '防御',
+  domain: '领域展开',
+  reverse: '反转术式',
+  flee: '脱离',
+  stagger: '被压制',
+  'domain-tick': '领域',
+}
+
+/**
+ * 本回合双方各自做了什么 —— 一行交手机读。
+ *
+ * 这是给"按下按钮之后那几秒"用的：模型写演出要好几秒，而这一行是引擎
+ * 算完就有的。玩家按下体术，立刻能看到"体术 −247"，而不是对着一片
+ * 空气等模型把这段演出来。数字是事实，描写仍然归模型。
+ */
+function beatOf(events, side) {
+  const evs = events.filter((x) => x.side === side)
+  if (!evs.length) return null
+
+  /*
+   * 领域追斩单算一笔。
+   *
+   * 它和"这一手打出去的伤害"是两件事：一个是玩家按下去的结果，
+   * 一个是环境自己在咬。混成一个数的话，玩家看到"体术 −330"会以为
+   * 自己这一拳忽然变猛了，实际里面有一半是领域在替他补刀。
+   */
+  const direct = evs.filter((x) => x.type !== 'domain-tick')
+  const ticks = evs.filter((x) => x.type === 'domain-tick')
+  const sum = (list, k) => list.reduce((n, x) => n + (x[k] || 0), 0)
+  const hit = direct.find((x) => x.type !== 'stagger') || ticks[0] || direct[0]
+
+  return {
+    // 招式名按出手顺序拼，去掉重复（一次只该有一个"体术"）
+    label: direct.length
+      ? [...new Set(direct.map((x) => ACTION_LABELS[x.type] || x.type))].join(' + ')
+      : '领域',
+    kind: hit.type,
+    damage: sum(direct, 'damage'),
+    // 领域在这一回合替owner咬下来的那一口，界面单独摆一行
+    tickDamage: sum(ticks, 'damage'),
+    tickHealed: sum(ticks, 'healed'),
+    tickCe: sum(ticks, 'recovered'),
+    healed: sum(direct, 'healed'),
+    recovered: sum(direct, 'recovered') || sum(direct, 'recoveredCe'),
+    crit: evs.some((x) => x.crit),
+    staggered: evs.some((x) => x.staggered),
+    // 这一手什么都没发生：被封住、冷却中、咒力见底
+    fizzled: !direct.some((x) => x.damage || x.healed || x.recovered),
+  }
+}
+
 /** 按第六节规定的字段生成实时战况面板 */
 export function buildPanel(state, events, notes = []) {
   const c = state.combat
@@ -385,6 +619,10 @@ export function buildPanel(state, events, notes = []) {
 
   const txt = (side) => events.filter((x) => x.side === side).flatMap((x) => x.lines).join('；') || '——'
   const dmgEvent = events.find((x) => x.side === 'player' && x.damage)
+  // 这一回合的"高光"：谁暴击了、谁被打断了、谁开了领域。界面拿它做演出
+  const critEvent = events.find((x) => x.crit)
+  const staggerEvent = events.find((x) => x.staggered)
+  const domEvent = events.find((x) => x.domainOpened)
   // 本回合里玩家按过的"不占回合"行动（反转术式）
   const freeText = (c.freeLog || [])
     .filter((f) => f.turn === c.turn)
@@ -416,6 +654,65 @@ export function buildPanel(state, events, notes = []) {
     freeActionText: freeText,
     breakdown: dmgEvent?.breakdown || null,
     damage: dmgEvent?.damage || 0,
+    sureHit: !!dmgEvent?.sureHitBurst,
+    // ---- 演出用（界面拿它决定闪什么、震什么；不影响任何数值）----
+    crit: critEvent ? critEvent.side : null,
+    critTarget: critEvent ? (critEvent.side === 'player' ? 'enemy' : 'player') : null,
+    staggered: staggerEvent ? staggerEvent.side : null,
+    // 连击层数：玩家一侧是"我压着它打"，敌方一侧是压迫感
+    combo: Math.max(0, (p._combo || 0) - 1),
+    enemyCombo: Math.max(0, (e._combo || 0) - 1),
+    domainOpened: domEvent ? {
+      side: domEvent.side,
+      name: domEvent.domainName,
+      sureHit: domEvent.sureHit,
+      type: domEvent.domainType || DOMAIN_TYPE_DEFAULT,
+      /*
+       * 这一型的机制说明由引擎给（见 domains.js 的 DOMAIN_KIT）。
+       * 界面自己写一份的话，数值一改两处就对不上了 ——
+       * 而且"伤害型到底做什么"是设定，不是排版。
+       */
+      brief: DOMAIN_KIT[domEvent.domainType || DOMAIN_TYPE_DEFAULT].brief,
+      burst: domEvent.sureHitBurst ? domEvent.damage : 0,
+      healed: domEvent.healed || 0,
+      recovered: domEvent.recovered || 0,
+    } : null,
+    // 还在展开中的领域：界面拿它挂"剩余 N 回合"的光环。
+    // 上面那两条 domain 字段是给人读的字符串，这里给的是能直接渲染的结构
+    domainState: {
+      player: {
+        active: !!p.domain?.active,
+        name: p.domain?.name || '',
+        type: p.domain?.active ? domainTypeOf(p.domain) : '',
+        turnsLeft: p.domain?.turnsLeft ?? 0,
+      },
+      enemy: {
+        active: !!e.domain?.active,
+        name: e.domain?.name || '',
+        type: e.domain?.active ? domainTypeOf(e.domain) : '',
+        turnsLeft: e.domain?.turnsLeft ?? 0,
+      },
+    },
+    /*
+     * 规则型领域正压着谁。界面拿它把被封住的招灰掉并写明原因 ——
+     * 玩家点了才知道"术式被规则封住"太晚了，那一回合已经过去了。
+     * 规则是双向的：我方开规则型，对方的招被锁；对方开，我方被锁。
+     */
+    seal: {
+      player: !!sealOf(p, e),
+      enemy: !!sealOf(e, p),
+      rules: sealOf(p, e) || sealOf(e, p) || null,
+    },
+    // 领域展开期间的每回合效果（伤害型的追斩、增益型的续航）
+    domainTicks: events.filter((x) => x.domainTick).map((x) => ({
+      side: x.side, type: x.domainType, name: x.side === 'player' ? p.domain.name : e.domain?.name,
+      damage: x.damage || 0, healed: x.healed || 0, recovered: x.recovered || 0,
+    })),
+    // 一行交手机读：按下招之后立刻能看的东西（见 beatOf）
+    beat: {
+      player: beatOf(events, 'player'),
+      enemy: beatOf(events, 'enemy'),
+    },
     notes,
   }
 }
@@ -435,6 +732,9 @@ export function renderPanelText(panel) {
     `本回合行动：${panel.actionText}`,
     `敌方行动：${panel.enemyActionText}`,
     `伤害计算：${formula}`,
+    panel.domainOpened ? `领域：${panel.domainOpened.side === 'player' ? '我方' : '敌方'}展开「${panel.domainOpened.name}」` : null,
+    panel.crit ? `本回合高光：${panel.crit === 'player' ? '我方' : '敌方'}打出暴击` : null,
+    panel.combo > 0 ? `我方连击 ${panel.combo} 层` : null,
     panel.notes.length ? `战后更新：${panel.notes.join('；')}` : null,
   ].filter(Boolean).join('\n')
 }

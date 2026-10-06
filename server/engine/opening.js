@@ -1,6 +1,7 @@
 import { callTool, models } from '../llm.js'
 import {
   rollAttributeProfile, rollIdentity, rollIdentityKind, rollInitialRelations, TALENT_POOL,
+  SUDDEN_ARRIVAL_KIND,
 } from './rolls.js'
 import {
   CORE_RULES, CONTRACT, attributeFlavorPrompt, identityFlavorPrompt, customTimePrompt,
@@ -13,6 +14,7 @@ import { pointsFor, nodesFor, applyTimeline, byId, firstPoint } from './timeline
 import { storylineOf, DEFAULT_STORYLINE } from './storylines.js'
 import { playModeOf } from './playmodes.js'
 import { npcAttitude } from './visibility.js'
+import { normalizeDomainType, defaultDomainTypeFor } from './domains.js'
 
 const baseSystem = (playMode) =>
   [
@@ -94,57 +96,42 @@ export async function generateAttributeProfiles(rng, { onUsage } = {}) {
     hint: '上一次提交的三份属性档案不完整：slot / techniqueName / techniqueEffect / playstyle 都必须填，且文字不能太短。请重新提交完整的三份。',
   })
   const bySlot = Object.fromEntries((input.profiles || []).map((p) => [p.slot, p]))
-  return rolled.map((r) => {
-    const f = bySlot[r.slot] || {}
-    return {
-      ...r,
-      techniqueName: f.techniqueName || '未命名术式',
-      techniqueEffect: f.techniqueEffect || '',
-      techniqueCooldown: clampInt(f.techniqueCooldown, 0, 5, 1),
-      // 领域是否解锁由引擎决定，模型只填名字与效果
-      domain: r.domainUnlocked
-        ? {
-            unlocked: true,
-            name: f.domain?.name || '未命名领域',
-            sureHit: f.domain?.sureHit || '',
-            cost: f.domain?.cost || '',
-            tierName: r.domainTierName,
-          }
-        : { unlocked: false },
-      talents: (f.talents || []).filter((t) => TALENT_POOL.includes(t)).slice(0, 3),
-      playstyle: f.playstyle || '',
-      tool: r.toolCount > 0 ? f.tool || null : null,
-    }
-  })
+  return rolled.map((r) => decorateAttributeFlavor(r, bySlot[r.slot] || {}))
 }
 
 /**
- * 自主定义（属性）：玩家写一段想要的风格，引擎重新掷一份数值，
- * 模型按玩家描述生成术式 / 领域 / 天赋。
+ * 数值定好之后，让模型补创意字段（术式名 / 领域 / 天赋 / 玩法提示）。
  *
- * 等级仍然由引擎按设定概率掷出 —— 那套分布是整个战斗平衡的地基，
- * 让玩家直接点名"我要超特级"会把跨级压制、敌人设计全部架空的。
- * 玩家的描述影响的是**风格**（近战还是远程、爆发还是续航），不是**强度**。
+ * 单独抽出来是因为有两条路径要它：
+ *   1. 自定义属性 —— 引擎先掷一份底子，模型按描述写创意部分；
+ *   2. 玩家改完数字之后 —— 数字变了等级就可能变，跨进特级还得当场觉醒领域，
+ *      这时候必须再问一次模型，否则玩家会带着一个没有名字的领域进游戏。
+ *
+ * 数字一律是已经定死的，模型只负责写。playerTuned 会把这个事实写进提示词 ——
+ * 不写的话，模型会拿"三级不该有这么高的咒术伤害"这套脑补去往回圆。
  */
-export async function generateCustomAttribute(rng, brief, { onUsage } = {}) {
-  const rolled = [rollAttributeProfile(rng, '自定义')]
+export async function flavorAttributeProfile(profile, brief, { onUsage, playerTuned = false } = {}) {
   const input = await callWithRetry({
     system: baseSystem(),
-    messages: [{ role: 'user', content: attributeFlavorPrompt(rolled, { brief }) }],
+    messages: [{ role: 'user', content: attributeFlavorPrompt([profile], { brief, playerTuned }) }],
     tool: submitAttributeFlavor,
     model: models.pro,
     maxTokens: 2500,
     onUsage,
-    validate: (x) => allFilled((x?.profiles || []).filter((p) => p.slot === '自定义'), ATTRIBUTE_FIELDS),
+    validate: (x) => allFilled((x?.profiles || []).filter((p) => p.slot === profile.slot), ATTRIBUTE_FIELDS),
     hint: '提交不合格：需要且只需要一份 slot 为「自定义」的档案，techniqueName / techniqueEffect / playstyle 都要填满。请重新提交。',
   })
-  const f = (input.profiles || []).find((p) => p.slot === '自定义') || (input.profiles || [])[0] || {}
-  const r = rolled[0]
+  const f = (input.profiles || []).find((p) => p.slot === profile.slot) || (input.profiles || [])[0] || {}
+  return decorateAttributeFlavor(profile, f, brief)
+}
+
+/** 把模型给的创意字段贴回数值档案上。领域解锁与否由引擎决定，模型只填名字与效果 */
+function decorateAttributeFlavor(r, f, brief) {
   return {
     ...r,
     techniqueName: f.techniqueName || '未命名术式',
     techniqueEffect: f.techniqueEffect || '',
-    techniqueCooldown: clampInt(f.techniqueCooldown, 0, 5, 1),
+    techniqueCooldown: clampInt(f.techniqueCooldown, 0, 5, r.techniqueCooldown ?? 1),
     domain: r.domainUnlocked
       ? {
           unlocked: true,
@@ -152,13 +139,27 @@ export async function generateCustomAttribute(rng, brief, { onUsage } = {}) {
           sureHit: f.domain?.sureHit || '',
           cost: f.domain?.cost || '',
           tierName: r.domainTierName,
+          // 三型之一；模型漏填就按等级名兜（见 domains.js）
+          type: normalizeDomainType(f.domain?.type) || defaultDomainTypeFor(r.domainTierName),
         }
       : { unlocked: false },
     talents: (f.talents || []).filter((t) => TALENT_POOL.includes(t)).slice(0, 3),
     playstyle: f.playstyle || '',
     tool: r.toolCount > 0 ? f.tool || null : null,
-    brief, // 留个记录，界面上可以显示"依据你的描述生成"
+    ...(brief ? { brief } : {}),
   }
+}
+
+/**
+ * 自主定义（属性）：玩家写一段想要的风格，引擎掷一份数值底子，
+ * 模型按玩家描述生成术式 / 领域 / 天赋。
+ *
+ * 掷出来的这份不是最终结果 —— 它是**每个数值输入框的默认值**。
+ * 玩家可以在界面上逐项改写（见 rolls.js 的 tuneAttributeProfile），
+ * 改完的数字会被反推成等级，再回来重走这里补创意字段。
+ */
+export async function generateCustomAttribute(rng, brief, { onUsage } = {}) {
+  return flavorAttributeProfile(rollAttributeProfile(rng, '自定义'), brief, { onUsage })
 }
 
 /** 第二步：引擎定身份骨架 → 模型补创意字段 */
@@ -305,6 +306,26 @@ export async function buildCharacterAndOpening(state, attrProfile, identityProfi
       .map(([k, v]) => [k, `${npcAttitude(v)}`]),
   )
 
+  /*
+   * 「突然出现的人」的开局和其余四个身份不是一回事：他没有处境，只有"出现"。
+   * 不写这一段的话，模型会顺手给他补一个来历 —— 那正是玩家选这个身份时要避开的。
+   */
+  const sudden = identityProfile.kind === SUDDEN_ARRIVAL_KIND
+  const suddenBlock = sudden ? `
+## 这个身份是「突然出现的人」（必须遵守）
+
+他是**凭空出现的**，不是这条线里的任何一个人：没有户籍、没有咒术界档案、
+没有任何人见过他、和所有人关系值为 0（上面那张关系表是空的，那不是漏填）。
+
+- **不要给他编来历。** 不要写他其实是某人的弟子/亲戚/转世/被谁派来的。
+  他是谁、从哪来，是这一局的悬念，不是你要在这一段里填掉的坑。
+- 开局情境写他**刚落地的那几十秒**：身体还没适应、身上只有原本带着的东西、
+  周围的一切都是陌生的。他不知道这里的规矩，这里也不知道有他这个人。
+- 场上的人对他的第一反应是**警惕或不解**，不是"你终于来了"。
+- 但**不要**写得他只能挨打：他是外来者，不是弱者。他的力量照档案来，
+  只是这个世界没有他的名字。
+` : ''
+
   const input = await callWithRetry({
     system: baseSystem(state.playMode),
     tool: submitOpeningScene,
@@ -336,6 +357,7 @@ export async function buildCharacterAndOpening(state, attrProfile, identityProfi
 与主线关系：${player.mainlineRelation}
 开局处境：${player.openingSituation}
 特殊钩子：${player.hook}
+${suddenBlock}
 
 NPC 当前对他的态度（NPC 只知道态度，不知道好感度数值）：
 ${JSON.stringify(relationsForModel, null, 2)}

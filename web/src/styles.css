@@ -129,6 +129,10 @@ body::before {
   transition: border-color 0.12s, color 0.12s, background 0.12s;
 }
 .top-btn:hover { border-color: var(--blood); color: var(--blood); background: #fff; }
+/* 「主页」在一回合生成期间是禁用的 —— 得看得出来它现在按不动，
+   否则玩家会以为按钮坏了，而不是"等一下就好" */
+.top-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.top-btn:disabled:hover { border-color: var(--line); color: var(--ink-dim); background: var(--bg-2); }
 
 .only-narrow { display: none; }
 
@@ -438,7 +442,8 @@ body::before {
   margin-bottom: 3px;
 }
 .bar-head b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
-.bar-track { height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; }
+/* position:relative 是给残影那一层当定位基准的，别删 */
+.bar-track { position: relative; height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; }
 .bar-fill { height: 100%; transition: width 0.45s ease; border-radius: 3px; }
 .bar-fill.hp { background: linear-gradient(90deg, #8f1d16, #d4453a); }
 .bar-fill.ce { background: linear-gradient(90deg, #14607d, #2b9ec4); }
@@ -629,6 +634,27 @@ body::before {
   transition: background 0.12s, color 0.12s;
 }
 .pcard .pick-btn:hover { background: var(--blood); color: #fff; }
+.pcard .pick-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.pcard .pick-btn:disabled:hover { background: transparent; color: var(--blood); }
+
+/* 开局流程的出口：一个小链接，不跟主行动抢注意力。
+   inline-block 是为了让它只占文字那么宽 —— 铺满一整行的话，
+   这一行上随便点哪儿都会撤回主页 */
+.home-link {
+  display: inline-block;
+  margin: 0 0 14px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--ink-faint);
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.home-link:hover { color: var(--blood); }
+.home-link:disabled { opacity: 0.45; cursor: not-allowed; }
+.home-link:disabled:hover { color: var(--ink-faint); }
 
 /* 游玩模式选择 */
 .mode-picker { margin: 0 0 22px; }
@@ -844,6 +870,96 @@ body::before {
   margin-bottom: 7px;
 }
 
+/* ---- 数值输入 ----
+   掷出来的数字变成可编辑的输入框。行高比 .kv 松一点：
+   这里每行都要能点中，挤在一起会点错项。 */
+.num-grid {
+  margin-top: 9px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 4px 0;
+}
+.num-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.num-row .nl { color: var(--ink-dim); }
+.num-row .nv { display: flex; align-items: center; gap: 3px; }
+.num-row .nv em { font-style: normal; font-size: 11.5px; color: var(--ink-faint); }
+.num-row input {
+  width: 104px;
+  padding: 3px 7px;
+  text-align: right;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.num-row input:focus { outline: none; border-color: var(--cursed); background: #fff; }
+.num-row .ng { min-width: 46px; text-align: right; }
+
+/* 「应用数值」：改过数字才出现，所以不用常驻占位 */
+.pick-btn.tune-btn { margin-top: 10px; border-color: var(--gold); color: var(--gold); }
+.pick-btn.tune-btn:hover:not(:disabled) { background: rgba(184, 134, 11, 0.08); }
+
+/* ---- 第五个身份：突然出现的人 ----
+   和其它四张卡刻意长得不一样：它们是"给你挑的身份"，
+   这张是"没有身份"。所以用实线 + 冷色，不做成同一族的卡。 */
+.pcard.sudden { border-color: var(--cursed); background: var(--bg-2); }
+.pcard.sudden:hover { border-color: var(--cursed); }
+.pcard.sudden h2 { color: var(--cursed); }
+.pcard.sudden strong { color: var(--gold); }
+
+.sudden-form { display: flex; gap: 8px; margin-top: 12px; }
+.sudden-form label { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.sudden-form label.narrow { flex: 0 0 76px; }
+.sudden-form label > span { font-size: 11px; color: var(--ink-dim); letter-spacing: 0.08em; }
+.sudden-form input {
+  width: 100%;
+  padding: 6px 9px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+}
+.sudden-form input:focus { outline: none; border-color: var(--cursed); background: #fff; }
+
+/* ---- 主页：清空全部数据 ----
+   这一屏唯一不可逆的操作，所以配色比"读取存档"更退一步：
+   平时只是一行灰字，悬停才浮出警告色。它不该和"开始生成"抢注意力，
+   但点开确认条之后必须一眼看清自己在删什么。 */
+.pcard .pick-btn.wipe-btn {
+  margin-top: 14px;
+  border-color: transparent;
+  color: var(--ink-faint, #9a9a9a);
+  font-size: 12px;
+}
+.pcard .pick-btn.wipe-btn:hover:not(:disabled) { background: transparent; border-color: var(--blood); color: var(--blood); }
+
+.wipe-ask {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--blood);
+  border-radius: 4px;
+  background: rgba(139, 0, 0, 0.04);
+}
+.wipe-note { font-size: 12px; line-height: 1.6; color: var(--ink-dim); margin-bottom: 8px; }
+.wipe-done { margin-top: 9px; font-size: 12px; line-height: 1.6; color: var(--ok); }
+.wipe-row { display: flex; gap: 7px; }
+.pcard .pick-btn.wipe-ok { margin-top: 0; flex: 1; border-color: var(--blood); background: var(--blood); color: #fff; }
+.pcard .pick-btn.wipe-ok:hover:not(:disabled) { background: #a30000; }
+.pcard .pick-btn.wipe-cancel { margin-top: 0; flex: 0 0 72px; border-color: var(--line); color: var(--ink-dim); }
+.pcard .pick-btn.wipe-cancel:hover:not(:disabled) { background: transparent; color: var(--ink); }
+
 .domain-box {
   margin-top: 10px;
   padding: 9px 11px;
@@ -1049,7 +1165,9 @@ body::before {
   }
   .log { padding: 16px 14px 8px; }
   .choices { padding: 10px 14px 12px; }
-  .topbar { padding: 7px 10px; gap: 8px; }
+  /* 顶栏东西多（品牌、日期、等级、模式、跨篇、存档、主页、两个抽屉开关），
+     窄屏挤不下就会横向溢出、按钮被裁掉。让它换行，别让按钮消失 */
+  .topbar { padding: 7px 10px; gap: 8px; flex-wrap: wrap; row-gap: 6px; }
   .brand { font-size: 14px; letter-spacing: 0.12em; }
   .topbar .date { font-size: 11.5px; }
   .pick { padding: 22px 14px 44px; }
@@ -1217,4 +1335,585 @@ body::before {
 @media (max-width: 900px) {
   .wheel-panel { padding: 8px 14px 10px; gap: 10px; }
   .wheel-svg { width: 96px; height: 96px; }
+}
+
+/* ==========================================================================
+   演出层
+   --------------------------------------------------------------------------
+   这一整块只描述"看起来怎么样"。它绑定的都是引擎已经算完的结果 ——
+   暴击、领域展开、数值突破 —— 目的只有一个：让 137 和 100 在屏幕上
+   看起来不一样。没有差异就没有爽感，而差异必须先被看见。
+   ========================================================================== */
+
+/* ------------------------------------------------------------ 领域展开过场 */
+
+.domain-cutin {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+  background: rgba(12, 10, 9, 0.88);
+  animation: dcIn 180ms ease-out both;
+}
+/* 对方开领域：底色换冷紫，一眼能分出是谁的场 */
+.domain-cutin.from-enemy { background: rgba(16, 9, 24, 0.9); }
+
+@keyframes dcIn { from { opacity: 0; } to { opacity: 1; } }
+
+/*
+ * 光晕的颜色按领域**类型**给，不按是谁开的 —— "谁开的"已经由
+ * 底色冷暖（.from-enemy）和正文里的我方/敌方说清楚了，
+ * 而类型是玩家开完之后必须马上知道的事：这三种打法完全不同。
+ */
+.dc-wash {
+  position: absolute;
+  inset: -30%;
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(200, 45, 34, 0.55),
+    rgba(120, 18, 12, 0.18) 42%,
+    transparent 68%
+  );
+  animation: dcWash 1200ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.domain-cutin.tone-rule .dc-wash {
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(96, 42, 150, 0.58),
+    rgba(40, 12, 70, 0.2) 42%,
+    transparent 68%
+  );
+}
+.domain-cutin.tone-buff .dc-wash {
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(38, 132, 86, 0.5),
+    rgba(10, 62, 40, 0.2) 42%,
+    transparent 68%
+  );
+}
+@keyframes dcWash {
+  from { transform: scale(0.35); opacity: 0; }
+  55% { opacity: 1; }
+  to { transform: scale(1.05); opacity: 0.72; }
+}
+
+/* 三层同心圆往外炸开，错开一点就成了"术式铺开"的层次 */
+.dc-rings { position: absolute; inset: 0; display: grid; place-items: center; }
+.dc-rings i {
+  position: absolute;
+  width: 30vmin;
+  height: 30vmin;
+  border: 2px solid rgba(255, 236, 214, 0.5);
+  border-radius: 50%;
+  animation: dcRing 1500ms cubic-bezier(0.15, 0.8, 0.2, 1) both;
+}
+.dc-rings i:nth-child(2) { animation-delay: 140ms; }
+.dc-rings i:nth-child(3) { animation-delay: 280ms; }
+@keyframes dcRing {
+  from { transform: scale(0.2); opacity: 0; border-width: 10px; }
+  30% { opacity: 0.9; }
+  to { transform: scale(3.1); opacity: 0; border-width: 1px; }
+}
+
+.dc-body { position: relative; padding: 0 20px; text-align: center; color: #f6efe4; }
+
+.dc-kanji { display: flex; justify-content: center; gap: clamp(6px, 2.4vw, 22px); }
+.dc-kanji span {
+  font-family: var(--font-narr);
+  font-size: clamp(40px, 12vw, 108px);
+  font-weight: 700;
+  line-height: 1;
+  text-shadow:
+    0 0 26px rgba(255, 90, 60, 0.85),
+    0 0 62px rgba(200, 30, 20, 0.6),
+    0 4px 0 rgba(0, 0, 0, 0.35);
+  animation: dcKanji 620ms cubic-bezier(0.18, 0.9, 0.25, 1.2) both;
+}
+@keyframes dcKanji {
+  from { opacity: 0; transform: translateY(18px) scale(1.5); filter: blur(14px); }
+  to { opacity: 1; transform: none; filter: blur(0); }
+}
+
+.dc-name {
+  margin-top: 16px;
+  font-family: var(--font-narr);
+  font-size: clamp(15px, 3vw, 23px);
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;      /* 抵消末字后那一格字距，整体才是居中的 */
+  color: #ffe9c9;
+  animation: dcUp 620ms 560ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.dc-sure {
+  margin-top: 9px;
+  font-size: 13px;
+  letter-spacing: 0.24em;
+  color: rgba(255, 233, 201, 0.72);
+  animation: dcUp 600ms 780ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+/* 类型徽标：三种领域在这一屏上的第一识别点 */
+.dc-type {
+  display: inline-block;
+  margin-top: 14px;
+  padding: 2px 14px;
+  border: 1px solid rgba(255, 233, 201, 0.4);
+  border-radius: 2px;
+  font-size: 12.5px;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  color: #ffe9c9;
+  animation: dcUp 500ms 460ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.domain-cutin.tone-rule .dc-type { border-color: rgba(206, 170, 255, 0.5); color: #e6d4ff; }
+.domain-cutin.tone-buff .dc-type { border-color: rgba(160, 235, 190, 0.5); color: #d3f6e2; }
+
+/* 展开当回合真正落下去的数字 */
+.dc-fx {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 14px;
+  color: #ffd9a0;
+  animation: dcUp 500ms 920ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.dc-line.ce { color: #a9d8ee; }
+.dc-line.heal { color: #a6e3bd; }
+.dc-line.brief {
+  font-size: 12.5px;
+  letter-spacing: 0.14em;
+  color: rgba(246, 239, 228, 0.6);
+}
+.dc-fx b {
+  margin-left: 4px;
+  font-size: 25px;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  text-shadow: 0 0 18px rgba(255, 120, 80, 0.9);
+}
+.domain-cutin.tone-buff .dc-fx b { text-shadow: 0 0 18px rgba(90, 230, 160, 0.85); }
+@keyframes dcUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+.dc-skip {
+  position: absolute;
+  right: 0;
+  bottom: 26px;
+  left: 0;
+  text-align: center;
+  font-size: 11.5px;
+  letter-spacing: 0.3em;
+  color: rgba(246, 239, 228, 0.42);
+  animation: dcUp 500ms 1200ms both;
+}
+
+/* ------------------------------------------------------------------ 轻提示 */
+
+.toasts {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(340px, 78vw);
+  pointer-events: none;   /* 只有卡片本身可点，不挡住下面的操作 */
+}
+.toast {
+  pointer-events: auto;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 14px;
+  border-left: 3px solid var(--gold);
+  border-radius: 4px;
+  background: var(--bg-2);
+  box-shadow: var(--shadow-lg);
+  font-size: 13px;
+  color: var(--ink);
+  animation: toastIn 260ms cubic-bezier(0.2, 0.9, 0.25, 1.1) both;
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(28px); }
+  to { opacity: 1; transform: none; }
+}
+.toast-title { font-size: 11px; letter-spacing: 0.22em; color: var(--gold); }
+.toast.tone-blood { border-left-color: var(--blood); }
+.toast.tone-blood .toast-title { color: var(--blood); }
+.toast.tone-cursed { border-left-color: var(--cursed); }
+.toast.tone-cursed .toast-title { color: var(--cursed); }
+.toast.big { padding: 12px 18px; font-size: 15px; }
+.toast.big .toast-text { font-weight: 600; }
+
+/* -------------------------------------------------------------- 战斗数值演出 */
+
+.bar-wrap { position: relative; }
+
+/* 血条上飘出来的那一串数字 */
+.float-dmg {
+  position: absolute;
+  right: 2px;
+  top: 14px;
+  z-index: 2;
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  animation: floatDmg 1150ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.float-dmg.k-hit { color: var(--blood); }
+.float-dmg.k-crit {
+  font-size: 27px;
+  color: #7d0f08;
+  text-shadow: 0 0 14px rgba(200, 45, 34, 0.55);
+}
+.float-dmg.k-sure { color: var(--tier); text-shadow: 0 0 14px rgba(107, 53, 150, 0.45); }
+.float-dmg.k-heal { color: var(--ok); }
+/* 按"这一下占血条多少"分级：大伤害要一眼看出是大的 */
+.float-dmg.big { font-size: 24px; }
+.float-dmg.huge {
+  font-size: 31px;
+  text-shadow: 0 0 18px rgba(200, 45, 34, 0.5);
+}
+.float-dmg.k-heal.big,
+.float-dmg.k-heal.huge { text-shadow: 0 0 18px rgba(43, 110, 70, 0.45); }
+@keyframes floatDmg {
+  from { opacity: 0; transform: translateY(6px) scale(0.7); }
+  25% { opacity: 1; transform: translateY(0) scale(1.18); }
+  60% { opacity: 1; transform: translateY(-14px) scale(1); }
+  to { opacity: 0; transform: translateY(-30px) scale(0.95); }
+}
+
+/*
+ * 残影：血条先掉，这一条晚 240ms 才追上来。
+ * 静止的一条血条看不出"掉了多少"，多这一层就有了"被削掉"的动作。
+ */
+.bar-ghost {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 3px;
+  background: rgba(168, 35, 27, 0.42);
+  transition: width 420ms cubic-bezier(0.3, 0.9, 0.3, 1);
+}
+
+/* 血条被打掉时扫过的一道白光 */
+.bar-flash {
+  position: absolute;
+  inset: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.92), transparent);
+  animation: barFlash 620ms ease-out both;
+}
+@keyframes barFlash {
+  from { opacity: 0; transform: translateX(-100%); }
+  40% { opacity: 1; }
+  to { opacity: 0; transform: translateX(100%); }
+}
+
+/* 连击计数 */
+.combo-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--cursed);
+}
+.combo-row.enemy { color: var(--blood); }
+.combo-row .combo-n {
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  animation: comboPop 320ms cubic-bezier(0.2, 0.9, 0.3, 1.4) both;
+}
+.combo-row .combo-lb { color: var(--ink-faint); letter-spacing: 0.14em; }
+@keyframes comboPop {
+  from { transform: scale(1.7); opacity: 0.4; }
+  to { transform: none; opacity: 1; }
+}
+
+/* 领域展开中挂在角色卡上的光环 */
+.domain-aura {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 0 3px;
+  padding: 5px 9px;
+  border-radius: 3px;
+  background: rgba(107, 53, 150, 0.09);
+  font-size: 12px;
+  color: var(--tier);
+  overflow: hidden;
+}
+.domain-aura.side-enemy { background: rgba(168, 35, 27, 0.09); color: var(--blood); }
+.domain-aura.tone-rule { color: var(--tier); background: rgba(107, 53, 150, 0.11); }
+.domain-aura.tone-buff { color: var(--ok); background: rgba(43, 110, 70, 0.1); }
+.domain-aura .da-text b { font-variant-numeric: tabular-nums; }
+.domain-aura .da-type {
+  margin-right: 6px;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  opacity: 0.9;
+}
+.domain-aura .da-ring {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -40%;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  opacity: 0.16;
+  animation: daSweep 2400ms linear infinite;
+}
+@keyframes daSweep { from { left: -40%; } to { left: 100%; } }
+
+/* 命中抖动：被打的那一方抖，打人的那一方冲一下 */
+.shake-hit { animation: shakeHit 380ms cubic-bezier(0.3, 0.8, 0.3, 1) both; }
+.shake-taken { animation: shakeTaken 420ms cubic-bezier(0.3, 0.8, 0.3, 1) both; }
+@keyframes shakeHit {
+  0% { transform: translateX(0); }
+  25% { transform: translateX(5px); }
+  55% { transform: translateX(-2px); }
+  100% { transform: translateX(0); }
+}
+@keyframes shakeTaken {
+  0% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  45% { transform: translateX(5px); }
+  70% { transform: translateX(-3px); }
+  100% { transform: translateX(0); }
+}
+
+.crit-chip {
+  margin-top: 6px;
+  padding: 3px 8px;
+  border-radius: 2px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  animation: comboPop 300ms cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
+}
+.crit-chip.ours { background: rgba(168, 35, 27, 0.1); color: var(--blood); }
+.crit-chip.theirs { background: rgba(92, 87, 79, 0.1); color: var(--ink-dim); }
+.calc-sure { margin-left: 5px; color: var(--tier); }
+
+/* -------------------------------------------------------------- 交手机读 */
+
+/*
+ * 按下技能之后立刻出现的那两行：谁出了什么、掉了多少血。
+ * 模型写演出要好几秒，这几秒里屏幕上原本是静止的 —— 玩家会怀疑自己
+ * 到底点上没点上。这一块是引擎算完就有的，先落地，画面随后补。
+ */
+.beats {
+  margin: 6px 0 8px;
+  padding: 7px 9px;
+  border-left: 2px solid var(--blood);
+  background: rgba(168, 35, 27, 0.045);
+}
+.beat {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  animation: beatIn 260ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+.beat.side-theirs { border-top: 1px dashed var(--line-soft); margin-top: 4px; padding-top: 3px; }
+.beat .bt-who { color: var(--ink-faint); letter-spacing: 0.1em; }
+.beat .bt-act { color: var(--ink); font-weight: 600; }
+.beat .bt-dmg {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--blood);
+}
+.beat .bt-heal, .beat .bt-ce { font-variant-numeric: tabular-nums; color: var(--ok); }
+.beat .bt-ce { font-size: 11.5px; }
+.beat .bt-crit {
+  padding: 0 6px;
+  border-radius: 2px;
+  background: rgba(168, 35, 27, 0.12);
+  color: var(--blood);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+}
+.beat .bt-miss { color: var(--ink-faint); font-size: 11.5px; }
+/* 领域追斩是"环境在替你补刀"，和自己那一手区分开 */
+.beat .bt-dmg.tick, .beat .bt-heal.tick, .beat .bt-ce.tick { color: var(--tier); }
+@keyframes beatIn {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 规则型领域压着谁 */
+.seal-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 6px 0;
+  padding: 5px 9px;
+  border-radius: 2px;
+  background: rgba(107, 53, 150, 0.09);
+  font-size: 12px;
+  color: var(--tier);
+  animation: comboPop 300ms cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
+}
+/* 被压的是自己：换成告警的红 */
+.seal-chip.on-me { background: rgba(168, 35, 27, 0.1); color: var(--blood); }
+.seal-chip .sc-tag {
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  opacity: 0.85;
+}
+
+/* 手动出招栏：编号 + 类型配色，配合数字键 */
+.act-grid { display: grid; gap: 4px; }
+.choice.act-domain {
+  border-color: var(--tier);
+  background: linear-gradient(90deg, rgba(107, 53, 150, 0.08), transparent 70%);
+}
+.choice.act-domain .idx { color: var(--tier); }
+.choice.act-technique .idx { color: var(--cursed); }
+.choice.act-defend .idx { color: var(--ink-faint); }
+
+/* ------------------------------------------------------- 轮盘：收起 / 展开 */
+
+.wheel-panel.compact { padding: 6px 24px 7px; gap: 12px; }
+.wheel-panel.compact .wheel-mid { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.wheel-panel.compact .wheel-head { margin-bottom: 0; }
+.wheel-panel.compact .wheel-next { flex: 1; min-width: 0; }
+.wheel-panel.compact .wheel-actions { margin-top: 0; }
+.wheel-panel.compact .wheel-btn { padding: 5px 12px; font-size: 12.5px; }
+
+/* 收起时把这次的落点顶在转盘下面 —— 转完一天最想先看到的就是它 */
+.wheel-landed {
+  display: block;
+  margin-top: 4px;
+  text-align: center;
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+  animation: comboPop 320ms cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
+}
+
+.wheel-toggle {
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 12px;
+  transition: color 0.14s ease, border-color 0.14s ease;
+}
+.wheel-toggle:hover { border-color: var(--line); color: var(--ink-dim); }
+
+/* ------------------------------------------------------ 正文：点击跳过打字 */
+
+.log.typing { cursor: pointer; }
+.typing-hint {
+  display: block;
+  text-align: center;
+  padding: 6px 0 2px;
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  color: var(--ink-faint);
+  animation: hintIn 400ms ease-out both;
+}
+@keyframes hintIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* -------------------------------------------------------------- 错误横幅 */
+
+/*
+ * 出错不再整屏接管。原来一个 500 就把正文、行动栏、数值全换成一张"出错了"，
+ * 玩家点掉之后还得靠 resync 把现场拼回来 —— 拼不回来就卡死在那儿。
+ * 现在它只是角落里的一条提示，局面一直在。
+ */
+.err-banner {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 96;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(620px, 92vw);
+  padding: 9px 12px 9px 14px;
+  border: 1px solid var(--blood);
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: var(--shadow-lg);
+  font-size: 13px;
+  color: var(--ink);
+  animation: errIn 240ms cubic-bezier(0.2, 0.9, 0.3, 1.1) both;
+}
+@keyframes errIn {
+  from { opacity: 0; transform: translate(-50%, -12px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+.err-banner .eb-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--blood);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.err-banner .eb-text { flex: 1; min-width: 0; word-break: break-word; }
+.err-banner .eb-close {
+  flex: none;
+  padding: 0 5px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 17px;
+  line-height: 1;
+}
+.err-banner .eb-close:hover { color: var(--blood); }
+
+/* --------------------------------------------------------------- 窄屏收敛 */
+
+@media (max-width: 900px) {
+  .toasts { right: 10px; bottom: 10px; left: 10px; align-items: stretch; max-width: none; }
+  .dc-name { letter-spacing: 0.24em; text-indent: 0.24em; }
+  .float-dmg { font-size: 17px; }
+  .float-dmg.k-crit { font-size: 23px; }
+  .float-dmg.big { font-size: 20px; }
+  .float-dmg.huge { font-size: 25px; }
+}
+
+/*
+ * 晕动敏感：上面这些全是纯装饰，关掉不影响任何信息。
+ * 只保留"出现了"这个事实（animation-fill-mode: both 的终态），去掉过程。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .dc-wash, .dc-rings i, .dc-kanji span { animation: none; }
+  .dc-rings { display: none; }
+  .float-dmg, .bar-flash, .combo-row .combo-n, .crit-chip, .toast, .wheel-landed { animation: none; }
+  .beat, .seal-chip { animation: none; }
+  .domain-aura .da-ring { display: none; }
+  .shake-hit, .shake-taken { animation: none; }
+  /* 残影是纯动画的一层：关掉动画之后它只会留下一条没用的红条 */
+  .bar-ghost { display: none; }
 }

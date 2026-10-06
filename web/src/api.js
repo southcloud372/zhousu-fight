@@ -20,8 +20,15 @@ export const chooseStoryline = (id, sid, playMode) =>
 export const genAttributes = (id) => req(`/api/session/${id}/attributes`, { method: 'POST' })
 export const customAttribute = (id, brief) =>
   req(`/api/session/${id}/attributes/custom`, { method: 'POST', headers: J, body: JSON.stringify({ brief }) })
+// 玩家逐项改数值。等级由服务端按数字反推，客户端不自己算
+export const tuneAttribute = (id, numbers) =>
+  req(`/api/session/${id}/attributes/custom/tune`, { method: 'POST', headers: J, body: JSON.stringify({ numbers }) })
+
 export const customIdentity = (id, brief) =>
   req(`/api/session/${id}/identities/custom`, { method: 'POST', headers: J, body: JSON.stringify({ brief }) })
+// 第五个身份：突然出现的人。纯引擎构造，不走模型，所以没有 usage
+export const suddenIdentity = (id, payload) =>
+  req(`/api/session/${id}/identities/sudden`, { method: 'POST', headers: J, body: JSON.stringify(payload) })
 
 export const chooseAttributes = (id, slot) =>
   req(`/api/session/${id}/choose-attributes`, { method: 'POST', headers: J, body: JSON.stringify({ slot }) })
@@ -60,7 +67,7 @@ export const combatFreeAction = (id, action) =>
  * 前端直接把 narration 追加进去，不需要额外的打字机动画。
  */
 async function streamPost(url, body, handlers) {
-  const { onNarration, onStatus, onDone, onError, onPanel, onAwaiting, onReset, onUsage } = handlers
+  const { onNarration, onStatus, onDone, onError, onPanel, onAwaiting, onReset, onUsage, onHighlight } = handlers
   const res = await fetch(url, {
     method: 'POST',
     headers: J,
@@ -97,6 +104,7 @@ async function streamPost(url, body, handlers) {
       else if (event === 'status') onStatus?.(data.text)
       else if (event === 'panel') onPanel?.(data)
       else if (event === 'awaiting') onAwaiting?.(data)
+      else if (event === 'highlight') onHighlight?.(data)
       else if (event === 'usage_live') onUsage?.(data)
       else if (event === 'done') onDone?.(data)
       else if (event === 'error') onError?.(new Error(data.message))
@@ -111,6 +119,17 @@ export const loadSave = (sid) => req(`/api/saves/${sid}/load`, { method: 'POST' 
 export const deleteSave = (sid) => req(`/api/saves/${sid}`, { method: 'DELETE' })
 export const getLog = (id) => req(`/api/session/${id}/log`)
 export const getUsage = (id) => req(`/api/session/${id}/usage`)
+
+/**
+ * 清空本机所有数据（进行中的会话 + 全部存档）。
+ *
+ * 这个字面量必须和服务端 server/engine/wipe.js 里的 WIPE_CONFIRM 一致 ——
+ * 构建产物没法和 server/ 共用模块，所以是手抄的一份，改一边要记得改另一边。
+ * 服务端不带这个口令会直接 400，不会动手删。
+ */
+export const WIPE_CONFIRM = '清除'
+export const wipeAllData = () =>
+  req('/api/data', { method: 'DELETE', headers: J, body: JSON.stringify({ confirm: WIPE_CONFIRM }) })
 
 export const streamTurn = (id, input, h) => streamPost(`/api/session/${id}/turn`, { input }, h)
 export const combatStart = (id, mode, h) => streamPost(`/api/session/${id}/combat/start`, { mode }, h)

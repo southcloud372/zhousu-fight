@@ -57,10 +57,38 @@ let usageFixture = USAGE
 let evadeSucceeds = false // 脱离判定结果，测试里可切换
 let turnHasCombat = true  // 这一回合是否触发遭遇战
 let crossoverDone = 0      // 跨篇历练已完成的段数
+/** 「清空全部数据」真的打到服务端几次（没确认就不该打） */
+let wipeCalls = 0
 let playModeFixture = 'story' // /state 报的当前模式
 let wounded = false       // 角色是否带伤（触发疗伤入口）
 let wheelReady = false    // 轮盘是否已经走到剧情当天
 let reverseUnknown = false // 角色还没练成反转术式（自由行动那一格该灰着）
+let turnFails = false      // 这一回合模型调用失败（用来验证错误不再整屏接管）
+/*
+ * "打爽了的那一手"：暴击 + 连击 + 把对方打断 + 当场铺开领域。
+ * 专门喂给演出层 —— 这些字段平时散在几百回合里各出现一次，
+ * 只有一次全给出来，才测得到飘字、抖动、过场、连击计数同时在场的样子。
+ */
+let juicyAction = false
+/** 那一手之后，对面正开着规则型领域压着玩家（用来看封锁的呈现） */
+let sealedCombat = false
+/** 跳过模式那一场里开过领域（验证不逐回合推面板时也有过场） */
+let highlightDomain = false
+/** 那一场慢慢吐：用来验证全屏特写期间，正文会先停在原地 */
+let slowHighlight = false
+/**
+ * 战斗向的正文写超了 400 字：服务端截短之后会「重置 + 重发」。
+ * 前端不接这个重置的话，手里那份长文不会被丢掉，屏幕上就成了两段叠在一起。
+ */
+let trimmedCombat = false
+/** 长的那份带个显眼标记（雨幕），短的那份带另一个（反手一刀），好分辨屏幕上留下了谁 */
+const LONG_NARR = '雨幕被撕开一道口子。' + '血'.repeat(420) + '。'
+const SHORT_NARR = '反手一刀劈在它肩上，骨头裂开的轻响盖过了呼吸。它抬手的动作慢了半拍。'
+const TRIM_EVENTS = [
+  ['narration', { text: LONG_NARR }],
+  ['reset', {}],
+  ['narration', { text: SHORT_NARR }],
+]
 
 const CHARACTER_SNAPSHOT = {
   name: '测试者', age: 17, grade: '一级', backgroundType: '自由派', background: 'b',
@@ -159,9 +187,24 @@ const FREE_REVERSE = (used = false) => (reverseUnknown ? ([
   },
 ]))
 
+/**
+ * 「自主定义属性」生成出来的那份档案。
+ * 抽成常量是因为它有两个消费者：生成（/attributes/custom）和逐项改数值（/tune）。
+ * 两边必须长得一样，否则测不出"改数字不会重写术式"。
+ */
+const CUSTOM_ATTR = {
+  slot: '自定义', overallGrade: '一级', ce: { value: 4200, grade: '一级' },
+  hp: { value: 1180, grade: '一级' }, cursedDamage: { value: 193, grade: '一级' },
+  physicalDamage: { value: 117, grade: '一级' }, efficiency: { value: 0.88, grade: '一级' },
+  techniqueGrade: '一级', techniqueMultiplier: 2.5,
+  techniqueName: '绯缠咒法', techniqueEffect: '绯色咒线缠住退路，只能正面接招',
+  techniqueCooldown: 2, domainUnlocked: false, domain: { unlocked: false },
+  reverseCursedTechnique: '未掌握', toolCount: 0, tool: null,
+  talents: ['体术天赋', '抗痛性强'], playstyle: '贴脸近战压制',
+}
+
 /** 造一个够用的假后端 */
-function makeFetchStub(log) {
-  return async (url, opts = {}) => {
+function makeFetchStub(log) {  return async (url, opts = {}) => {
     const u = String(url)
     const method = opts.method || 'GET'
     log.push(`${method} ${u}`)
@@ -196,6 +239,13 @@ function makeFetchStub(log) {
     }
 
     if (u.endsWith('/api/saves')) return json({ saves: [] })
+    // 清空全部数据：服务端要求二次确认口令，这里照着 server/engine/wipe.js 的形状做
+    if (u.endsWith('/api/data') && method === 'DELETE') {
+      const body = JSON.parse(opts.body || '{}')
+      if (body.confirm !== '清除') return json({ error: '需要二次确认' }, 400)
+      wipeCalls++
+      return json({ ok: true, sessions: 3, files: 2 })
+    }
     if (u.includes('/api/health')) return json({ ok: true })
     if (u.endsWith('/api/session') && method === 'POST') return json({ sessionId: 'ui-test', phase: 'storyline' })
     // ---- 故事线 ----
@@ -228,6 +278,8 @@ function makeFetchStub(log) {
 
     // ---- 主循环：返回一场待结算的遭遇战，用来驱动战斗 UI ----
     if (u.endsWith('/turn')) {
+      // 模型调用失败：错误该是一条能关掉的横幅，而不是把整个界面换掉
+      if (turnFails) return sse([['error', { message: '模型连接超时' }]])
       // 分 8 段慢速吐，中间留出足够时间让测试去滚动
       const chunks = ['第一段。', '第二段，咒灵从阴影里爬出来。', '第三段。', '第四段，双方试探。', '第五段。', '第六段。', '第七段。', '第八段收尾。']
       return sseSlow([
@@ -274,26 +326,116 @@ function makeFetchStub(log) {
           player: { hp: 100, hpMax: 100, ce: 200, ceMax: 200, status: '正常', technique: '测试术式', cdLeft: 0, domain: '未展开' },
           enemy: { name: '腐骨咒灵', grade: '二级', hp: 300, hpMax: 300, ceEstimate: 400, status: '正常', domain: '未展开' },
           actionText: '——', enemyActionText: '——', breakdown: null, damage: 0, notes: [],
+          domainState: {
+            player: { active: false, name: '', turnsLeft: 0, type: '' },
+            enemy: { active: false, name: '', turnsLeft: 0, type: '' },
+          },
+          seal: { player: false, enemy: false, rules: null },
+          domainTicks: [],
+          beat: { player: null, enemy: null },
         }
         return sse([
           ['panel', { panel, text: '', mode: 'manual' }],
+          ...(trimmedCombat ? TRIM_EVENTS : []),
           ['awaiting', { actions: COMBAT_ACTIONS, freeActions: FREE_REVERSE(false) }],
           // 契约：done.snapshot 是角色快照；战斗回合面板只走 panel 事件
           ['done', { over: false, snapshot: snapshotFor(), text: '', freeActions: FREE_REVERSE(false) }],
         ])
       }
+      const highlight = {
+        domainOpened: {
+          side: 'player', name: '伏魔御厨子·残', sureHit: '必中斩击', burst: 640,
+          type: '伤害型', brief: '必中重击，之后每回合追斩', healed: 0, recovered: 0,
+        },
+        crits: 2,
+        rounds: 5,
+      }
+      const doneEvent = ['done', {
+        over: true, outcome: { winner: 'player', loser: 'enemy' }, summary: '击退了二级的腐骨咒灵',
+        rewards: { gains: { 术式演练: 6.5 }, notes: ['术式实战运用'] }, ups: [],
+        panel: null, combat: null,
+      }]
+
+      // 慢慢吐的那一场：特写亮起时正文还在路上 —— 这才是真机上"生成中途"的样子
+      if (slowHighlight) {
+        return sseSlow([
+          ['narration', { text: '一刀两断。' }],
+          ['highlight', highlight],
+          ['narration', { text: '必中的斩击自四面八方合拢，把整片领域切成碎块。' }],
+          doneEvent,
+        ], 700)
+      }
+
       return sse([
-        ['narration', { text: '一刀两断。' }],
-        ['done', {
-          over: true, outcome: { winner: 'player', loser: 'enemy' }, summary: '击退了二级的腐骨咒灵',
-          rewards: { gains: { 术式演练: 6.5 }, notes: ['术式实战运用'] }, ups: [],
-          panel: null, combat: null,
-        }],
+        ...(trimmedCombat ? TRIM_EVENTS : [['narration', { text: '一刀两断。' }]]),
+        // 跳过 / 剧情模式不逐回合推面板，"这一场最值得看的那一下"走 highlight
+        ...(highlightDomain ? [['highlight', highlight]] : []),
+        doneEvent,
       ])
     }
 
     // ---- 战斗：出一手，这一手直接打死 ----
     if (u.endsWith('/combat/action')) {
+      // 打爽了的那一手：仗还没打完，但这一回合该有的高光全有
+      if (juicyAction) {
+        return sse([
+          ['panel', {
+            panel: {
+              turn: 3,
+              player: { hp: 680, hpMax: 800, ce: 90, ceMax: 200, status: '正常', technique: '测试术式', cdLeft: 1, domain: '展开中' },
+              enemy: { name: '腐骨咒灵', grade: '二级', hp: 140, hpMax: 300, ceEstimate: 400, status: '重伤', domain: '未展开' },
+              actionText: '领域铺开，必中斩击落下', enemyActionText: '——',
+              breakdown: { 咒术伤害: 10, 术式倍率: 2.5, 咒力效率: 0.9, 相性: 1, 等级压制: 1.5, 领域加成: 1.3, 随机: 1, 敌方防御: 8 },
+              damage: 640, notes: [],
+              crit: 'player', combo: 3, staggered: 'enemy', sureHit: true,
+              domainOpened: {
+                side: 'player', name: '伏魔御厨子·残', sureHit: '必中斩击',
+                type: '伤害型', brief: '必中重击，之后每回合追斩', burst: 640,
+                healed: 0, recovered: 0,
+              },
+              domainState: {
+                player: { active: true, name: '伏魔御厨子·残', turnsLeft: 3, type: '伤害型' },
+                enemy: { active: false, name: '', turnsLeft: 0, type: '' },
+              },
+              // 领域展开之后每回合那一口，和自己这一手分开记
+              domainTicks: [{ side: 'player', type: '伤害型', name: '伏魔御厨子·残', damage: 88, healed: 0, recovered: 0 }],
+              // 交手机读：按下招之后立刻能看的那两行
+              beat: {
+                player: {
+                  label: '领域展开', kind: 'domain', damage: 640, tickDamage: 88,
+                  healed: 0, recovered: 0, tickHealed: 0, tickCe: 0,
+                  crit: false, staggered: false, fizzled: false,
+                },
+                enemy: sealedCombat
+                  ? {
+                    label: '生得术式', kind: 'technique', damage: 0, tickDamage: 0,
+                    healed: 0, recovered: 0, tickHealed: 0, tickCe: 0,
+                    crit: false, staggered: false, fizzled: true,
+                  }
+                  : {
+                    label: '术式', kind: 'technique', damage: 120, tickDamage: 0,
+                    healed: 0, recovered: 40, tickHealed: 0, tickCe: 0,
+                    crit: false, staggered: false, fizzled: false,
+                  },
+              },
+              // 规则型领域正压着谁（sealedCombat 那一场：对面开的规则型，被压的是玩家）
+              seal: sealedCombat
+                ? {
+                  player: true,
+                  enemy: false,
+                  rules: { technique: true, reverse: true, domain: true, defense: true, damageMul: 0.7 },
+                }
+                : { player: false, enemy: false, rules: null },
+            },
+            text: '',
+          }],
+          ['narration', { text: '领域铺开。' }],
+          ['done', {
+            over: false, panel: snapshotFor(), text: '',
+            actions: COMBAT_ACTIONS, freeActions: FREE_REVERSE(false),
+          }],
+        ])
+      }
       const panel = {
         turn: 2,
         player: { hp: 100, hpMax: 100, ce: 150, ceMax: 200, status: '正常', technique: '测试术式', cdLeft: 2, domain: '未展开' },
@@ -435,19 +577,21 @@ function makeFetchStub(log) {
       })
     }
     // ---- 自主定义 ----
+    /*
+     * 逐项改数值。必须排在 /attributes/custom 前面 —— 那一条用的是 includes，
+     * 不先接住 tune 的话，改数值的请求会被当成"重新生成"，术式整个被换掉。
+     * 这里刻意**只改数字、不动术式**，因为那正是服务端的行为（等级由数字反推）。
+     */
+    if (u.includes('/attributes/custom/tune')) {
+      const n = JSON.parse(opts.body || '{}').numbers || {}
+      return json({ usage: usageFixture, profile: {
+        ...CUSTOM_ATTR, ce: { value: n.ce ?? CUSTOM_ATTR.ce.value, grade: '二级' },
+      } })
+    }
     if (u.includes('/attributes/custom')) {
       const brief = JSON.parse(opts.body || '{}').brief || ''
       if (String(brief).trim().length < 2) return json({ error: '请先描述你想要的战斗风格' }, 400)
-      return json({ usage: usageFixture, profile: {
-        slot: '自定义', overallGrade: '一级', ce: { value: 4200, grade: '一级' },
-        hp: { value: 1180, grade: '一级' }, cursedDamage: { value: 193, grade: '一级' },
-        physicalDamage: { value: 117, grade: '一级' }, efficiency: { value: 0.88, grade: '一级' },
-        techniqueGrade: '一级', techniqueMultiplier: 2.5,
-        techniqueName: '绯缠咒法', techniqueEffect: '绯色咒线缠住退路，只能正面接招',
-        techniqueCooldown: 2, domainUnlocked: false, domain: { unlocked: false },
-        reverseCursedTechnique: '未掌握', toolCount: 0, tool: null,
-        talents: ['体术天赋', '抗痛性强'], playstyle: '贴脸近战压制', brief,
-      } })
+      return json({ usage: usageFixture, profile: { ...CUSTOM_ATTR, brief, techniqueName: '绯缠咒法', techniqueEffect: '绯色咒线缠住退路，只能正面接招', playstyle: '贴脸近战压制' } })
     }
     if (u.includes('/identities/custom')) {
       const brief = JSON.parse(opts.body || '{}').brief || ''
@@ -821,6 +965,28 @@ async function enterGame() {
   assert.ok(findButton('存档'), '没进到主界面')
 }
 
+test('主页按钮：从局内回得去，也回得来（进度不丢）', async () => {
+  /*
+   * 回主页不是"结束这一局"：进度每回合都落在服务端，会话 id 也留在本地。
+   * 但开始界面上原来只有 开始生成 / 读取存档 —— 从主页回来的人找不到刚才那局，
+   * 会以为被扔掉了，所以得有「继续上次」。
+   */
+  await enterGame()
+  assert.match(text(), /测试正文/, '没进到局内')
+
+  click(findButton('主页'))
+  await new Promise((r) => setTimeout(r, 150))
+
+  assert.ok(!dom.window.document.querySelector('.topbar'), '回到主页了，顶上还挂着游戏内的顶栏')
+  assert.ok(findButton('开始生成'), '没回到开始界面')
+  const cont = findButton('继续上次')
+  assert.ok(cont, '主页没有回去的路 —— 玩家只能去翻存档')
+
+  click(cont)
+  await waitFor('测试正文', { timeout: 15000 })
+  assert.ok(dom.window.document.querySelector('.topbar'), '「继续上次」没有把局面接回来')
+})
+
 test('开始界面就要能看到用量表（不是只有游戏内才有）', async () => {
   // 曾经的缺口：UsageMeter 只挂在主界面顶栏里，开始界面和开局选卡那几屏都没有。
   // 而开局生成恰恰是最花钱的一步，玩家在那几屏反而看不到账。
@@ -839,8 +1005,24 @@ test('开始界面就要能看到用量表（不是只有游戏内才有）', as
   assert.ok(!/未配置单价/.test(pop.textContent), '未开局时不该提示价格未配置')
 })
 
-test('开局属性页有「自主定义」第四项，能生成并采用', async () => {
+test('开局流程里也能撤回主页：选错了不用硬着头皮走完', async () => {
+  /*
+   * 故事线 / 属性 / 身份 / 时间这四屏都没有顶栏，本来是一条道走到黑 ——
+   * 掷出三份都不想要的属性也只能往下点。
+   */
   await mount()
+  await gotoAttributes()
+  const back = findButton('返回主页')
+  assert.ok(back, '开局流程里没有出口')
+
+  click(back)
+  await new Promise((r) => setTimeout(r, 150))
+  assert.ok(findButton('开始生成'), '点了「返回主页」却没回到开始界面')
+  assert.ok(findButton('继续上次'), '撤回主页之后，这一局就没有回去的路了')
+})
+
+test('开局属性页有「自主定义」第四项，能填数值并采用', async () => {
+  const calls = await mount()
   await gotoAttributes()
 
   // 四张卡：A / B / C / 自主定义
@@ -850,8 +1032,9 @@ test('开局属性页有「自主定义」第四项，能生成并采用', async
   assert.ok(custom, '找不到自主定义卡片')
   assert.match(custom.textContent, /自主定义/)
 
-  // 必须写明等级不可指定，否则玩家会以为能点单"我要超特级"
-  assert.match(custom.textContent, /等级由引擎按设定概率掷出/, '没有说明等级不可指定')
+  // 必须写明数字是玩家自己填的、等级跟着数字走 ——
+  // 否则玩家会以为只能描述风格（这正是这一版要改掉的那件事）
+  assert.match(custom.textContent, /每一项你都能改，等级会跟着数字变/, '没有说明数值可改')
 
   const ta = custom.querySelector('textarea')
   assert.ok(ta, '没有输入框')
@@ -873,6 +1056,33 @@ test('开局属性页有「自主定义」第四项，能生成并采用', async
   assert.match(rt, /贴脸近战压制/, '结果里没有玩法风格')
   assert.match(rt, /一级/, '结果里没有等级')
 
+  /*
+   * 数值格子：这一版的核心 —— 掷出来的只是默认值，玩家能直接改。
+   * 七项都要在（咒力/血条/咒术伤害/体术伤害/效率/倍率/冷却）。
+   */
+  const rows = [...result.querySelectorAll('.num-row')]
+  assert.equal(rows.length, 7, `应有 7 项数值输入，实际 ${rows.length}`)
+  const ceInput = rows[0].querySelector('input')
+  assert.ok(ceInput, '咒力那一行没有输入框')
+  assert.equal(ceInput.value, '4200', '输入框里应当是引擎掷出来的默认值')
+  assert.match(rows[0].textContent, /一级/, '每一行旁边要显示这一项反推出来的等级')
+
+  // 没改之前不出现「应用数值」—— 免得玩家以为不改也得点一下
+  assert.ok(!findButton('应用数值'), '还没改数字就出现了应用按钮')
+
+  // 改一项 → 按钮出现 → 点它 → 走 /attributes/custom/tune
+  const setterN = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set
+  setterN.call(ceInput, '12000')
+  ceInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+  await new Promise((r) => setTimeout(r, 60))
+  const tuneBtn = [...custom.querySelectorAll('button')].find((b) => b.textContent.includes('应用数值'))
+  assert.ok(tuneBtn, '改了数字之后应当出现「应用数值」')
+  click(tuneBtn)
+  await new Promise((r) => setTimeout(r, 120))
+  const tuneCall = calls.find((c) => c.includes('/attributes/custom/tune'))
+  assert.ok(tuneCall, '没有把改后的数值发给服务端')
+  assert.match(result.textContent, /绯缠咒法/, '换数值把术式也换掉了 —— 数字和术式是两回事')
+
   // 采用它 → 进入身份页
   const useBtn = [...custom.querySelectorAll('button')].find((b) => b.textContent.includes('就用这个'))
   assert.ok(useBtn, '缺少「就用这个」按钮')
@@ -886,8 +1096,9 @@ test('开局身份页也有「自主定义」，模型判定类型后重掷关�
   click(findButton('选择档案 A'))
   await waitFor('第二步 · 身份', { timeout: 60000 })
 
+  // 五张卡：三份预设 + 自主定义 + 「突然出现的人」
   const cards = [...dom.window.document.querySelectorAll('.pcard')]
-  assert.equal(cards.length, 4, `身份页也应有 4 张卡，实际 ${cards.length}`)
+  assert.equal(cards.length, 5, `身份页应有 5 张卡，实际 ${cards.length}`)
   const custom = dom.window.document.querySelector('.pcard.custom')
   assert.match(custom.textContent, /身份类型由模型按你的描述判定/, '没有说明类型由模型判定')
 
@@ -903,6 +1114,69 @@ test('开局身份页也有「自主定义」，模型判定类型后重掷关�
   assert.match(rt, /神代秋生/, '结果里没有姓名')
   assert.match(rt, /反派向/, '没有显示模型判定的身份类型')
   assert.match(rt, /钩子/, '没有钩子')
+})
+
+test('第五个身份「突然出现的人」：只填一句话就能用，不走模型', async () => {
+  const calls = await mount()
+  await gotoAttributes()
+  click(findButton('选择档案 A'))
+  await waitFor('第二步 · 身份', { timeout: 60000 })
+
+  // 它和另外四张长得不一样：那四张是"给你的身份"，这张是"没有身份"
+  const sudden = dom.window.document.querySelector('.pcard.sudden')
+  assert.ok(sudden, '身份页缺少「突然出现的人」这张卡')
+  assert.match(sudden.textContent, /突然出现的人/)
+
+  // 什么都不填也能直接出现 —— 没有输入框挡路（名字和年龄都是可选的）
+  const btn = [...sudden.querySelectorAll('button')].find((b) => b.textContent.includes('就这样出现'))
+  assert.ok(btn, '缺少「就这样出现」按钮')
+  assert.ok(!btn.disabled, '一个字都不填也应当能直接开始')
+
+  const before = calls.filter((c) => c.includes('/identities/sudden')).length
+  click(btn)
+  await waitFor('第三步 · 穿越时间', { timeout: 60000 })
+  const after = calls.filter((c) => c.includes('/identities/sudden')).length
+  assert.equal(after, before + 1, '没有把这次选择发给服务端')
+  // 这个身份是引擎自己造的：问了模型，它一定会给玩家补出一个来历
+  assert.ok(!calls.some((c) => c.includes('/identities/custom')), '不该为这个身份调模型')
+})
+
+test('主页能清空全部数据：点一次只亮确认条，点两次才真清', async () => {
+  /*
+   * 场景就是玩家真实的处境：手上有局、本地留着会话 id，
+   * 想开个新角色却怕"继续上次"接回来的是一周前那局 —— 每接一次都要为
+   * 一段早忘了的剧情先付第一回合的钱。所以这里先真的进一局再回主页。
+   */
+  wipeCalls = 0
+  await enterGame()          // localStorage 里现在有 sunuo:session
+  click(findButton('主页'))
+  await new Promise((r) => setTimeout(r, 150))
+  assert.ok(dom.window.localStorage.getItem('sunuo:session'), '前置条件：本地应当有会话 id')
+
+  const ask = findButton('清空全部数据')
+  assert.ok(ask, '主页缺少「清空全部数据」')
+  click(ask)
+  await new Promise((r) => setTimeout(r, 40))
+  assert.match(text(), /不能撤销/, '没有说明这一下不可逆')
+  assert.ok(findButton('确认清空'))
+  assert.equal(wipeCalls, 0, '第一次点击就动手删了 —— 那是没有撤销键的操作')
+  assert.ok(dom.window.localStorage.getItem('sunuo:session'), '确认之前不该动本地数据')
+
+  // 取消要能退回去
+  click(findButton('取消'))
+  await new Promise((r) => setTimeout(r, 40))
+  assert.ok(findButton('清空全部数据'), '取消之后按钮没回来')
+  assert.equal(wipeCalls, 0)
+
+  // 真确认
+  click(findButton('清空全部数据'))
+  await new Promise((r) => setTimeout(r, 40))
+  click(findButton('确认清空'))
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(wipeCalls, 1, '确认之后没有清')
+  assert.equal(dom.window.localStorage.getItem('sunuo:session'), null, '本地那把钥匙没被抹掉')
+  assert.match(text(), /已清空 3 个会话、2 个存档文件/, '清完没有回执')
+  assert.ok(!findButton('继续上次'), '数据都清了，主页还挂着「继续上次」')
 })
 
 test('穿越时间也有「自主定义」：日期自定义、进度继承锚点', async () => {
@@ -1429,6 +1703,393 @@ test('手动模式：行动栏渲染，并能打完一场', async () => {
   assert.match(after, /术式演练/, '结算卡没有战果')
 })
 
+/** 推进到"手动战斗里已经出了一手"的状态，用那一手的面板驱动演出层 */
+async function enterJuicyCombat({ settle = 300 } = {}) {
+  await enterGame()
+  click(findButton('前进'))
+  await waitFor('遭遇', { timeout: 15000 })
+  click(findButton('迎战'))
+  await waitFor('选择战斗模式', { timeout: 15000 })
+  click(findButton('手动模式'))
+  await new Promise((r) => setTimeout(r, 250))
+  click(findButton('生得术式'))
+  await new Promise((r) => setTimeout(r, settle))
+}
+
+test('领域展开有专属过场：大字、领域名、必中爆发，点一下能跳过', async () => {
+  /*
+   * 领域是这套设定里最贵的一招，原来它和"体术命中"共用同一条文字通道 ——
+   * 花了大价钱铺开领域，屏幕上和普通一拳长得一模一样。
+   */
+  juicyAction = true
+  try {
+    await enterJuicyCombat()
+
+    const cutin = dom.window.document.querySelector('.domain-cutin')
+    assert.ok(cutin, '开出领域却没有过场')
+    assert.match(cutin.textContent, /領域展開/, '过场里没有「領域展開」四个字')
+    assert.match(cutin.textContent, /伏魔御厨子·残/, '过场没有写领域名')
+    assert.match(cutin.textContent, /必中斩击/, '过场没有写必中效果')
+    assert.match(cutin.textContent, /640/, '过场没有写必中爆发的伤害')
+    // 三种领域打法完全不同，过场上必须先说清是哪一型
+    assert.match(cutin.textContent, /伤害型/, '过场没有写领域类型')
+    assert.match(cutin.textContent, /之后每回合追斩/, '过场没有写这一型的机制')
+
+    // 一个字一个 span，才能错开做逐字入场
+    assert.equal(cutin.querySelectorAll('.dc-kanji span').length, 4, '「領域展開」应该是四个独立的字')
+
+    click(cutin)
+    await new Promise((r) => setTimeout(r, 60))
+    assert.equal(dom.window.document.querySelector('.domain-cutin'), null, '点一下应该能提前收场')
+  } finally {
+    juicyAction = false
+  }
+})
+
+test('打出高光时：伤害飘字、连击计数、暴击提示、领域光环都在', async () => {
+  juicyAction = true
+  try {
+    /*
+     * 这一条查的全是"面板一到就该在"的东西，其中残影还是有寿命的。
+     * 所以不等固定时长，而是盯着交手机读出现的那一刻 —— 面板落地即断言，
+     * 残影的 460ms 留白怎么都够。
+     */
+    await enterJuicyCombat({ settle: 0 })
+    await waitForEl('.beats')
+    const cs = dom.window.document.querySelector('.combat-side')
+    const ct = cs.textContent
+
+    // 飘字：137 和 100 的区别得先被看见。
+    // 数字是这一回合总共掉了多少（640 那一击 + 88 的领域追斩），
+    // 和血条掉下去的长度必须是同一个数，不然看起来像引擎算错了。
+    // 这一手是领域必中，必中优先于暴击 —— 玩家该看到的是"无视防御"而不是"运气好"
+    const float = cs.querySelector('.float-dmg')
+    assert.match(float?.textContent || '', /728/, '血条上没有伤害飘字（该是这一回合的总伤害）')
+    assert.match(float.className, /k-sure/, '必中那一手的飘字应该是必中色')
+    // 728 占 300 点血条的一大截，字号要跟着涨 —— 大小本身就是信息
+    assert.match(float.className, /huge/, '打掉一大截血条的飘字该放大')
+
+    // 交手机读：招名和数字分开摆，领域的追斩单独一笔
+    const beats = cs.querySelector('.beats')
+    assert.ok(beats, '没有交手机读')
+    assert.match(beats.textContent, /领域展开/, '交手机读没写这一手是什么')
+    assert.match(beats.textContent, /−640/, '交手机读没写直击伤害')
+    assert.match(beats.textContent, /追斩 −88/, '领域追斩该单独一笔')
+    assert.match(beats.textContent, /咒力 \+40/, '对面的咒力回复也该记一笔')
+
+    /*
+     * 自己这边的血条也要飘。以前只有敌方血条会出数字 ——
+     * 挨了一记重的，玩家只看见血条短了一截，不知道短了多少。
+     * 这一回合对面打过来 120，飘字该是负数。
+     */
+    const floats = [...cs.querySelectorAll('.float-dmg')].map((e) => e.textContent)
+    assert.equal(floats.length, 2, `两条血条该各有一份飘字，实际 ${floats.length} 份`)
+    assert.ok(floats.some((t) => t.includes('−120')), `我方血条上没写这一回合掉了多少：${floats.join(' / ')}`)
+
+    // 血条残影：掉下去的那一截留住一拍再收。
+    // 残影是限时存在的（收掉之后就不该留在 DOM 里），所以这里只断言
+    // "这一刻它在" —— 时序由 FxBar 保证比血条自己的过渡更长。
+    assert.ok(cs.querySelector('.bar-ghost'), '血条没有留下掉血残影')
+
+    // 连击与打断
+    assert.match(ct, /3/, '战斗栏没有连击计数')
+    assert.match(ct, /连击/, '连击没有文字标签')
+    assert.match(ct, /暴击/, '没有暴击提示')
+    assert.match(cs.textContent, /打断|踉跄/, '没有写出对方被这一手压住')
+
+    // 我方领域还挂着，剩余回合数要看得见
+    const aura = cs.querySelector('.domain-aura')
+    assert.ok(aura, '领域展开中却没有光环')
+    assert.match(aura.textContent, /剩 3 回合/, '光环没写剩余回合')
+
+    // 必中那一行要标明无视防御 —— 否则玩家会以为计算式漏了一项
+    assert.match(ct, /必中·无视防御/, '必中那一手没有标明无视防御')
+  } finally {
+    juicyAction = false
+  }
+})
+
+test('规则型领域压着玩家时：战斗栏要写明被封了什么', async () => {
+  /*
+   * 规则型领域的强度全在"你的招不能用"上，而这件事光靠按钮变灰说不清楚 ——
+   * 玩家只会以为是自己咒力不够。被封的清单必须写在明面上。
+   */
+  sealedCombat = true
+  juicyAction = true
+  try {
+    await enterJuicyCombat()
+    const cs = dom.window.document.querySelector('.combat-side')
+    const chip = cs.querySelector('.seal-chip')
+    assert.ok(chip, '被规则压着却没有提示')
+    assert.match(chip.textContent, /规则压制/, '没写清是规则造成的')
+    for (const what of ['术式', '反转术式', '领域', '防御']) {
+      assert.match(chip.textContent, new RegExp(what), `没写清 ${what} 被封`)
+    }
+    // 被压的是自己：这一条要用告警色，不能和"我压着对面"混成一样
+    assert.match(chip.className, /on-me/, '被压的是玩家时该用告警样式')
+
+    // 对面那一手也递不出去 —— 交手机读要如实写出来
+    assert.match(cs.querySelector('.beats').textContent, /没递出去|术式没递出去/,
+      '对面被封住的那一手没有如实记下来')
+  } finally {
+    sealedCombat = false
+    juicyAction = false
+  }
+})
+
+test('转完一天：陈旧的剧情选项清掉，轮盘展开顶上', async () => {
+  /*
+   * 两条规则合起来才是"时机不别扭"：
+   *   · 转一天之后，上一轮留下的选项过期了 —— 里面还混着"迎战"这种带引擎语义的，
+   *     留着就能被重复点，等于把一场已经打完的遭遇再触发一次。
+   *   · 选项清空之后，轮盘得顶上来当主操作台；否则玩家面前一个能按的都没有。
+   * 而剧情选项一回来，轮盘又要让位（见另一条用例）。
+   */
+  playModeFixture = 'combat'
+  try {
+    await enterGame()
+    await waitFor('日常轮盘', { timeout: 15000 })
+    assert.ok(dom.window.document.querySelector('.choices-list'), '这时该摆着剧情选项')
+
+    click(findButton('转一天'))
+    await new Promise((r) => setTimeout(r, 200))
+
+    assert.equal(dom.window.document.querySelector('.choices-list'), null, '陈旧的剧情选项没清掉')
+    assert.ok(dom.window.document.querySelector('.wheel-panel').className.includes('open'),
+      '选项都清空了，轮盘还收着，玩家面前一个能按的都没有')
+    // 自定义行动一直在，玩家想干什么仍然写得出来
+    assert.ok(dom.window.document.querySelector('.custom-row'), '选项清空后连自定义行动都没了')
+  } finally {
+    playModeFixture = 'story'
+  }
+})
+
+test('跳过模式也会播领域过场，并回顾这一场打了几次暴击', async () => {
+  /*
+   * 跳过 / 剧情模式不逐回合推面板，战斗只剩一段文字。
+   * 手动模式那套演出（过场、暴击）在这两种模式里同样该有 ——
+   * 否则切了模式就像换了个游戏。
+   */
+  highlightDomain = true
+  try {
+    await enterGame()
+    click(findButton('前进'))
+    await waitFor('遭遇', { timeout: 15000 })
+    click(findButton('迎战'))
+    await waitFor('选择战斗模式', { timeout: 15000 })
+    click(findButton('跳过模式'))
+    await new Promise((r) => setTimeout(r, 300))
+
+    const cutin = dom.window.document.querySelector('.domain-cutin')
+    assert.ok(cutin, '跳过模式里开了领域却没播过场')
+    assert.match(cutin.textContent, /領域展開/)
+    assert.match(cutin.textContent, /伏魔御厨子·残/)
+
+    const toasts = dom.window.document.querySelector('.toasts')?.textContent || ''
+    assert.match(toasts, /2 次暴击/, '整场的高光没有回顾给玩家')
+  } finally {
+    highlightDomain = false
+  }
+})
+
+/** 正文里正在流式往外吐的那一段（最后一条 .narr） */
+const streamText = () => {
+  const all = dom.window.document.querySelectorAll('.log .narr')
+  return all.length ? all[all.length - 1].textContent : ''
+}
+const waitForEl = async (sel, { timeout = 20000 } = {}) => {
+  const t0 = Date.now()
+  while (Date.now() - t0 < timeout) {
+    const el = dom.window.document.querySelector(sel)
+    if (el) return el
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  throw new Error(`等待元素超时：${sel}`)
+}
+
+test('领域特写的那几秒，正文先停在原地等它演完', async () => {
+  /*
+   * 「領域展開」是全屏的。正文要是在背后照常吐，等特写撤掉，
+   * 玩家看到的已经是半句话的尾巴 —— 最该看的那几个字正好错过。
+   */
+  slowHighlight = true
+  try {
+    await enterGame()
+    click(findButton('前进'))
+    await waitFor('遭遇', { timeout: 15000 })
+    click(findButton('迎战'))
+    await waitFor('选择战斗模式', { timeout: 15000 })
+    click(findButton('跳过模式'))
+
+    const cutin = await waitForEl('.domain-cutin')
+    const before = streamText()
+    assert.match(before, /一刀两断/, '特写之前该先看到这一场的开场')
+
+    // 特写还盖着：后面的正文已经在缓冲区里了，但一个字都不该往外冒
+    await new Promise((r) => setTimeout(r, 800))
+    assert.equal(streamText(), before, '特写还盖着，正文却自己往下跑了')
+    assert.ok(!text().includes('四面八方'), '特写期间的正文不该已经吐出来')
+
+    // 撤掉特写，节奏接回去
+    click(cutin)
+    await new Promise((r) => setTimeout(r, 500))
+    assert.match(text(), /四面八方/, '特写撤掉之后正文该接着往下吐')
+  } finally {
+    slowHighlight = false
+  }
+})
+
+test('战斗正文被截短时：屏幕上只留短的那份，不会两段叠着', async () => {
+  /*
+   * 战斗向每次输出限 400 字。服务端是在文字**已经吐完**之后才发现超了，
+   * 于是截短并重发一次（reset + narration）。
+   * 前端要是不认这个 reset，先前那份长文还攥在手里，屏幕上就是
+   * "长文 + 截短版"接在一起 —— 比不截还长。
+   */
+  trimmedCombat = true
+  try {
+    await enterGame()
+    click(findButton('前进'))
+    await waitFor('遭遇', { timeout: 15000 })
+    click(findButton('迎战'))
+    await waitFor('选择战斗模式', { timeout: 15000 })
+    click(findButton('跳过模式'))
+    await waitFor('反手一刀', { timeout: 15000 })
+
+    assert.ok(!text().includes('雨幕'), '被截掉的那一段还留在屏幕上')
+  } finally {
+    trimmedCombat = false
+  }
+})
+
+test('手动模式同样认重置：战斗栏里不会留下超预算的那一段', async () => {
+  trimmedCombat = true
+  try {
+    await enterGame()
+    click(findButton('前进'))
+    await waitFor('遭遇', { timeout: 15000 })
+    click(findButton('迎战'))
+    await waitFor('选择战斗模式', { timeout: 15000 })
+    click(findButton('手动模式'))
+    await waitFor('反手一刀', { timeout: 15000 })
+
+    assert.ok(!text().includes('雨幕'), '被截掉的那一段还留战斗栏里')
+    // 重置不能把行动栏一起清掉 —— 那样玩家就没法出招了
+    assert.ok(dom.window.document.querySelector('.act-grid button.choice'), '行动栏被重置冲掉了')
+  } finally {
+    trimmedCombat = false
+  }
+})
+
+test('数字键直接出招（按屏幕上印的编号，不是按下标）', async () => {
+  juicyAction = true
+  try {
+    await enterJuicyCombat()
+    const win = dom.window
+    // 先退回第 2 回合前的状态没有意义 —— 直接确认编号和按钮对得上：
+    // 行动栏第 1 格是「体术攻击」，屏幕上写着 1。
+    const first = dom.window.document.querySelector('.act-grid button.choice')
+    assert.match(first.textContent, /^1\./, '第一格行动应该印着编号 1')
+
+    win.dispatchEvent(new win.KeyboardEvent('keydown', { key: '1', bubbles: true }))
+    await new Promise((r) => setTimeout(r, 300))
+
+    // 打出去了：面板换成了这一手之后的样子（第 3 回合）
+    assert.match(
+      dom.window.document.querySelector('.combat-side').textContent,
+      /第 3 回合/,
+      '按下数字键没有出招',
+    )
+  } finally {
+    juicyAction = false
+  }
+})
+
+test('编号是「※」的选项不吃数字键', async () => {
+  /*
+   * 修炼项在选项栏里的序号是「※」而不是数字 —— 它不参与编号。
+   * 如果按数组下标去数，按下 2 就会打到屏幕上写着 ※ 的那一格：
+   * 手指按的和眼睛看的对不上，是最难忍的一类错。
+   */
+  turnHasCombat = false
+  try {
+    await enterGame()
+    click(findButton('前进'))
+    await waitFor('跳过当天，进行修炼', { timeout: 15000 })
+    await new Promise((r) => setTimeout(r, 150))
+
+    const list = dom.window.document.querySelector('.choices-list')
+    const marked = [...list.querySelectorAll('button.choice')]
+      .find((b) => b.querySelector('.idx')?.textContent.includes('※'))
+    assert.ok(marked, '修炼项应该用 ※ 标出来，而不是混进数字里')
+
+    const before = text()
+    const win = dom.window
+    // 屏幕上根本没有"2"这一格，按 2 就不该有任何反应
+    win.dispatchEvent(new win.KeyboardEvent('keydown', { key: '2', bubbles: true }))
+    await new Promise((r) => setTimeout(r, 250))
+    assert.equal(text(), before, '按下一个屏幕上不存在的编号，不该触发任何选项')
+  } finally {
+    turnHasCombat = true
+  }
+})
+
+test('出错只弹一条能关掉的横幅，正文和选项都还在', async () => {
+  /*
+   * 原来 error 一旦有值就整屏换成一张"出错了"卡片：打着打着模型抖一下，
+   * 正文、行动栏、角色数值全没了，只剩一个「知道了」。
+   */
+  turnFails = true
+  try {
+    await enterGame()
+    const logBefore = dom.window.document.querySelector('.log')?.textContent || ''
+    assert.ok(logBefore.length > 0, '进游戏时就该有正文了')
+
+    click(findButton('前进'))
+    await new Promise((r) => setTimeout(r, 400))
+
+    const banner = dom.window.document.querySelector('.err-banner')
+    assert.ok(banner, '失败时没有出现错误横幅')
+    assert.match(banner.textContent, /模型连接超时/, '横幅没写清楚出了什么事')
+
+    // 关键：局面还在
+    assert.ok(dom.window.document.querySelector('.log'), '出错不该把正文换掉')
+    assert.ok(dom.window.document.querySelector('.choices'), '出错不该把操作栏换掉')
+    assert.ok(findButton('存档'), '出错不该把顶栏换掉')
+
+    banner.querySelector('.eb-close').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 60))
+    assert.equal(dom.window.document.querySelector('.err-banner'), null, '横幅应该能关掉')
+  } finally {
+    turnFails = false
+  }
+})
+
+test('轮盘能收起也能展开，收起时仍然看得见这一次转到哪儿', async () => {
+  playModeFixture = 'combat'
+  try {
+    await enterGame()
+    await waitFor('日常轮盘', { timeout: 15000 })
+
+    const panel = () => dom.window.document.querySelector('.wheel-panel')
+    assert.ok(panel().className.includes('compact'), '轮盘默认应该是收起的 —— 两个操作台并排会不知道该按哪边')
+    assert.equal(panel().querySelectorAll('.grow-row').length, 0, '收起时不该还摆着六条进度条')
+    // 收起了也得看得见落点，否则转完一天回到状态栏发现数字没动，像白转了
+    assert.ok(panel().querySelector('.wheel-landed'), '收起时应该把这次的落点顶在转盘下面')
+
+    click(panel().querySelector('.wheel-toggle'))
+    await new Promise((r) => setTimeout(r, 60))
+    assert.ok(panel().className.includes('open'), '点「进度」应该能展开')
+    assert.equal(panel().querySelectorAll('.grow-row').length, 6, '展开后应该给出六条进度条')
+
+    click(panel().querySelector('.wheel-toggle'))
+    await new Promise((r) => setTimeout(r, 60))
+    assert.ok(panel().className.includes('compact'), '再点一下应该收回去')
+  } finally {
+    playModeFixture = 'story'
+  }
+})
+
 test('跳过模式：直接给演出与结算，不给行动栏', async () => {
   await enterGame()
   click(findButton('前进'))
@@ -1443,6 +2104,11 @@ test('跳过模式：直接给演出与结算，不给行动栏', async () => {
   assert.match(t, /一刀两断/, '没有渲染演出文本')
   assert.match(t, /战斗结算/, '没有出现结算卡')
   assert.ok(!findButton('体术攻击'), '跳过模式不该出现行动栏')
+
+  // 打完一场是整局情绪最高的一拍，只落在日志卡片上的话，玩家低头按键盘时就错过了
+  const toasts = dom.window.document.querySelector('.toasts')?.textContent || ''
+  assert.match(toasts, /胜利/, '拿下了却没有报喜')
+  assert.match(toasts, /击退了二级的腐骨咒灵/, '报喜只说"胜利"，不说是哪一场')
 })
 
 test('修炼也是对话流里的询问，不是弹窗', async () => {

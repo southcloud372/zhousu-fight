@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { GradeTag } from './Panels.jsx'
 
 function Row({ label, value, grade }) {
@@ -9,6 +9,71 @@ function Row({ label, value, grade }) {
         {typeof value === 'number' ? value.toLocaleString() : value}
         {grade ? <span style={{ color: 'var(--ink-faint)', marginLeft: 6 }}>{grade}</span> : null}
       </span>
+    </div>
+  )
+}
+
+// ------------------------------------------------------------ 数值输入
+
+/**
+ * 数值可改，是这个版本最要紧的一处改动。
+ *
+ * 之前"自定义属性"只让你描述风格，数字全由引擎掷 —— 玩家写完"我要体术流"
+ * 拿到一份四级档案，除了重掷没有别的办法，而重掷是随机的，等于没有控制权。
+ * 现在掷出来的那份变成**默认值**：每一项都能改，改完等级跟着数字走。
+ *
+ * 等级不能由玩家点单，只能由数字反推（引擎那套反向查表），
+ * 所以界面上写的是"填数字，等级自己会变"，而不是"选等级"。
+ */
+const NUM_FIELDS = [
+  { key: 'ce', label: '咒力总量', step: 100, gradeKey: 'ce' },
+  { key: 'hp', label: '血条总量', step: 50, gradeKey: 'hp' },
+  { key: 'cursedDamage', label: '咒术伤害', step: 10, gradeKey: 'cursedDamage' },
+  { key: 'physicalDamage', label: '体术伤害', step: 5, gradeKey: 'physicalDamage' },
+  { key: 'efficiency', label: '咒力效率', step: 5, unit: '%', pct: true, gradeKey: 'efficiency' },
+  { key: 'techniqueMultiplier', label: '术式倍率', step: 0.5, unit: '×', raw: true },
+  { key: 'techniqueCooldown', label: '术式冷却', step: 1, unit: '回合', raw: true },
+]
+
+/** 从服务端档案抽出可编辑的数字。效率在界面上用百分数，比较像"数值" */
+function numbersOf(p) {
+  return {
+    ce: p.ce?.value ?? 0,
+    hp: p.hp?.value ?? 0,
+    cursedDamage: p.cursedDamage?.value ?? 0,
+    physicalDamage: p.physicalDamage?.value ?? 0,
+    efficiency: Math.round((p.efficiency?.value ?? 0) * 100),
+    techniqueMultiplier: p.techniqueMultiplier ?? 1,
+    techniqueCooldown: p.techniqueCooldown ?? 1,
+  }
+}
+
+function NumberGrid({ profile, draft, setDraft, busy }) {
+  return (
+    <div className="num-grid">
+      {NUM_FIELDS.map((f) => (
+        <label className="num-row" key={f.key}>
+          <span className="nl">{f.label}</span>
+          <span className="nv">
+            <input
+              type="number"
+              step={f.step}
+              min={0}
+              value={draft[f.key]}
+              disabled={busy}
+              onChange={(e) => {
+                const v = e.target.value === '' ? '' : Number(e.target.value)
+                setDraft((d) => ({ ...d, [f.key]: v }))
+              }}
+            />
+            {f.unit && <em>{f.unit}</em>}
+          </span>
+          {/* 等级是数字的结果，不是可以点的选项 —— 所以它只是显示 */}
+          {f.gradeKey && (
+            <span className="ng"><GradeTag grade={profile[f.gradeKey]?.grade} /></span>
+          )}
+        </label>
+      ))}
     </div>
   )
 }
@@ -67,23 +132,44 @@ export function AttributeCard({ p, onPick, busy }) {
 /**
  * 「自主定义」卡片。
  *
- * 玩家写一段描述 → 引擎重掷数值 → 模型按描述生成术式 / 背景。
- * 界面上必须写明**等级不可指定** —— 否则玩家会以为能点单"我要超特级"，
- * 掷出来是二级就会觉得是 bug。
+ * 玩家写一段描述 → 引擎掷一份数值底子 → 模型按描述生成术式 / 背景。
+ * 属性那一侧，掷出来的数值是**可以直接改的**（见 NumberGrid）：
+ * 玩家要的是能定数值，不只是定风格。
  */
-export function CustomCard({ kind, brief, setBrief, generated, onGenerate, onPick, onReroll, busy }) {
+export function CustomCard({
+  kind, brief, setBrief, generated, onGenerate, onPick, onReroll, onTune, busy,
+}) {
   const isAttr = kind === 'attribute'
   const placeholder = isAttr
     ? '例如：我想打近身压制，靠体术和一把刀，术式最好能封住对方的退路……'
     : '例如：我是被高专除名的观察员，暗中替诅咒师做事，手上有一条宿傩手指的线报……'
 
+  const [draft, setDraft] = useState(() => (generated ? numbersOf(generated) : null))
+
+  // 档案换了（生成 / 重掷 / 应用数值之后）就把草稿对齐到服务端那一份
+  useEffect(() => {
+    if (isAttr && generated) setDraft(numbersOf(generated))
+  }, [isAttr, generated])
+
+  const dirty = isAttr && generated && draft
+    && NUM_FIELDS.some((f) => Number(draft[f.key]) !== Number(numbersOf(generated)[f.key]))
+
+  const applyNumbers = () => {
+    // 空框按 0 处理会让玩家莫名其妙掉一档，所以空着就退回服务端那份
+    const base = numbersOf(generated)
+    const numbers = Object.fromEntries(
+      NUM_FIELDS.map((f) => [f.key, draft[f.key] === '' ? base[f.key] : Number(draft[f.key])]),
+    )
+    onTune?.(numbers)
+  }
+
   return (
     <div className="pcard custom">
       <h2>自主定义</h2>
-      <div className="tech">{isAttr ? '自己写战斗风格' : '自己写身份背景'}</div>
+      <div className="tech">{isAttr ? '自己写数值和战斗风格' : '自己写身份背景'}</div>
       <div className="tech-eff">
         {isAttr
-          ? '写清你想要的打法、术式感觉、武器偏好。'
+          ? '写清你想要的打法、术式感觉、武器偏好。生成之后，每一项数值都能自己改。'
           : '写清来历、立场、眼下的处境和你想埋的钩子。'}
       </div>
 
@@ -98,7 +184,7 @@ export function CustomCard({ kind, brief, setBrief, generated, onGenerate, onPic
 
       <div className="custom-note">
         {isAttr
-          ? '等级由引擎按设定概率掷出，不能指定 —— 那套分布是战斗平衡的地基。你说的是「风格」，强度照掷。'
+          ? '生成时先按你的描述掷一份底子，掷出来的数字是默认值 —— 每一项你都能改，等级会跟着数字变。'
           : '身份类型由模型按你的描述判定，初始关系值随即重掷。'}
       </div>
 
@@ -124,14 +210,38 @@ export function CustomCard({ kind, brief, setBrief, generated, onGenerate, onPic
                   <span>综合等级</span>
                   <span><GradeTag grade={generated.overallGrade} /></span>
                 </div>
-                <div className="tech" style={{ fontSize: 16, margin: '6px 0 2px' }}>{generated.techniqueName}</div>
+                <div className="kv">
+                  <span>领域</span>
+                  <span>
+                    {generated.domain?.unlocked
+                      ? <>{generated.domain.name} <span style={{ color: 'var(--ink-faint)' }}>{generated.domain.tierName}</span></>
+                      : '未领悟'}
+                  </span>
+                </div>
+
+                {draft && (
+                  <NumberGrid
+                    profile={generated}
+                    draft={draft}
+                    setDraft={setDraft}
+                    busy={busy}
+                  />
+                )}
+
+                {dirty && (
+                  <button
+                    className="pick-btn tune-btn"
+                    onClick={applyNumbers}
+                    disabled={busy}
+                  >
+                    {busy ? '重新推演中…' : '应用数值（等级与领域会跟着变）'}
+                  </button>
+                )}
+
+                <div className="tech" style={{ fontSize: 16, margin: '10px 0 2px' }}>{generated.techniqueName}</div>
                 <div className="tech-eff">{generated.techniqueEffect}</div>
-                <Row label="咒力总量" value={generated.ce.value} grade={generated.ce.grade} />
-                <Row label="血条总量" value={generated.hp.value} grade={generated.hp.grade} />
-                <Row label="咒术伤害" value={generated.cursedDamage.value} grade={generated.cursedDamage.grade} />
-                <Row label="体术伤害" value={generated.physicalDamage.value} grade={generated.physicalDamage.grade} />
-                <Row label="咒力效率" value={`${Math.round(generated.efficiency.value * 100)}%`} grade={generated.efficiency.grade} />
-                {generated.domain?.unlocked ? (
+
+                {generated.domain?.unlocked && (
                   <div className="domain-box" style={{ marginTop: 8 }}>
                     <div className="dn">领域 · {generated.domain.name}
                       <span style={{ fontSize: 11, color: 'var(--ink-faint)', marginLeft: 6 }}>{generated.domain.tierName}</span>
@@ -139,9 +249,8 @@ export function CustomCard({ kind, brief, setBrief, generated, onGenerate, onPic
                     <div style={{ marginTop: 3 }}>必中：{generated.domain.sureHit}</div>
                     <div style={{ color: 'var(--blood)' }}>代价：{generated.domain.cost}</div>
                   </div>
-                ) : (
-                  <div style={{ fontSize: 12.5, color: 'var(--ink-faint)', marginTop: 6 }}>领域：未领悟</div>
                 )}
+
                 <div style={{ marginTop: 8 }}>
                   {(generated.talents || []).map((t) => <span key={t} className="tag">{t}</span>)}
                   {generated.tool && <span className="tag" style={{ borderColor: 'var(--gold)' }}>咒具：{generated.tool}</span>}
@@ -182,6 +291,80 @@ export function CustomCard({ kind, brief, setBrief, generated, onGenerate, onPic
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * 第五个身份：突然出现的人。
+ *
+ * 和另外四张卡的根本区别是**它不掷也不问模型** —— 没有身份就是这个身份的定义。
+ * 所以卡上能填的只有玩家自己：叫什么、多大、身上带着什么。全空也能进，
+ * 那就是一个连名字都没有、凭空站在那儿的人。
+ *
+ * 写着"没有交集"是必要的：玩家得先知道这一局不会有人认识他，
+ * 才会相信后面那些跨度极大的选项不是摆设。
+ */
+export function SuddenArrivalCard({ name, setName, age, setAge, brief, setBrief, onSudden, busy }) {
+  return (
+    <div className="pcard sudden">
+      <h2>突然出现的人</h2>
+      <div className="tech">没有身份 · 没有交集</div>
+      <div className="tech-eff">
+        不做这条线上的任何一个人。上一秒你还在自己的地方，下一秒就站在了这里。
+      </div>
+
+      <div className="divider" />
+
+      <div style={{ fontSize: 13, lineHeight: 1.75 }}>
+        <div>
+          没有户籍、没有咒术界的档案、没有任何人见过你 —— 和所有人<strong>关系值为 0</strong>。
+          世界不知道你是谁，你也不需要向任何人解释。
+        </div>
+        <div style={{ marginTop: 8, color: 'var(--gold)' }}>
+          ▸ 这一局给你的选项会**故意拉开跨度**：可以直接找原作角色摊牌，可以转身走开不管，
+          也可以用这个世界没人会用的办法解决问题。你可以做剧情完全没准备的事。
+        </div>
+        <div style={{ marginTop: 8, color: 'var(--ink-dim)' }}>
+          代价同样真实：没有靠山，没有人为你说话。被当成可疑人物处理是常态。
+        </div>
+      </div>
+
+      <div className="sudden-form">
+        <label>
+          <span>名字</span>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="留空就是「无名之客」"
+            disabled={busy}
+          />
+        </label>
+        <label className="narrow">
+          <span>年龄</span>
+          <input
+            type="number"
+            min={10}
+            max={80}
+            value={age}
+            onChange={(e) => setAge(e.target.value)}
+            disabled={busy}
+          />
+        </label>
+      </div>
+
+      <textarea
+        className="custom-brief"
+        value={brief}
+        onChange={(e) => setBrief(e.target.value)}
+        placeholder="（可选）你穿越过去时是什么样的人、身上带着什么？例如：普通大学生，穿着睡衣，兜里只有一个手机……"
+        rows={3}
+        disabled={busy}
+      />
+
+      <button className="pick-btn" style={{ marginTop: 12 }} onClick={onSudden} disabled={busy}>
+        {busy ? '正在落地…' : '就这样出现'}
+      </button>
     </div>
   )
 }

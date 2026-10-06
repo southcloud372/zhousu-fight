@@ -34,19 +34,24 @@ export function ActionBar({ actions, freeActions, onAct, disabled }) {
           </div>
         )}
 
-        <div style={{ fontSize: 11, letterSpacing: '0.2em', color: 'var(--ink-faint)', marginBottom: 8 }}>
-          选择行动
+        <div className="choices-head" style={{ marginBottom: 8 }}>
+          <span style={{ fontSize: 11, letterSpacing: '0.2em', color: 'var(--ink-faint)' }}>
+            选择行动
+          </span>
+          <span className="choices-tip">按数字键直接出招</span>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 7 }}>
-          {actions.map((a) => (
+        <div className="act-grid">
+          {actions.map((a, i) => (
             <button
               key={a.type}
-              className="choice"
+              // 数字键直接出招：全局快捷键就是按这个顺序找 .choice 点下去的
+              className={`choice act-${a.type}`}
               style={{ marginBottom: 0 }}
               disabled={disabled || !a.enabled}
               title={a.note || ''}
               onClick={() => onAct(a.type)}
             >
+              <span className="idx">{i + 1}.</span>
               {a.label}
               {a.note && <span style={{ color: 'var(--ink-faint)', fontSize: 11.5 }}>（{a.note}）</span>}
             </button>

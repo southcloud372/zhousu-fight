@@ -12,13 +12,16 @@ import { scrubTurn, clampProposal, noteNarrationLeak, checkEnemyLegality } from 
 import {
   generateAttributeProfiles, generateIdentityProfiles, buildCharacterAndOpening,
   generateCustomAttribute, generateCustomIdentity, rollTimeProfiles, generateCustomTime,
+  flavorAttributeProfile,
 } from './engine/opening.js'
-import { CORE_RULES, CONTRACT, turnStatePrompt } from './prompts.js'
+import { CORE_RULES, CONTRACT, turnStatePrompt, suddenArrivalRulesFor } from './prompts.js'
 import { accumulate, usageSnapshot, estimateTokens } from './pricing.js'
-import { submitTurn } from './engine/schemas.js'
-import { rollEnemy } from './engine/rolls.js'
+import { submitTurnFor } from './engine/schemas.js'
+import { NARRATION_MIN, visibleLength, overflowBy, clampNarration } from './engine/narration.js'
+import { rollEnemy, tuneAttributeProfile, suddenArrivalIdentity } from './engine/rolls.js'
 import { byId, pointsFor, initialNodes, nextMilestone } from './engine/timeline.js'
 import { DEFAULT_STORYLINE, STORYLINES, storylineBriefs, storylineOf } from './engine/storylines.js'
+import { wipeLocalData, WIPE_CONFIRM } from './engine/wipe.js'
 import { PLAY_MODES, playModeOf, playModeBriefs, DEFAULT_PLAY_MODE } from './engine/playmodes.js'
 import { canTrain, rollTraining, applyTraining, TRAINING_TABLE } from './engine/commands.js'
 import {
@@ -34,6 +37,7 @@ import {
   WHEEL_SECTORS, MAX_DAYS_PER_CALL,
 } from './engine/wheel.js'
 import { recoveryOptions, applyRecovery, needsRecovery } from './engine/recovery.js'
+import { normalizeDomainType, sealOf } from './engine/domains.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -164,6 +168,43 @@ app.post('/api/session/:id/attributes/custom', asyncRoute(async (req, res) => {
   res.json(withUsage(state, { profile }))
 }))
 
+/**
+ * 调数值：玩家在自定义属性卡上逐项改数字。
+ *
+ * 等级由数字反推（见 rolls.js 的 tuneAttributeProfile），所以这里不需要模型参与 ——
+ * 除非改动的结果**跨进了特级**：那一档开局自带领域，而领域名/必中/代价
+ * 是模型的活。不补这一步，玩家就会带着一个"未命名领域"进游戏。
+ */
+app.post('/api/session/:id/attributes/custom/tune', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+
+  const cur = (state.attributeProfiles || []).find((p) => p.slot === '自定义')
+  if (!cur) return res.status(400).json({ error: '还没有自定义档案可以调，先生成一份' })
+
+  const next = tuneAttributeProfile(cur, req.body?.numbers || {})
+
+  /*
+   * 只在"领域刚觉醒、还没有名字"时问模型。
+   * 每次拖一下滑块都打一次模型，既慢又费钱，而绝大多数调整（加血、加伤害）
+   * 根本不改变领域的存在与否。
+   */
+  const needDomain = next.domainUnlocked && !next.domain?.name
+  const profile = needDomain
+    ? await flavorAttributeProfile(next, cur.brief || '', {
+        onUsage: meter(state, models.pro),
+        playerTuned: true,
+      })
+    : next
+
+  state.attributeProfiles = [
+    ...state.attributeProfiles.filter((p) => p.slot !== '自定义'),
+    profile,
+  ]
+  persist(state)
+  res.json(withUsage(state, { profile }))
+}))
+
 /** 自主定义身份：同理，模型自己判定身份类型，引擎据此重掷关系值 */
 app.post('/api/session/:id/identities/custom', asyncRoute(async (req, res) => {
   const state = load(req.params.id)
@@ -181,6 +222,36 @@ app.post('/api/session/:id/identities/custom', asyncRoute(async (req, res) => {
   persist(state)
   res.json(withUsage(state, { identity }))
 }))
+
+/**
+ * 第五个身份：「突然出现的人」。
+ *
+ * **不走模型**，是有意的。这个身份的全部价值就是它是空白的 ——
+ * 让模型写背景，它一定会补出"你其实是XX的亲戚""你身上有宿傩的另一根手指"
+ * 这类设定，那就又变回预设身份了，玩家要的"没有身份"当场作废。
+ * 所以这里只有玩家自己填的名字和一句话，其余交给开局情境现场发挥。
+ * 顺带也没有 token 开销，点一下就到。
+ */
+app.post('/api/session/:id/identities/sudden', (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  if (!state.identityProfiles?.length) {
+    return res.status(409).json({ error: '还没到选身份这一步' })
+  }
+
+  const identity = suddenArrivalIdentity({
+    name: req.body?.name,
+    age: req.body?.age,
+    brief: String(req.body?.brief || '').trim().slice(0, 500),
+  }, state.storyline)
+
+  state.identityProfiles = [
+    ...state.identityProfiles.filter((p) => p.slot !== identity.slot),
+    identity,
+  ]
+  persist(state)
+  res.json({ identity })
+})
 
 /** 全部可选时间点（自主定义穿越时间时给玩家做参考） */
 app.get('/api/time-points', (req, res) => {
@@ -275,7 +346,7 @@ app.post('/api/session/:id/choose-time', asyncRoute(async (req, res) => {
   res.json(withUsage(state, {
     ...cleaned,
     recap: cleaned.recap,
-    choices: withExtras(cleaned.choices, state),
+    choices: state.choices,
     panel: panelSnapshot(state),
     // 选战斗向开局的话，第一屏就该看见轮盘倒数
     wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
@@ -330,6 +401,7 @@ function postProcess(state, raw, { isOpening = false, playerInput = '' } = {}) {
       raw.combatRequest.enemyName = '无名咒灵'
       raw.combatRequest.enemyTechniqueName = raw.combatRequest.enemyTechniqueName || '未知术式'
       raw.combatRequest.enemyDomainName = null
+      raw.combatRequest.enemyDomainType = null
     }
 
     enemy.name = raw.combatRequest.enemyName || '咒灵'
@@ -338,6 +410,13 @@ function postProcess(state, raw, { isOpening = false, playerInput = '' } = {}) {
     // 领域只有特级才有；模型没给名字就留个可辨认的占位
     if (enemy.domain?.unlocked) {
       enemy.domain.name = raw.combatRequest.enemyDomainName || `${enemy.name}的领域`
+      /*
+       * 类型允许模型覆盖 rollEnemy 掷出来的那一型（模型更清楚这个敌人
+       * 该是什么路数），但认不出来的词一律丢掉 —— 放着它不管，最后会
+       * 一路兜成伤害型，等于模型写错一个字就改了整场打法。
+       */
+      const typed = normalizeDomainType(raw.combatRequest.enemyDomainType)
+      if (typed) enemy.domain.type = typed
     } else if (raw.combatRequest.enemyDomainName) {
       // 模型给非特级敌人编了领域 —— 按设定不该有，去掉
       entry.notes.push('非特级敌人不应持有领域，已忽略模型给出的领域名')
@@ -357,7 +436,42 @@ function postProcess(state, raw, { isOpening = false, playerInput = '' } = {}) {
   const NODE_LOCK = ['少年院任务', '涩谷事变', '死灭回游', '宿傩夺舍']
   state.storyLock = NODE_LOCK.find((n) => entry.proposal.flags.includes(`${n}_开始`)) || null
 
+  // 当前这一批选项跟着状态一起存。
+  //
+  // 以前 /state 是"回头去 log 里翻最后一条剧情回合"重建选项的 —— 于是
+  // 只要在这之后发生了不产生剧情回合的事（转轮盘、修炼、疗伤），刷新页面
+  // 就会把**上一场戏**的选项重新摆出来。玩家在战斗向里连转十天轮盘，
+  // 一刷新又看见十天前那三个选项，点了还会真的按那句话再演一遍。
+  //
+  // 有了 pendingCombat 就不给选项：这时该问的是"打不打"，那是前端的询问块。
+  state.choices = state.pendingCombat ? [] : withExtras(entry.choices, state)
+
   return entry
+}
+
+/**
+ * 选项失效。
+ *
+ * 任何"不产生剧情回合"的操作（转轮盘、修炼、疗伤、开打、脱离）都该把
+ * 手上这批选项作废 —— 场景已经往前走了，还留着上一场的按钮只会让玩家
+ * 点到已经不存在的东西。刷新页面也拿不到它们（/state 直接读 state.choices）。
+ */
+function clearChoices(state) {
+  state.choices = []
+}
+
+/**
+ * 界面此刻该摆哪一批选项。
+ *
+ * 优先用状态里存着的那一份（postProcess 写的）；只有老存档没这个字段时，
+ * 才退回"去 log 里翻最后一条剧情回合"的老办法 —— 那是给已经存下来的进度兜底，
+ * 新流程不会再走到那一步。
+ */
+function liveChoices(state) {
+  if (state.phase !== 'playing') return []
+  if (Array.isArray(state.choices)) return state.choices
+  const lastTurn = [...(state.log || [])].reverse().find((e) => e.type === 'turn' || e.type === 'opening')
+  return lastTurn ? withExtras(lastTurn.choices || [], state) : []
 }
 
 function compactForHistory(entry) {
@@ -392,8 +506,21 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
     // 编年史走 system prompt（见 turnSystem），不要再往 messages 里塞一份，否则重复计费
     const messages = state.history.slice(-16).map((h) => ({ role: h.role, content: h.content }))
 
-    // 模型偶尔会交回空壳正文；空就重来一次，别让玩家对着一片空白选行动
+    /*
+     * 模型偶尔会交回空壳正文；空就重来一次，别让玩家对着一片空白选行动。
+     *
+     * 战斗向还要多一条重试理由：写超了字数。见 engine/narration.js 的说明 ——
+     * 配比管得住"写什么"，管不住"写多少"，写长了打斗就被日常稀释。
+     * 长度重写只做一次：再多就是拿玩家的等待和 API 费用换几百字，不划算。
+     */
+    const cap = playModeOf(state.playMode).narrationCap
+    const tool = submitTurnFor(state.playMode)
     let raw = null
+    let retryWhy = ''       // 上一轮为什么被打回：'empty' | 'long'
+    let lengthRetried = false
+    // 越改越长是常事，留一份目前最接近预算的，别让重写把结果变差
+    let fallback = null
+    let fallbackOver = Infinity
     let streamedText = ''   // 本次流式已产出的正文，用于实时估算
     let lastLiveAt = 0
     let lastErr = null
@@ -403,11 +530,8 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
       try {
       for await (const ev of streamTool({
         system: turnSystem(state),
-        messages: attempt === 0
-          ? messages
-          : [...messages, { role: 'assistant', content: '（上一次提交的正文为空，需要重做）' },
-             { role: 'user', content: '上一次的 narration 是空的。请重新提交一份完整的本回合输出。' }],
-        tool: submitTurn,
+        messages: attempt === 0 ? messages : [...messages, ...retryMessages(retryWhy, cap)],
+        tool,
         model: models.fast,
         maxTokens: 4000,
         onUsage: meter(state, models.fast),
@@ -437,15 +561,58 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
         streamedText = ''
         continue
       }
-      const ok = typeof raw?.narration === 'string' && raw.narration.trim().length >= 60
-      if (ok) break
-      if (attempt < 2) {
-        // 重试前必须让前端把已收到的半截正文丢掉，否则两次输出会拼在一起
-        send('reset', {})
-        send('status', { text: '正文为空，重试中…' })
-        // 重试时估算值要从头算，否则会把上一版的正文也算进去
-        streamedText = ''
+
+      const empty = !(typeof raw?.narration === 'string' && raw.narration.trim().length >= NARRATION_MIN)
+      const over = empty ? 0 : overflowBy(raw, cap)
+
+      // 留档：目前写超得最少的那一份
+      if (!empty && over > 0 && over < fallbackOver) {
+        fallback = raw
+        fallbackOver = over
       }
+      if (!empty && !over) break // 合格
+      if (attempt >= 2) break
+
+      retryWhy = empty ? 'empty' : 'long'
+      // 长度问题只给一次机会，空正文则可以一直试到用完
+      if (retryWhy === 'long' && lengthRetried) break
+      if (retryWhy === 'long') lengthRetried = true
+
+      // 重试前必须让前端把已收到的半截正文丢掉，否则两次输出会拼在一起。
+      // 估算值也要从头算，不然会把上一版的正文也算进去
+      send('reset', {})
+      send('status', { text: retryWhy === 'empty' ? '正文为空，重试中…' : '写超了字数，正在压短…' })
+      streamedText = ''
+    }
+
+    // 两次都超预算：用短一点的那一份，别让"重写"把结果变差
+    let adjusted = false
+    if (retryWhy === 'long' && fallback && overflowBy(raw, cap) > fallbackOver) {
+      raw = fallback
+      adjusted = true
+    }
+
+    // 兜底：到这一步还超，就只能截。截在句号上，不留半句话
+    if (cap && raw && typeof raw.narration === 'string') {
+      const spoken = visibleLength({ dialogue: raw.dialogue })
+      const clipped = clampNarration(raw.narration, Math.max(120, cap - spoken))
+      if (clipped !== raw.narration) {
+        raw.narration = clipped
+        adjusted = true
+      }
+    }
+
+    /*
+     * 服务端改过正文，就得把改完的那一份推给前端。
+     *
+     * 前端写进日志的是它**流式收到**的文字（见 App.jsx 的 acc），不是服务端
+     * 存下来的那一份 —— 不推的话，屏幕上留着长版，存档里是短版，
+     * 刷新一次正文就变了样。走 reset + narration 是现成的路子，
+     * 重试时本来就用它清掉半截正文。
+     */
+    if (adjusted) {
+      send('reset', {})
+      send('narration', { text: raw.narration })
     }
 
     const entry = postProcess(state, raw, { playerInput: input })
@@ -455,7 +622,7 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
       turn: state.turn,
       dialogue: entry.dialogue,
       recap: entry.recap,
-      choices: withExtras(entry.choices, state),
+      choices: state.choices,
       notes: entry.notes,
       panel: panelSnapshot(state),
       combat: state.pendingCombat,
@@ -558,6 +725,14 @@ function gatingLabel(gate) {
   return gate.ok ? '【跳过当天，进行修炼】' : `【跳过当天，进行修炼】（${gate.reason}）`
 }
 
+/**
+ * 「突然出现的人」的专属规则块。
+ *
+ * 拼在最后 —— 契约和游玩模式都在它前面，而它要盖过契约里那套
+ * "3~4 个有战术分歧的选项"的默认要求（见 prompts.js 的说明）。
+ */
+const suddenBlock = (state) => suddenArrivalRulesFor(state.player)
+
 function turnSystem(state) {
   // 游玩模式放在契约之后 —— 越靠后的内容对模型的约束越强，
   // 而战斗向的配比是要盖过设定原文那套默认比例的
@@ -571,7 +746,31 @@ function turnSystem(state) {
   if (!modelStateView(state).宿傩.可在意识中对话) {
     parts.push('## 注意\n宿傩目前**不会**在玩家意识中对话（觉醒度不足或态度未达"感兴趣"）。不要让宿傩说话。')
   }
-  return parts.join('\n\n---\n\n')
+  parts.push(suddenBlock(state))
+  return parts.filter(Boolean).join('\n\n---\n\n')
+}
+
+/**
+ * 被打回重写时，补在对话末尾的纠正说明。
+ *
+ * 说明不能停在"太长了"上 —— 只说长度，模型会再交一份同样长的。
+ * 得告诉它**删什么**（环境、心理、铺垫）和**留什么**（交锋的动作与结果），
+ * 它才知道这几百字该省在哪儿。
+ */
+function retryMessages(why, cap) {
+  if (why === 'long') {
+    return [
+      { role: 'assistant', content: '（上一次提交的正文超了字数预算，需要重写）' },
+      { role: 'user', content:
+        `上一次的正文太长了，超过本模式 ${cap} 字的预算。请重写一份：只留交锋的动作与结果，`
+        + '把环境、天气、心理活动、气氛铺垫和所有与打斗无关的描写全部删掉，台词也要短。'
+        + 'recap、choices、proposal 照常给全。' },
+    ]
+  }
+  return [
+    { role: 'assistant', content: '（上一次提交的正文为空，需要重做）' },
+    { role: 'user', content: '上一次的 narration 是空的。请重新提交一份完整的本回合输出。' },
+  ]
 }
 
 // ---------------------------------------------------------------- 战斗
@@ -587,6 +786,7 @@ function combatSystem(state, extra) {
 - 写动作、术式碰撞、咒力流动、伤口、表情。分镜感优先于心理描写。
 - NPC 台词只说"特级"，不准说细分刻度。
 - 不要改写战斗结果 —— 胜负、伤害、生死都由引擎算定了，你只负责把它写好看。`,
+    suddenBlock(state),
     extra,
   ].filter(Boolean).join('\n\n---\n\n')
 }
@@ -607,6 +807,8 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
   if (!state) return res.status(404).json({ error: '会话不存在' })
   const mode = String(req.body?.mode || '')
   if (!COMBAT_MODES.includes(mode)) return res.status(400).json({ error: '未知战斗模式' })
+  // 这一仗的正文预算（战斗向 400 字，剧情向不限）—— 后面两处演出都要用
+  const cap = playModeOf(state.playMode).narrationCap
 
   // 两种进入方式：
   //   1. pendingCombat 存在 —— 正常流程，玩家第一次选模式
@@ -640,6 +842,8 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
   const { enemy, reason, intervention } = state.pendingCombat
   initCombat(state, rng, { mode, enemy, reason, intervention })
   state.lastEnemyName = enemy.name
+  // 打起来了，场上那批剧情选项作废（两边本来就不该同时出现）
+  clearChoices(state)
 
   try {
     if (mode === 'manual') {
@@ -686,9 +890,24 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
       关键节点: summarizeRounds(rounds),
     }
 
+    /*
+     * 跳过 / 剧情模式不逐回合推面板，但还是把整场里最值得看的那一下告诉前端：
+     * 有领域展开就放「領域展開」过场，有暴击就让战报闪一下。
+     * 不给的话，这两种模式打起来真的只剩一段文字 —— 手动模式那套演出全浪费了。
+     */
+    const domRound = rounds.find((r) => r.domainOpened)
+    send('highlight', {
+      domainOpened: domRound?.domainOpened || null,
+      crits: rounds.filter((r) => r.crit).length,
+      rounds: rounds.length,
+    })
+
+    // 战斗向整场也只给一屏：一仗的正文按同样的预算来，别写成中篇小说
+    const capText = cap ? `**全文不超过 ${cap} 字。**描写只围绕交锋本身：谁出了什么招、` +
+      '打中了哪里、伤成什么样、局势怎么变。环境、天气、回忆、心理活动一律不写。' : ''
     const prompt = mode === 'skip'
-      ? `以下是引擎结算出的战斗过程与结果，请用一两段话写出战斗经过与结局。不要重复数字，不要改写结果。\n\n${JSON.stringify(brief, null, 2)}`
-      : `以下是引擎结算出的战斗全过程。请用长篇分镜演出这场战斗，参考原作战斗分镜的节奏：关键回合放慢、普通回合一笔带过。不要重复数字，不要改写结果。\n\n${JSON.stringify(brief, null, 2)}`
+      ? `以下是引擎结算出的战斗过程与结果，请用一两段话写出战斗经过与结局。不要重复数字，不要改写结果。${capText}\n\n${JSON.stringify(brief, null, 2)}`
+      : `以下是引擎结算出的战斗全过程。请用分镜演出这场战斗，参考原作战斗分镜的节奏：关键回合放慢、普通回合一笔带过。不要重复数字，不要改写结果。${capText}\n\n${JSON.stringify(brief, null, 2)}`
 
     // 演出失败不能吃掉结算结果 —— 数值早已落盘，done 必须照发
     let narration = ''
@@ -697,7 +916,8 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
         system: combatSystem(state, null),
         messages: combatMessages(state, prompt),
         model: mode === 'narrative' ? models.pro : models.fast,
-        maxTokens: mode === 'narrative' ? 3000 : 900,
+        // 有字数预算时把输出上限一起收窄，省得模型写到一半才想起要短
+        maxTokens: cap ? 800 : (mode === 'narrative' ? 3000 : 900),
         onUsage: meter(state, mode === 'narrative' ? models.pro : models.fast),
       })) {
         narration += chunk
@@ -705,6 +925,19 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
       }
     } catch (e) {
       send('status', { text: `战斗已结算，但演出生成失败：${e.message}` })
+    }
+
+    /*
+     * 这一路没有工具调用，拿不到"退回重写"的机会，所以超了只能截
+     * —— 截在句号上，还得告诉前端换掉它手里那份。
+     */
+    if (cap) {
+      const clipped = clampNarration(narration, cap)
+      if (clipped !== narration) {
+        narration = clipped
+        send('reset', {})
+        send('narration', { text: narration })
+      }
     }
 
     send('done', {
@@ -768,6 +1001,17 @@ ${renderPanelText(panel)}`
       }
     } catch {
       narration = ''
+    }
+    // 战斗向的回合演出同样算进 400 字的预算里（对齐"每次输出"的口径）。
+    // 这一路是流式纯文本，没有工具调用可以退回重写，超了就地截。
+    const cap = playModeOf(state.playMode).narrationCap
+    if (cap) {
+      const clipped = clampNarration(narration, cap)
+      if (clipped !== narration) {
+        narration = clipped
+        send('reset', {})
+        send('narration', { text: narration })
+      }
     }
     panel.narration = narration.trim()
 
@@ -879,6 +1123,8 @@ app.post('/api/session/:id/combat/evade', asyncRoute(async (req, res) => {
     state.history.push({ role: 'assistant', content: `【遭遇·脱离失败】${note}。战斗无法避免。` })
   }
   state.turn += 1
+  // 脱离成功 / 被迫应战，两种结局都会换掉场上的按钮，先作废
+  clearChoices(state)
   persist(state)
 
   res.json(withUsage(state, {
@@ -953,21 +1199,36 @@ app.post('/api/session/:id/crossover/advance', asyncRoute(async (req, res) => {
 /** 玩家在当前局面下实际能用的行动。这些都会推进一个回合。 */
 function availableActions(state) {
   const p = state.player
+  // 对方的领域正开着且是规则型 —— 手上这几格能不能用就由它说了算
+  const seal = state.combat?.enemy ? sealOf(p, state.combat.enemy) || {} : {}
   const out = [{ type: 'physical', label: '体术攻击', enabled: true }]
 
   const techOk = p.technique.cdLeft === 0
   out.push({
     type: 'technique', label: `生得术式·${p.technique.name}`,
-    enabled: techOk, note: techOk ? '' : `冷却剩 ${p.technique.cdLeft} 回合`,
+    enabled: techOk && !seal.technique,
+    note: seal.technique ? '领域规则封住了术式'
+      : techOk ? '' : `冷却剩 ${p.technique.cdLeft} 回合`,
   })
 
-  out.push({ type: 'defend', label: '防御（回复咒力）', enabled: true })
+  /*
+   * 被封住的技能**留在栏里**、只是灰掉。直接从列表里删掉的话，
+   * 玩家看到的是"我的术式按钮不见了"，不知道是被规则压住了；
+   * 灰着 + 写明原因才是可读的 —— 也顺带告诉玩家这领域该怎么破。
+   * 后端的 allowed 校验不看 enabled，所以旧客户端照样点得下去，
+   * 那一下会由引擎按"被规则封住"结算掉，不会 400。
+   */
+  out.push({
+    type: 'defend', label: '防御（回复咒力）',
+    enabled: !seal.defense, note: seal.defense ? '领域规则之下防御不成立' : '',
+  })
 
   if (p.domain.unlocked) {
     out.push({
       type: 'domain', label: `领域展开·${p.domain.name}`,
-      enabled: !p.domain.active, note: p.domain.active ? '已在展开中' : '',
-      usage: usageSnapshot(state.usage),
+      enabled: !p.domain.active && !seal.domain,
+      note: p.domain.active ? '已在展开中'
+        : seal.domain ? '对方的领域压着，展不开' : '',
     })
   }
   out.push({ type: 'flee', label: '脱离战斗', enabled: true })
@@ -1005,16 +1266,19 @@ function freeActions(state) {
   const usedUp = (c.freeUsed || 0) >= FREE_REVERSE_PER_ROUND
   const full = p.hp.cur >= p.hp.max
   const poor = p.ce.cur < pv.cost
-  const note = usedUp ? '本回合已用过'
-    : full ? '血条已满'
-      : poor ? `咒力不足（需 ${pv.cost}）`
-        : `消耗 ${pv.cost} 咒力，回复 ${pv.heal} 生命`
+  // 规则型领域里反转术式用不出来 —— 治疗这一栏整条是废的，先说清楚
+  const sealed = !!sealOf(p, c.enemy)?.reverse
+  const note = sealed ? '领域规则封住了治疗'
+    : usedUp ? '本回合已用过'
+      : full ? '血条已满'
+        : poor ? `咒力不足（需 ${pv.cost}）`
+          : `消耗 ${pv.cost} 咒力，回复 ${pv.heal} 生命`
 
   return [{
     type: 'reverse',
     label: `反转术式·${pv.level}`,
     free: true,
-    enabled: !usedUp && !full && !poor,
+    enabled: !usedUp && !full && !poor && !sealed,
     note,
     cost: pv.cost,
     heal: pv.heal,
@@ -1047,6 +1311,8 @@ app.post('/api/session/:id/train', asyncRoute(async (req, res) => {
   const result = rollTraining(state, item, rng)
   const ups = applyTraining(state, result)
   state.turn += 1
+  // 修炼这一天的选项作废；前端随后会补一个静默回合规剧情，新选项由那一轮给出
+  clearChoices(state)
   persist(state)
 
   // 一两句话的过程描写，按设定不展开
@@ -1105,6 +1371,7 @@ app.post('/api/session/:id/recovery', asyncRoute(async (req, res) => {
   }
 
   state.turn += 1
+  clearChoices(state)
   const entry = { type: 'recovery', ...r }
   state.log.push(entry)
   persist(state)
@@ -1165,6 +1432,7 @@ app.post('/api/session/:id/wheel/spin', asyncRoute(async (req, res) => {
   const report = spinWheel(state, rng)
   state.turn += 1
   state.log.push({ type: 'wheel', ...report })
+  clearChoices(state)
 
   // 正好落在剧情当天就把仗挂上，前端会弹"要不要打"的询问
   const combat = startIntervention(state, rng)
@@ -1192,6 +1460,7 @@ app.post('/api/session/:id/wheel/advance', asyncRoute(async (req, res) => {
     state.turn += 1
     state.log.push({ type: 'wheel', ...summary })
   }
+  clearChoices(state)
   const combat = startIntervention(state, rng)
   persist(state)
 
@@ -1222,8 +1491,6 @@ app.get('/api/session/:id/state', (req, res) => {
   const state = load(req.params.id)
   if (!state) return res.status(404).json({ error: '会话不存在' })
 
-  const lastTurn = [...(state.log || [])].reverse().find((e) => e.type === 'turn' || e.type === 'opening')
-
   res.json(withUsage(state, {
     phase: state.phase,
     attributeProfiles: state.attributeProfiles,
@@ -1233,7 +1500,7 @@ app.get('/api/session/:id/state', (req, res) => {
     log: state.log,
     recap: [...(state.log || [])].reverse().find((e) => e.recap)?.recap || '',
     panel: panelSnapshot(state),
-    choices: state.phase === 'playing' && lastTurn ? withExtras(lastTurn.choices || [], state) : [],
+    choices: liveChoices(state),
     actions: state.combat && !state.combat.over ? availableActions(state) : null,
     freeActions: state.combat && !state.combat.over ? freeActions(state) : null,
     // 战斗向的轮盘面板刷新后要能立刻恢复，不能等玩家点一下才拉
@@ -1327,15 +1594,13 @@ app.post('/api/saves/:sid/load', (req, res) => {
   sessions.set(newId, state)
   persist(state)
 
-  // 读档后要能把最后一批选项还原出来，否则玩家只能靠自由输入继续
-  const lastTurn = [...(state.log || [])].reverse().find((e) => e.type === 'turn' || e.type === 'opening')
-
   res.json(withUsage(state, {
     sessionId: newId,
     phase: state.phase,
     playMode: state.playMode,
     log: state.log,
-    choices: lastTurn ? withExtras(lastTurn.choices || [], state) : [],
+    // 读档后要能把最后一批选项还原出来，否则玩家只能靠自由输入继续
+    choices: liveChoices(state),
     panel: panelSnapshot(state),
     // 读档后轮盘和疗伤入口要立刻回来，否则玩家得先随便点一下才看得见
     wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
@@ -1357,6 +1622,25 @@ app.delete('/api/saves/:sid', (req, res) => {
   if (!fs.existsSync(f)) return res.status(404).json({ error: '存档不存在' })
   fs.unlinkSync(f)
   res.json({ ok: true })
+})
+
+/**
+ * 清空本机所有数据：进行中的会话 + 全部手动存档。
+ *
+ * 和 DELETE /api/saves/:sid 的区别是**它没有撤销键**：那一局如果没存过档，
+ * 清掉就是真的没了。所以要求调用方把确认口令写在 body 里 ——
+ * 界面上是按钮点两次，第二次的结果就是这个字符串。
+ * 没带口令一律 400，且一个文件都不动：一个可以被误调的清库接口比没有更糟。
+ */
+app.delete('/api/data', (req, res) => {
+  if (req.body?.confirm !== WIPE_CONFIRM) {
+    return res.status(400).json({
+      error: `清除全部数据不可撤销，需要二次确认（body 里带 { "confirm": "${WIPE_CONFIRM}" }）`,
+    })
+  }
+  const r = wipeLocalData({ saveDir: SAVE_DIR, slotDir: SLOT_DIR, sessions })
+  console.log(`  清理        会话 ${r.sessions} 个 · 存档文件 ${r.files} 个`)
+  res.json({ ok: true, ...r })
 })
 
 /** 战斗/剧情日志重放用：把已发生的事整段读回来 */

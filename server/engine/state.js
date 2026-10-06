@@ -5,6 +5,7 @@ import { emptyUsage } from '../pricing.js'
 import { DEFAULT_STORYLINE, storylineOf } from './storylines.js'
 import { DEFAULT_PLAY_MODE, playModeOf } from './playmodes.js'
 import { initialNodes, nextMilestone, firstPoint } from './timeline.js'
+import { normalizeDomainType, defaultDomainTypeFor, domainTypeOf, domainKit } from './domains.js'
 
 export const GAME_START_DATE = '2018-06-05'
 
@@ -82,16 +83,25 @@ export function buildPlayer(attr, flavor, identity, identityFlavor) {
     },
 
     domain: attr.domainUnlocked
-      ? {
-          unlocked: true,
-          name: flavor.domain?.name || '未命名领域',
-          sureHit: flavor.domain?.sureHit || '',
-          cost: domainCost,
-          grade: attr.overallGrade,
-          tierName: DOMAIN_TIER[attr.overallGrade] || '半成品',
-          active: false,
-          completeness: 1,
-        }
+      ? (() => {
+          const tierName = DOMAIN_TIER[attr.overallGrade] || '半成品'
+          return {
+            unlocked: true,
+            name: flavor.domain?.name || '未命名领域',
+            sureHit: flavor.domain?.sureHit || '',
+            cost: domainCost,
+            grade: attr.overallGrade,
+            tierName,
+            /*
+             * 领域类型由模型挑（那是设定），但必须有值 —— 没有类型就等于
+             * "开了领域什么都不发生"，那是分型之前的老毛病。模型没填或填了
+             * 不认识的词，就按等级名兜一个（规则级领域 → 规则型）。
+             */
+            type: normalizeDomainType(flavor.domain?.type) || defaultDomainTypeFor(tierName),
+            active: false,
+            completeness: 1,
+          }
+        })()
       : { unlocked: false, progress: 0, active: false },
 
     reverseCursedTechnique: { level: attr.reverseCursedTechnique, progress: 0 },
@@ -279,6 +289,13 @@ export function modelStateView(state) {
         ? {
             名称: p.domain.name,
             强度: p.domain.tierName,
+            /*
+             * 类型写进模型看得见的状态里，是让旁白跟得上机制：
+             * 伤害型展开该写"重击落下"，规则型该写"对方的术式哑了"，
+             * 增益型该写"伤在往回退"。类型不写，模型只会照着名字瞎猜。
+             */
+            类型: domainTypeOf(p.domain),
+            机制: domainKit(p.domain).brief,
             必中效果: p.domain.sureHit,
             代价: p.domain.cost,
             是否展开: !!p.domain.active,
@@ -355,6 +372,8 @@ export function panelSnapshot(state) {
             ceEstimate: state.combat.enemy.ce.cur,
             technique: state.combat.enemy.technique.name,
             domain: state.combat.enemy.domain?.name || null,
+            domainType: state.combat.enemy.domain?.unlocked
+              ? domainTypeOf(state.combat.enemy.domain) : null,
             domainActive: !!state.combat.enemy.domain?.active,
           },
           over: state.combat.over,

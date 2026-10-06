@@ -6,6 +6,9 @@
  * 放后面就得等整个 JSON 生成完才能出字。
  */
 
+import { playModeOf } from './playmodes.js'
+import { DOMAIN_TYPES } from './domains.js'
+
 export const submitAttributeFlavor = {
   name: 'submit_attribute_flavor',
   description: '提交三份属性档案的创意字段（数值由引擎给定，不可修改）',
@@ -29,8 +32,13 @@ export const submitAttributeFlavor = {
                 name: { type: 'string' },
                 sureHit: { type: 'string', description: '必中效果' },
                 cost: { type: 'string', description: '代价' },
+                type: {
+                  type: 'string',
+                  enum: [...DOMAIN_TYPES],
+                  description: '领域类型。伤害型＝必中重击并持续追斩；规则型＝封锁对方的术式、反转术式与领域；增益型＝当场回血回咒力并提高暴击。名字与效果要和这一型对得上。',
+                },
               },
-              required: ['name', 'sureHit', 'cost'],
+              required: ['name', 'sureHit', 'cost', 'type'],
               description: 'domainUnlocked 为 false 时填 null',
             },
             talents: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 3 },
@@ -89,6 +97,8 @@ export const submitTurn = {
         type: 'string',
         description: '本回合正文。分镜级叙事，战斗/冲突占 70% 以上，日常一句带过。不要写数值变化。',
       },
+      // 下面这份 submitTurnFor() 会按游玩模式改写 narration 的描述 ——
+      // 见文件末尾
       recap: {
         type: 'string',
         description: '本回合的一句话概括（20~60 字），显示在选项上方。只讲当前状态：谁在哪、发生了什么、手上有什么、接下来要面对什么。不写描写、不复述对话。',
@@ -143,9 +153,14 @@ export const submitTurn = {
           enemyTechniqueName: { type: 'string', description: '敌方的术式名，会出现在战斗面板里' },
           enemyTechniqueEffect: { type: 'string', description: '敌方术式效果，一句话' },
           enemyDomainName: { type: ['string', 'null'], description: '敌方领域名，非特级填 null' },
+          enemyDomainType: {
+            type: ['string', 'null'],
+            enum: [...DOMAIN_TYPES, null],
+            description: '敌方领域类型，只在 enemyDomainName 不为 null 时填；否则填 null',
+          },
           reason: { type: 'string' },
         },
-        required: ['enemyName', 'enemyGrade', 'enemyTechniqueName', 'enemyTechniqueEffect', 'enemyDomainName', 'reason'],
+        required: ['enemyName', 'enemyGrade', 'enemyTechniqueName', 'enemyTechniqueEffect', 'enemyDomainName', 'enemyDomainType', 'reason'],
       },
     },
     required: ['narration', 'recap', 'dialogue', 'choices', 'proposal', 'combatRequest'],
@@ -221,11 +236,38 @@ export const submitOpeningScene = {
           enemyTechniqueName: { type: 'string' },
           enemyTechniqueEffect: { type: 'string' },
           enemyDomainName: { type: ['string', 'null'] },
+          enemyDomainType: { type: ['string', 'null'], enum: [...DOMAIN_TYPES, null] },
           reason: { type: 'string' },
         },
-        required: ['enemyName', 'enemyGrade', 'enemyTechniqueName', 'enemyTechniqueEffect', 'enemyDomainName', 'reason'],
+        required: ['enemyName', 'enemyGrade', 'enemyTechniqueName', 'enemyTechniqueEffect', 'enemyDomainName', 'enemyDomainType', 'reason'],
       },
     },
     required: ['narration', 'recap', 'dialogue', 'choices', 'proposal', 'combatRequest'],
   },
+}
+
+/**
+ * 按游玩模式改写过的提交工具。
+ *
+ * narration 的字数预算是**模式属性**，所以描述也得跟着模式走 ——
+ * 战斗向要把"正文 + 台词合计不超过 400 字"写进字段说明里。
+ * 这个位置比系统提示更靠近生成点，模型写这个字段时正看着它，比在几千字
+ * 之外的规则里说一遍管用得多。
+ *
+ * 返回的是深拷贝，不动 submitTurn 本身（契约测试直接断言那个常量）。
+ */
+export function submitTurnFor(playMode) {
+  const cap = playModeOf(playMode).narrationCap
+  if (!cap) return submitTurn
+
+  const tool = structuredClone(submitTurn)
+  tool.input_schema.properties.narration.description =
+    `本回合正文。**战斗向：正文与台词合计不超过 ${cap} 字，超出会被引擎退回重写。**`
+    + '只写与战斗有关的部分：谁出了什么招、打中了哪里、伤成什么样、局势因此怎么变。'
+    + '天气、街景、回忆、内心独白、气氛铺垫一律不写；不要铺垫，开门就是第一招。'
+    + '不要写数值变化。'
+  tool.input_schema.properties.dialogue.description =
+    `NPC 台词。只留战斗中的喊话与短促交流，**算进那 ${cap} 字预算里**。`
+    + '禁止出现弱特级/标特级/超特级/龙级。'
+  return tool
 }

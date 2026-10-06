@@ -157,6 +157,7 @@ function useTypewriter() {
   const bufRef = useRef('')
   const shownRef = useRef('')
   const timerRef = useRef(null)
+  const holdRef = useRef(false)
   const [shown, setShown] = useState(null) // null 表示当前没有在流式输出
 
   const stop = useCallback(() => {
@@ -178,13 +179,35 @@ function useTypewriter() {
   const feed = useCallback((text) => {
     if (!text) return
     bufRef.current += text
-    if (timerRef.current) return
+    if (timerRef.current || holdRef.current) return
     timerRef.current = setInterval(tick, TICK_MS)
   }, [tick])
 
-  /** 开始一段新的流式输出 */
+  /**
+   * 按住 / 松开。
+   *
+   * 用在全屏演出盖住画面的那几秒（领域展开的特写）：正文如果照常吐，
+   * 等特写撤掉时玩家看到的已经是段落的尾巴了，最该看的那几个字恰恰错过。
+   * 按住只是停下节拍，缓冲区一个字节都不丢，松开接着吐。
+   */
+  const hold = useCallback((on) => {
+    holdRef.current = !!on
+    if (on) {
+      stop()
+      return
+    }
+    if (bufRef.current && !timerRef.current) timerRef.current = setInterval(tick, TICK_MS)
+  }, [stop, tick])
+
+  /**
+   * 开始一段新的流式输出。
+   *
+   * 顺带解除按住：上一段的"按住"如果没被松开就跨到了新的一段（特写还在屏幕上，
+   * 回合却已经结束），新的正文会一个字都不吐 —— 屏幕上看着就是卡死了。
+   */
   const begin = useCallback(() => {
     stop()
+    holdRef.current = false
     bufRef.current = ''
     shownRef.current = ''
     setShown('')
@@ -196,6 +219,22 @@ function useTypewriter() {
     shownRef.current = ''
     setShown('')
   }, [])
+
+  /**
+   * 追平：把缓冲区一次性吐完，但**保持在流式状态**。
+   *
+   * 和 flush 的区别很关键：flush 是收尾（shown 置 null，正文交给条目），
+   * 点一下正文就 flush 的话，屏幕上会空一拍 —— 段落没了，条目还没到。
+   * 追平只是把"还没吐完的字"补上，后面的新字照旧一个字一个字出来。
+   */
+  const skip = useCallback(() => {
+    stop()
+    if (bufRef.current) {
+      shownRef.current += bufRef.current
+      bufRef.current = ''
+    }
+    setShown(shownRef.current)
+  }, [stop])
 
   /** 收尾：把剩下的字立刻吐完，避免和最终条目之间出现跳变 */
   const flush = useCallback(() => {
@@ -211,16 +250,17 @@ function useTypewriter() {
 
   useEffect(() => stop, [stop])
 
-  return { shown, feed, begin, reset, flush }
+  return { shown, feed, begin, reset, flush, skip, hold }
 }
 
 /** 贴底阈值：离底部这么近才算"用户在看最新" */
 const PIN_THRESHOLD = 80
 
-export function NarrativeLog({ entries, streaming, busy, liveCombat }) {
+export function NarrativeLog({ entries, streaming, busy, liveCombat, onSkip }) {
   const logRef = useRef(null)
   const pinnedRef = useRef(true)
   const [pinned, setPinned] = useState(true)
+  const typing = streaming !== null
 
   // 只有用户本来就贴在底部时才自动跟随。
   // 早先任何变化都 scrollIntoView，玩家往回翻两屏就会被拽到底，根本读不了。
@@ -279,7 +319,15 @@ export function NarrativeLog({ entries, streaming, busy, liveCombat }) {
 
   return (
     <div className="log-wrap">
-      <div className="log" ref={logRef} onScroll={handleScroll}>
+      <div
+        className={`log${typing ? ' typing' : ''}`}
+        ref={logRef}
+        onScroll={handleScroll}
+        // 正文正在往外吐的时候，点哪儿都能催它一把。
+        // 打字机本来是给"读得舒服"用的，但不想读的人不该被它扣住
+        onClick={typing ? onSkip : undefined}
+        title={typing ? '点击正文可立刻显示全部' : undefined}
+      >
         <div className="log-inner">
           {entries.map((e, i) => (
             <React.Fragment key={i}>
@@ -324,6 +372,8 @@ export function NarrativeLog({ entries, streaming, busy, liveCombat }) {
           ↓ 回到最新
         </button>
       )}
+
+      {typing && <span className="typing-hint">点击正文可立刻显示全部</span>}
     </div>
   )
 }

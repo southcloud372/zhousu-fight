@@ -16,6 +16,7 @@ import { acceptable, allFilled, IDENTITY_FIELDS, ATTRIBUTE_FIELDS } from '../ser
 import { CONTRACT } from '../server/prompts.js'
 import {
   initCombat, runRound, simulateCombat, computeRewards, applyRewards, finishCombat, unitSpeed,
+  COMBO_CAP,
 } from '../server/engine/combat.js'
 
 // ------------------------------------------------------------------ 工具
@@ -245,6 +246,71 @@ test('数值提议会被夹紧，模型改不动真值', () => {
   assert.equal(p.timeAdvance, '0', '非法时间推进应回退为 0')
 })
 
+/**
+ * 只搭 clampProposal 用得到的部分：角色血蓝、剧情线、当天日期、节点状态。
+ * 时间闸门要读 nextMilestone，所以 time.date 和 timeline.nodes 都得给。
+ */
+function timeState(date, nodes = {}) {
+  return {
+    storyline: 'sukuna',
+    time: { date },
+    timeline: { nodes },
+    player: { hp: { cur: 1000, max: 1000 }, ce: { cur: 500, max: 500 } },
+  }
+}
+
+test('剧情回合推不动里程碑：快到节点时时间推进被压到节点当天为止', () => {
+  /*
+   * 模型在一回合里说"三天后"，玩家就会直接跳过一场介入战 ——
+   * 战斗向的整条轮盘（练到节点当天再打）会被这一步踩过去。
+   * 日期该由引擎守住：能往前推，但推不过下一个原作节点。
+   */
+  // 2018-06-05，下一个节点是 06-08，还剩 3 天
+  const near = timeState('2018-06-05')
+  assert.equal(clampProposal({ timeAdvance: '1w' }, near).timeAdvance, '3d',
+    '还剩三天时，一周该被压成三天')
+  assert.equal(clampProposal({ timeAdvance: '3d' }, near).timeAdvance, '3d',
+    '正好能走完的三天不该被动')
+  assert.equal(clampProposal({ timeAdvance: '1d' }, near).timeAdvance, '1d')
+
+  // 还剩两天：连三天都不给了
+  assert.equal(clampProposal({ timeAdvance: '3d' }, timeState('2018-06-06')).timeAdvance, '1d')
+
+  // 已经在节点当天：不许再往前推
+  const onDay = timeState('2018-06-08')
+  assert.equal(clampProposal({ timeAdvance: '1d' }, onDay).timeAdvance, '0',
+    '节点当天不该再往前推')
+  assert.equal(clampProposal({ timeAdvance: '1w' }, onDay).timeAdvance, '0')
+
+  // 挪了 1d 之后正好踩在节点上：这时 1d 是允许的，3d 不行
+  assert.equal(clampProposal({ timeAdvance: '1d' }, timeState('2018-06-07')).timeAdvance, '1d')
+  assert.equal(clampProposal({ timeAdvance: '3d' }, timeState('2018-06-07')).timeAdvance, '1d')
+})
+
+test('节点都走完了就不再拦时间推进', () => {
+  // 全都已发生 → nextMilestone 返回 null → 没有闸门可守
+  const done = timeState('2018-06-05', {
+    虎杖吞手指: '已发生', 死刑缓期: '已发生', 高专入学: '已发生',
+    少年院任务: '已发生', 宿傩夺舍: '已发生', 京都姊妹校交流: '已发生',
+    涩谷事变前夜: '已发生', 涩谷事变: '已发生', 死灭回游: '已发生', 最终决战: '已发生',
+  })
+  assert.equal(clampProposal({ timeAdvance: '1w' }, done).timeAdvance, '1w')
+
+  // 日期早就越过全部节点（自由发挥的后期）也一样
+  assert.equal(clampProposal({ timeAdvance: '1w' }, timeState('2030-01-01')).timeAdvance, '1w')
+})
+
+test('时间闸门会把"被谁挡住了"写进 notes，不闷声改数', () => {
+  const r = clampProposal({ timeAdvance: '1w' }, timeState('2018-06-05'))
+  assert.ok(
+    r.notes.some((n) => n.includes('虎杖吞手指')),
+    '夹紧了却不说是哪个节点挡的，调 prompt 时会找不到原因',
+  )
+  // 没夹的时候不该多嘴
+  const clean = clampProposal({ timeAdvance: '1d' }, timeState('2018-06-05'))
+  assert.equal(clean.notes.filter((n) => n.includes('时间推进')).length, 0)
+})
+
 test('原作主要角色不会在错误的节点变成敌人', () => {
   const early = blankState(makeRng(1)).timeline // 全是未发生
 
@@ -346,6 +412,135 @@ test('自动结算在跨大级时判定弱方失败', () => {
   initCombat(s, rng, { mode: 'skip', enemy, reason: 't' })
   simulateCombat(s, rng)
   assert.equal(s.combat.outcome.winner, 'enemy', `三级不该打赢弱特级，实际 ${JSON.stringify(s.combat.outcome)}`)
+})
+
+/**
+ * 手动战斗的"爽感"机制：暴击 / 连击 / 打断 / 领域必中爆发。
+ *
+ * 它们全是随机的，所以不能指望某一次跑出某个结果 —— 这里跑几十场，
+ * 验的是**规则**而不是某一次的具体数字：
+ *   · 连击只在压着打的时候涨，挨了一下就归零，且封顶
+ *   · 暴击写进面板，并把对方的下一手吃掉
+ *   · 领域展开当回合就掉血，而且不吃防御减免（必中就是无视防御）
+ */
+function fightOnce(seed, { grade = '一级', enemyGrade = '一级', script = [] } = {}) {
+  const s = makeTestState(seed, seed + 1, grade)
+  const rng = makeRng(seed * 7919)
+  initCombat(s, rng, { mode: 'manual', enemy: rollEnemy(rng, enemyGrade), reason: 't' })
+  // 面板是引擎从事件里提炼出来的（只有结论，没有过程），
+  // 所以事件要自己收着 —— 想验"面板说暴击了，日志里是不是真有那一击"就得两边都有
+  const rounds = []
+  let i = 0
+  while (!s.combat.over && i < 24) {
+    const r = runRound(s, rng, { type: script[i % script.length] || 'technique' })
+    rounds.push({ panel: r.panel, events: r.events })
+    i++
+  }
+  return { s, rounds }
+}
+
+test('战斗演出：暴击、连击、打断、领域爆发都真的会发生', () => {
+  // 领域必须排进脚本 —— 自动出招只在攒够咒力时才开，六十场里未必撞得上
+  const SCRIPT = ['domain', 'technique', 'physical', 'technique', 'physical']
+  let crits = 0, sawCombo = 0, sawStagger = 0, sawSureHit = 0, sawDomainOpen = 0
+
+  for (let seed = 1; seed <= 60; seed++) {
+    for (const { panel } of fightOnce(seed, { script: SCRIPT }).rounds) {
+      if (panel.crit) crits++
+      if (panel.combo > 0) sawCombo++
+      if (panel.staggered) sawStagger++
+      if (panel.sureHit) sawSureHit++
+      if (panel.domainOpened) sawDomainOpen++
+    }
+  }
+
+  assert.ok(crits > 0, '六十场里一次暴击都没有，暴击率大概被改坏了')
+  assert.ok(sawCombo > 0, '一次连击都没出现')
+  assert.ok(sawStagger > 0, '暴击之后对方从来没被打断过')
+  assert.ok(sawSureHit > 0, '领域展开的必中爆发一次都没触发')
+  assert.ok(sawDomainOpen > 0, '面板上没有领域展开的记录，演出层就无从播起')
+})
+
+test('连击封顶，而且挨了一下就归零', () => {
+  const SCRIPT = ['domain', 'technique', 'physical', 'technique', 'physical']
+  let maxSeen = 0
+  for (let seed = 1; seed <= 60; seed++) {
+    for (const { panel, events } of fightOnce(seed, { script: SCRIPT }).rounds) {
+      maxSeen = Math.max(maxSeen, panel.combo || 0)
+      const tookHit = events.some((e) => e.side === 'enemy' && e.damage > 0)
+      if (tookHit) assert.equal(panel.combo, 0, '自己挨了一下，连击却还挂着')
+    }
+  }
+  assert.ok(maxSeen > 0, '连击从来没涨起来过')
+  assert.ok(maxSeen <= COMBO_CAP, `连击涨到了 ${maxSeen}，超过上限 ${COMBO_CAP}`)
+})
+
+test('暴击之后，对方的下一个动作是被压回去而不是照常出手', () => {
+  const SCRIPT = ['domain', 'technique', 'physical', 'technique', 'physical']
+  let checked = 0
+  for (let seed = 1; seed <= 60 && checked < 12; seed++) {
+    const { rounds } = fightOnce(seed, { script: SCRIPT })
+    for (let i = 0; i < rounds.length; i++) {
+      if (rounds[i].panel.crit !== 'player') continue
+
+      // 面板说暴击了，这一回合的事件里就得真有那么一击，而且带上了旁白
+      const ev = rounds[i].events.find((e) => e.crit)
+      assert.ok(ev, '面板说暴击了，事件里却找不到那一击')
+      assert.ok(ev.lines.some((l) => /暴击/.test(l)), '暴击没有对应的旁白')
+      assert.ok(ev.lines.some((l) => /踉跄/.test(l)), '没有把"对方被打得踉跄"写出来')
+
+      /*
+       * "下一手递不出来"落在哪一回合，取决于谁先手：
+       * 我方先动时对方这一回合还没出手，那就是本回合被吃掉；
+       * 对方已经动过了，才轮到下一回合。两种都对，规则只有一条 ——
+       * 挨了暴击之后，对方的下一个动作必须是"被压回去"。
+       */
+      const stream = [...rounds[i].events, ...(rounds[i + 1]?.events || [])]
+      const after = stream.slice(stream.findIndex((e) => e.crit) + 1)
+      const nextEnemy = after.find((e) => e.side === 'enemy')
+      if (!nextEnemy) continue // 对方在这一手之后就没机会动了（死了或打完了）
+
+      checked++
+      assert.equal(nextEnemy.type, 'stagger',
+        `暴击之后对方照常出了手（${nextEnemy.type}），打断没生效`)
+      if (checked >= 12) break
+    }
+  }
+  assert.ok(checked > 0, '六十场里没抓到一次"暴击后对方还有动作"的情况，这条规则等于没测')
+})
+
+test('领域展开当回合就掉血，而且无视防御', () => {
+  /*
+   * 设定里领域是"必中"的。原来只在旁白里写一句就完了 ——
+   * 玩家花掉一大截咒力铺开领域，血条纹丝不动，看不出必中在哪儿。
+   */
+  const mk = (seed) => {
+    const s = makeTestState(seed, seed + 1, '一级')
+    const rng = makeRng(seed * 13)
+    initCombat(s, rng, { mode: 'manual', enemy: rollEnemy(rng, '一级'), reason: 't' })
+    return { s, rng }
+  }
+
+  let found = null
+  for (let seed = 151; seed <= 200 && !found; seed++) {
+    const { s, rng } = mk(seed)
+    const r = runRound(s, rng, { type: 'domain' })
+    const ev = r.events.find((e) => e.type === 'domain' && e.domainOpened)
+    if (ev) found = { seed, ev }
+  }
+  assert.ok(found, '两百个种子里领域一次都没开成，检查咒力消耗或解锁条件')
+
+  const { ev } = found
+  assert.equal(ev.sureHitBurst, true, '领域展开没有带必中爆发')
+  assert.ok(ev.damage > 0, '铺开领域之后血条纹丝不动')
+  assert.ok(ev.domainName, '必中爆发没有记下领域名，过场就没东西可写')
+
+  // 必中 = 无视防御：对方摆出防御也不该把它削掉
+  const { s, rng } = mk(found.seed)
+  s.combat.enemy._defending = true
+  const r2 = runRound(s, rng, { type: 'domain' })
+  const ev2 = r2.events.find((e) => e.type === 'domain' && e.domainOpened)
+  if (ev2) assert.equal(ev2.damage, ev.damage, '对方一防御必中就不见了，那不叫必中')
 })
 
 test('速度决定先手，高等级更快', () => {

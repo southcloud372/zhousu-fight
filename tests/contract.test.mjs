@@ -2,11 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  submitTurn, submitOpeningScene, submitAttributeFlavor, submitIdentityFlavor,
+  submitTurn, submitTurnFor, submitOpeningScene, submitAttributeFlavor, submitIdentityFlavor,
 } from '../server/engine/schemas.js'
 import { clampProposal } from '../server/engine/guard.js'
 import { COMBAT_MODES, MODE_LABELS } from '../server/engine/combat.js'
 import { TRAINING_TABLE } from '../server/engine/commands.js'
+import { DOMAIN_TYPES } from '../server/engine/domains.js'
 import { GRADES, TIER_GRADES, DOMAIN_TIER } from '../server/engine/tables.js'
 import { CORE_RULES, CONTRACT } from '../server/prompts.js'
 import { ENEMY_ARCHETYPES } from '../server/engine/rolls.js'
@@ -35,6 +36,35 @@ test('submit_turn 声明了代码会读的每一个字段', () => {
   }
 })
 
+test('战斗向的提交工具把字数预算写进字段说明里，剧情向不动', () => {
+  /*
+   * 字段说明比系统提示更靠近生成点：模型写 narration 的时候正看着这句话，
+   * 比在几千字之外的规则里说一遍管用。所以预算必须出现在这里。
+   */
+  const combat = submitTurnFor('combat')
+  assert.match(combat.input_schema.properties.narration.description, /400 字/)
+  assert.match(combat.input_schema.properties.dialogue.description, /400 字/,
+    '台词也算进同一个预算，说明里得讲清楚')
+  // 字段结构不能变，否则 postProcess 读不到东西
+  assert.deepEqual(props(combat), props(submitTurn))
+  assert.deepEqual(required(combat), required(submitTurn))
+
+  // 剧情向没有预算，直接沿用原样
+  assert.equal(submitTurnFor('story'), submitTurn)
+  assert.equal(submitTurnFor(undefined), submitTurn)
+  // 未知模式兜回剧情向，不该凭空冒出个预算
+  assert.equal(submitTurnFor('不存在'), submitTurn)
+})
+
+test('改写过的 schema 是副本，不能污染 submitTurn 常量', () => {
+  // submitTurnFor 用 structuredClone 而不是原地改 —— 原地改的话，
+  // 同一进程里先打一局战斗向，后面的剧情向局也会带着 400 字的说明
+  const before = submitTurn.input_schema.properties.narration.description
+  submitTurnFor('combat')
+  assert.equal(submitTurn.input_schema.properties.narration.description, before)
+  assert.ok(!/400 字/.test(before), 'submitTurn 本身不该提到战斗向的预算')
+})
+
 test('proposal 的字段必须覆盖 clampProposal 读取的全部字段', () => {
   const proposalProps = Object.keys(submitTurn.input_schema.properties.proposal.properties)
   // clampProposal 实际读取的字段（见 guard.js）
@@ -48,11 +78,22 @@ test('proposal 的字段必须覆盖 clampProposal 读取的全部字段', () =>
 
 test('combatRequest 的字段必须覆盖 postProcess 读取的全部字段', () => {
   const cr = submitTurn.input_schema.properties.combatRequest
-  const read = ['enemyName', 'enemyGrade', 'enemyTechniqueName', 'enemyTechniqueEffect', 'enemyDomainName', 'reason']
+  const read = ['enemyName', 'enemyGrade', 'enemyTechniqueName', 'enemyTechniqueEffect', 'enemyDomainName', 'enemyDomainType', 'reason']
   for (const k of read) {
     assert.ok(Object.keys(cr.properties).includes(k), `combatRequest 缺少 ${k}`)
   }
   assert.deepEqual([...(cr.required || [])].sort(), [...read].sort())
+})
+
+test('领域类型的枚举必须和 domains.js 完全一致', () => {
+  const ap = submitAttributeFlavor.input_schema.properties.profiles.items
+  assert.deepEqual(ap.properties.domain.properties.type.enum, DOMAIN_TYPES,
+    '属性档案的领域类型枚举和引擎认识的三型对不上')
+  assert.ok(ap.properties.domain.required.includes('type'), '有领域就必须给出类型')
+
+  const cr = submitTurn.input_schema.properties.combatRequest
+  assert.deepEqual(cr.properties.enemyDomainType.enum, [...DOMAIN_TYPES, null],
+    '敌方领域类型枚举对不上（非特级允许 null）')
 })
 
 test('combatRequest.enemyGrade 的枚举必须和等级表完全一致', () => {

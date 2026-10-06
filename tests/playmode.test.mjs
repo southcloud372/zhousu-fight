@@ -54,6 +54,33 @@ test('战斗向的配比要求比剧情向更硬', () => {
   assert.match(PLAY_MODES.story.rules, /交涉|调查|探索/, '剧情向没有允许非战斗选项')
 })
 
+test('战斗向给出字数预算，剧情向不限', () => {
+  /*
+   * 配比管的是"写什么"，管不住"写多少"。只写"战斗占 90%"的话，
+   * 模型完全可以用 700 字把一场三招的交锋摊开写 —— 打斗反而被稀释了。
+   */
+  assert.equal(PLAY_MODES.combat.narrationCap, 400, '战斗向没有字数预算')
+  assert.equal(PLAY_MODES.story.narrationCap, null, '剧情向不该卡字数')
+
+  const c = PLAY_MODES.combat.rules
+  assert.match(c, /400 字/, '预算没有写进提示词')
+  assert.match(c, /合计/, '没有说清台词要算进同一个预算里')
+  assert.match(c, /硬性/, '预算没有写成硬要求，模型会当建议')
+})
+
+test('战斗向点名要删"剧情细节"，不是笼统地说"精简"', () => {
+  /*
+   * 原来的写法是"剧情让位于战斗""一句话带过" —— 太笼统，模型该写还是写。
+   * 得把它不该写的东西一个个点出来，它才知道自己那段街景描写是违规的。
+   */
+  const c = PLAY_MODES.combat.rules
+  for (const word of ['天气', '内心独白', '回忆', '铺垫']) {
+    assert.match(c, new RegExp(word), `没有点名禁止「${word}」这类描写`)
+  }
+  // "写影响，不写感想" —— 只写战斗后果，不写心理活动
+  assert.match(c, /影响/, '没有要求写战斗造成的影响')
+})
+
 test('游玩模式不碰数值：两种模式掷出的属性完全一致', () => {
   // 模式只影响叙事，不该改变任何随机结果
   const a = blankState(makeRng(42), 'sukuna', 'story')
