@@ -13,7 +13,7 @@ import {
 import {
   blankState, buildPlayer, applyProposal, advanceTime, panelSnapshot, modelStateView,
 } from '../server/engine/state.js'
-import { npcAttitude, sukunaAttitude, npcView } from '../server/engine/visibility.js'
+import { npcAttitude, sukunaAttitude, sukunaSpeaks, sukunaView, npcView } from '../server/engine/visibility.js'
 import { rollAttributeProfile, rollIdentity, rollIdentityKind, rollInitialRelations, rollEnemy } from '../server/engine/rolls.js'
 import { GRADES, RANGES, TECH_MULT } from '../server/engine/tables.js'
 import { attributeFlavorPrompt, identityFlavorPrompt, turnStatePrompt } from '../server/prompts.js'
@@ -331,18 +331,18 @@ test('advanceTime 跨月跨年都正确', () => {
 test('关系值被夹在 -100 ~ +100', () => {
   const s = makeTestState(900)
   s.relations['虎杖悠仁'] = 98
-  applyProposal(s, { hpDelta: 0, ceDelta: 0, relationDelta: { 虎杖悠仁: 15 }, sukunaAwakeningDelta: 0, flags: [], timeAdvance: '0' })
+  applyProposal(s, { hpDelta: 0, ceDelta: 0, relationDelta: { 虎杖悠仁: 15 }, sukunaFingersCollectedDelta: 0, sukunaFingersEatenDelta: 0, flags: [], timeAdvance: '0' })
   assert.equal(s.relations['虎杖悠仁'], 100)
 
   s.relations['宿傩'] = -98
-  applyProposal(s, { hpDelta: 0, ceDelta: 0, relationDelta: { 宿傩: -15 }, sukunaAwakeningDelta: 0, flags: [], timeAdvance: '0' })
+  applyProposal(s, { hpDelta: 0, ceDelta: 0, relationDelta: { 宿傩: -15 }, sukunaFingersCollectedDelta: 0, sukunaFingersEatenDelta: 0, flags: [], timeAdvance: '0' })
   assert.equal(s.relations['宿傩'], -100)
 })
 
 test('血条和咒力永远不会变成负数', () => {
   const s = makeTestState(1000)
   for (let i = 0; i < 20; i++) {
-    applyProposal(s, { hpDelta: -99999, ceDelta: -99999, relationDelta: {}, sukunaAwakeningDelta: 0, flags: [], timeAdvance: '0' })
+    applyProposal(s, { hpDelta: -99999, ceDelta: -99999, relationDelta: {}, sukunaFingersCollectedDelta: 0, sukunaFingersEatenDelta: 0, flags: [], timeAdvance: '0' })
   }
   assert.ok(s.player.hp.cur >= 0, `HP 变成 ${s.player.hp.cur}`)
   assert.ok(s.player.ce.cur >= 0, `咒力变成 ${s.player.ce.cur}`)
@@ -350,13 +350,88 @@ test('血条和咒力永远不会变成负数', () => {
   assert.ok(s.player.ce.cur <= s.player.ce.max)
 })
 
-test('宿傩觉醒度被夹在 0~100，态度自动更新', () => {
+test('手指进出：吞下的不会多于到手的，态度跟着复苏程度走', () => {
   const s = makeTestState(1100)
-  applyProposal(s, { hpDelta: 0, ceDelta: 0, relationDelta: {}, sukunaAwakeningDelta: 10, flags: [], timeAdvance: '0' })
-  assert.equal(s.sukuna.awakening, 15) // 初始 5 + 10
-  applyProposal(s, { hpDelta: 0, ceDelta: 0, relationDelta: {}, sukunaAwakeningDelta: 10, flags: [], timeAdvance: '0' })
-  assert.ok(s.sukuna.awakening <= 100)
-  assert.ok(s.sukuna.attitude, '态度应当同步更新')
+  const p = (collected, eaten, mine = 0) => ({
+    hpDelta: 0, ceDelta: 0, relationDelta: {},
+    sukunaFingersCollectedDelta: collected, sukunaFingersEatenDelta: eaten,
+    sukunaFingersPlayerEatenDelta: mine,
+    flags: [], timeAdvance: '0',
+  })
+  assert.equal(s.sukuna.fingersEaten, 1, '开局虎杖已经吞了第一根')
+
+  // 没到手就想吞 —— 没有的手指吞不下去
+  applyProposal(s, p(0, 1))
+  assert.equal(s.sukuna.fingersEaten, 1, '一根都没新到手，却吞下去了')
+
+  applyProposal(s, p(3, 1))
+  assert.equal(s.sukuna.fingersCollected, 4)
+  assert.equal(s.sukuna.fingersEaten, 2)
+  assert.equal(sukunaView(s.sukuna).attitude, '无视', '两根还不足以让宿傩搭理谁')
+
+  applyProposal(s, p(3, 1))
+  assert.equal(s.sukuna.fingersEaten, 3)
+  assert.equal(sukunaView(s.sukuna).attitude, '好奇', '第三根下去，他开始注意到玩家了')
+
+  // 二十根封顶 —— 原著里就这么多
+  for (let i = 0; i < 20; i++) applyProposal(s, p(3, 1))
+  assert.equal(s.sukuna.fingersCollected, 20)
+  assert.equal(s.sukuna.fingersEaten, 20)
+  assert.equal(sukunaView(s.sukuna).attitude, '敌意')
+  assert.equal(sukunaView(s.sukuna).canSpeak, true)
+})
+
+test('玩家自己吞下：宿傩一点没回来，换来的是咒力和侵蚀', () => {
+  /*
+   * 原著里只有虎杖能当容器。玩家吞下去的那一根不推进复苏 ——
+   * 这是这个字段存在的全部理由：把"谁吞的"分开记，否则玩家吃一根
+   * 就等于替宿傩回了血，和设定直接冲突。
+   */
+  const s = makeTestState(1200)
+  s.sukuna.fingersCollected = 5
+  const before = sukunaView(s.sukuna)
+  const ceBefore = s.player.ce.max
+
+  applyProposal(s, {
+    hpDelta: 0, ceDelta: 0, relationDelta: {},
+    sukunaFingersCollectedDelta: 0, sukunaFingersEatenDelta: 0,
+    sukunaFingersPlayerEatenDelta: 1,
+    flags: [], timeAdvance: '0',
+  })
+
+  assert.equal(s.sukuna.fingersPlayerEaten, 1)
+  assert.equal(s.sukuna.fingersEaten, before.fingersEaten, '玩家吞下的那一根绝不能推进复苏')
+  const after = sukunaView(s.sukuna)
+  assert.equal(after.attitude, before.attitude, '态度只认容器吞下的根数')
+  assert.equal(after.canSpeak, before.canSpeak)
+
+  // 代价的一面：咒力上限真的涨了（+30%~60%），侵蚀也跟着上来
+  assert.ok(s.player.ce.max > ceBefore, `咒力上限没涨：${ceBefore} → ${s.player.ce.max}`)
+  assert.ok(s.player.ce.max <= Math.round(ceBefore * 1.6), '涨幅超出 60% 的上限')
+  assert.equal(after.corruption, '隐隐作呕', '第一根是隐隐作呕')
+
+  // 没到手的手指同样吞不下去：到手两根，容器一根、玩家一根，已经吞满了
+  s.sukuna.fingersCollected = 2
+  const mine = s.sukuna.fingersPlayerEaten
+  applyProposal(s, {
+    hpDelta: 0, ceDelta: 0, relationDelta: {},
+    sukunaFingersCollectedDelta: 0, sukunaFingersEatenDelta: 0,
+    sukunaFingersPlayerEatenDelta: 1,
+    flags: [], timeAdvance: '0',
+  })
+  assert.equal(s.sukuna.fingersPlayerEaten, mine, '一根都没新到手，玩家却吞下去了')
+  assert.ok(
+    sukunaView(s.sukuna).fingersEaten + sukunaView(s.sukuna).fingersPlayerEaten
+      <= sukunaView(s.sukuna).fingersCollected,
+    '吞下的两份加起来不能超过到手的',
+  )
+
+  // 侵蚀分档：第二根起升级
+  s.sukuna.fingersCollected = 10
+  s.sukuna.fingersPlayerEaten = 2
+  assert.equal(sukunaView(s.sukuna).corruption, '咒力开始反噬')
+  s.sukuna.fingersPlayerEaten = 4
+  assert.equal(sukunaView(s.sukuna).corruption, '随时可能被夺舍')
 })
 
 // ------------------------------------------------------------------ 态度映射
@@ -373,14 +448,26 @@ test('好感度到态度的映射是单调的', () => {
   assert.equal(npcAttitude(-100), '敌意')
 })
 
-test('宿傩觉醒度到态度的门槛', () => {
+test('手指数到态度的门槛：吞得越多，他越把玩家当回事', () => {
   assert.equal(sukunaAttitude(0), '无视')
-  assert.equal(sukunaAttitude(19), '无视')
-  assert.equal(sukunaAttitude(20), '好奇')
-  assert.equal(sukunaAttitude(40), '感兴趣')
-  assert.equal(sukunaAttitude(60), '警惕')
-  assert.equal(sukunaAttitude(80), '敌意')
-  assert.equal(sukunaAttitude(100), '敌意')
+  assert.equal(sukunaAttitude(2), '无视', '两根他连眼睛都懒得睁')
+  assert.equal(sukunaAttitude(3), '好奇')
+  assert.equal(sukunaAttitude(7), '感兴趣', '到谈条件的时候了')
+  assert.equal(sukunaAttitude(12), '警惕')
+  assert.equal(sukunaAttitude(17), '敌意')
+  assert.equal(sukunaAttitude(20), '敌意')
+
+  // 二十根是硬上限，超出的、脏的输入都当上限/零处理，不能造出第二十一根
+  assert.equal(sukunaAttitude(999), '敌意')
+  assert.equal(sukunaAttitude(-5), '无视')
+  assert.equal(sukunaAttitude(undefined), '无视')
+
+  /*
+   * 原著里他只在把对方当回事的时候才开口 —— 态度的函数就是这道闸门，
+   * 不再另设一个百分比门槛（那正是被去掉的「觉醒度」）。
+   */
+  assert.equal(sukunaSpeaks('无视'), false)
+  for (const a of ['好奇', '感兴趣', '警惕', '敌意']) assert.equal(sukunaSpeaks(a), true, `${a} 时该能对话`)
 })
 
 // ------------------------------------------------------------------ 敌方生成

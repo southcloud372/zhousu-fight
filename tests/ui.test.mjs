@@ -81,6 +81,12 @@ let slowHighlight = false
  * 前端不接这个重置的话，手里那份长文不会被丢掉，屏幕上就成了两段叠在一起。
  */
 let trimmedCombat = false
+/**
+ * 局内改数值那次请求带上来的数字。
+ * 服务端会把等级、领域档位、术式消耗全按这份数字重算，所以界面只负责原样送上去 ——
+ * 记下来是为了验"送上去的确实是我填的那个数"。
+ */
+let editNumbers = null
 /** 长的那份带个显眼标记（雨幕），短的那份带另一个（反手一刀），好分辨屏幕上留下了谁 */
 const LONG_NARR = '雨幕被撕开一道口子。' + '血'.repeat(420) + '。'
 const SHORT_NARR = '反手一刀劈在它肩上，骨头裂开的轻响盖过了呼吸。它抬手的动作慢了半拍。'
@@ -101,7 +107,7 @@ const CHARACTER_SNAPSHOT = {
   cursedDamage: { value: 10, grade: '一级' }, physicalDamage: { value: 10, grade: '一级' },
   efficiency: { value: 0.9, grade: '一级' },
   relations: { 虎杖悠仁: 10 },
-  sukuna: { fingersCollected: 1, fingersEaten: 1, awakening: 5, attitude: '无视' },
+  sukuna: { fingersCollected: 4, fingersEaten: 3, fingersPlayerEaten: 1, attitude: '好奇', corruption: '隐隐作呕' },
   timeline: { nodes: { 虎杖吞手指: '已发生' }, changed: [], deaths: [], newEvents: [] },
   time: { date: '2018-06-05', day: 1, skipStreak: 0 },
   // 六条成长进度（0~100）。属性是攒满才跳一次的，这几个数就是玩家唯一
@@ -127,7 +133,78 @@ const woundedSnapshot = (cur = hpCur) => ({
   hp: { cur, max: 100, grade: '一级' },
   status: cur >= 100 ? '正常' : cur >= 60 ? '轻伤' : cur >= 25 ? '重伤' : '濒死',
 })
-const snapshotFor = () => (wounded ? woundedSnapshot() : CHARACTER_SNAPSHOT)
+/*
+ * 玩家自己吞过几根手指。默认 1 —— 面板上那两行（「你自己吞下」「侵蚀」）
+ * 只有吞过之后才该出现，所以得有个旋钮能让测试看见没吞过的样子。
+ */
+let fingersPlayerEaten = 1
+const sukunaFixture = () => ({
+  fingersCollected: 4,
+  fingersEaten: 3,
+  fingersPlayerEaten,
+  attitude: '好奇',
+  corruption: fingersPlayerEaten >= 1 ? '隐隐作呕' : '无',
+})
+/**
+ * 局内改过血条上限之后，服务端**之后**回的每一份面板也该是新数。
+ * 界面在改完那一刻会重新拉一次 /state —— 如果这里不跟着变，
+ * 测出来的就只是"这个假快照没变"，而不是"面板确实重同步了"。
+ */
+let hpMaxOverride = null
+/*
+ * 战果与「已改写」——这两块都只在真的发生过什么的时候才该出现，
+ * 所以各配一个旋钮，默认空着：空手进游戏时右栏不该凭空多出两个板块。
+ */
+let battleFixture = null
+let rewriteFixture = null
+const snapshotFor = () => ({
+  ...(wounded ? woundedSnapshot() : CHARACTER_SNAPSHOT),
+  ...(wounded || !hpMaxOverride ? {} : { hp: { ...CHARACTER_SNAPSHOT.hp, max: hpMaxOverride } }),
+  sukuna: sukunaFixture(),
+  battles: battleFixture ? [battleFixture] : [],
+  timeline: {
+    ...CHARACTER_SNAPSHOT.timeline,
+    ...(rewriteFixture
+      ? { nodes: { 虎杖吞手指: '已发生', 涩谷事变: '已改写' }, rewrites: { 涩谷事变: rewriteFixture } }
+      : {}),
+  },
+})
+
+/*
+ * 敌方档案 —— 战斗中点「属性」翻出来的那一份。
+ *
+ * 服务端由 visibility.js 的 enemyProfile() 现算，这里手写一份，形状得和它对得上。
+ * 二级的咒灵够不到领域（rollEnemy 只给特级发领域），所以默认那一份 domain 是 null；
+ * tierEnemy 整个换成特级咒胎 —— 用来走"有领域"那一条分支，顺带保留"牌面翻到底"
+ * 该有的样子：等级、性格、两条伤害、防御、反转术式、术式、领域，一样不少。
+ */
+let tierEnemy = false
+const enemyProfileFixture = () => (tierEnemy ? {
+  name: '少年院特级咒胎', grade: '特级',
+  archetype: '狂攻', archetypeNote: '一味抢攻，几乎不留手防守',
+  hp: { cur: 800, max: 800 }, ce: { cur: 900, max: 900 },
+  cursedDamage: 300, physicalDamage: 220, efficiency: 1.4, defense: 180,
+  reverse: '初步',
+  technique: { name: '变形', effect: '把身体拉成任何形状', multiplier: 4.6, cost: 72, cooldown: 2, cdLeft: 1 },
+  domain: {
+    name: '胎藏曼荼罗', type: '规则型', tierName: '完整领域',
+    sureHit: '封住对方的术式', brief: '封住对方的术式、反转术式与领域',
+    cost: 72, active: true, turnsLeft: 2,
+  },
+} : {
+  name: '腐骨咒灵', grade: '二级',
+  archetype: '狡诈', archetypeNote: '平时收着打，专挑破绽和术式下手',
+  hp: { cur: 300, max: 300 }, ce: { cur: 400, max: 400 },
+  cursedDamage: 120, physicalDamage: 90, efficiency: 0.85, defense: 63,
+  reverse: '未掌握',
+  technique: { name: '蚀骨', effect: '碰到的骨头会从里面自己碎开', multiplier: 2, cost: 32, cooldown: 2, cdLeft: 0 },
+  domain: null,
+})
+
+/** 战斗栏上的敌方那一段 —— 名字/等级跟着上面的档案走，免得两边对不上 */
+const enemyFixture = () => (tierEnemy
+  ? { name: '少年院特级咒胎', grade: '特级', hp: 800, hpMax: 800, ceEstimate: 900, status: '正常', domain: '展开中（胎藏曼荼罗）' }
+  : { name: '腐骨咒灵', grade: '二级', hp: 300, hpMax: 300, ceEstimate: 400, status: '正常', domain: '未展开' })
 
 /** 轮盘快照：界面要拿它画六个扇区、疲劳、以及"还差几天" */
 const wheelFixture = (ready = false) => ({
@@ -157,13 +234,19 @@ const wheelFixture = (ready = false) => ({
 /**
  * 轮盘闸门：ok=这套玩法现在能不能用，spin/advance=两个按钮各自能不能按。
  * 到剧情节点当天时 spin 关掉、advance 留着 —— 一起禁掉的话玩家会卡在节点当天。
+ *
+ * wheelBlock 是"关着，但要写清为什么"的那一档：一场仗打到一半、或者有一场
+ * 遭遇还没决定打还是走。这时候轮盘照样留在右栏（读数还要看），只是按不动。
  */
+let wheelBlock = null
 const wheelGateFixture = (ready = wheelReady) =>
-  playModeFixture !== 'combat'
-    ? { ok: false, spin: false, advance: false, reason: '日常轮盘只在战斗向里跑' }
-    : ready
-      ? { ok: true, spin: false, advance: true, reason: '「少年院任务」就是今天 —— 先打完这一场' }
-      : { ok: true, spin: true, advance: true, reason: '' }
+  wheelBlock
+    ? { ok: false, spin: false, advance: false, reason: wheelBlock }
+    : playModeFixture !== 'combat'
+      ? { ok: false, spin: false, advance: false, reason: '日常轮盘只在战斗向里跑' }
+      : ready
+        ? { ok: true, spin: false, advance: true, reason: '「少年院任务」就是今天 —— 先打完这一场' }
+        : { ok: true, spin: true, advance: true, reason: '' }
 
 /** 战斗行动列表 —— 自由行动那一条单独给 */
 const COMBAT_ACTIONS = [
@@ -299,7 +382,7 @@ function makeFetchStub(log) {  return async (url, opts = {}) => {
           wheelGate: playModeFixture === 'combat' ? wheelGateFixture() : null,
           freeActions: [],
           combat: turnHasCombat
-            ? { enemyName: '腐骨咒灵', enemyGrade: '二级', enemyTechnique: '蚀骨', reason: '它挡在路上' }
+            ? { enemyName: enemyFixture().name, enemyGrade: enemyFixture().grade, enemyTechnique: enemyProfileFixture().technique.name, reason: '它挡在路上' }
             : null,
         }],
       ])
@@ -311,7 +394,7 @@ function makeFetchStub(log) {  return async (url, opts = {}) => {
         success: evadeSucceeds,
         note: evadeSucceeds ? '避开了与腐骨咒灵（二级）的正面冲突' : '腐骨咒灵（二级）咬得太紧，没能甩掉',
         chance: 0.42,
-        combat: evadeSucceeds ? null : { enemyName: '腐骨咒灵', enemyGrade: '二级', enemyTechnique: '蚀骨', reason: '它挡在路上' },
+        combat: evadeSucceeds ? null : { enemyName: enemyFixture().name, enemyGrade: enemyFixture().grade, enemyTechnique: enemyProfileFixture().technique.name, reason: '它挡在路上' },
         panel: CHARACTER_SNAPSHOT,
         usage: usageFixture,
       })
@@ -324,7 +407,7 @@ function makeFetchStub(log) {  return async (url, opts = {}) => {
         const panel = {
           turn: 1,
           player: { hp: 100, hpMax: 100, ce: 200, ceMax: 200, status: '正常', technique: '测试术式', cdLeft: 0, domain: '未展开' },
-          enemy: { name: '腐骨咒灵', grade: '二级', hp: 300, hpMax: 300, ceEstimate: 400, status: '正常', domain: '未展开' },
+          enemy: { ...enemyFixture(), profile: enemyProfileFixture() },
           actionText: '——', enemyActionText: '——', breakdown: null, damage: 0, notes: [],
           domainState: {
             player: { active: false, name: '', turnsLeft: 0, type: '' },
@@ -554,6 +637,26 @@ function makeFetchStub(log) {  return async (url, opts = {}) => {
         item: '体能训练', progress: 22.5, ups: ['血条上限 → 1100'],
         notes: ['天赋「战斗能力」提供额外进度'], hpDelta: 0, flavor: '负重奔跑。', panel: null,
       })
+    }
+    // ---- 局内改数值：右侧面板那个「编辑」 ----
+    /*
+     * 真服务端的回执 = 人话 + 重算过的整份面板。这里只把测试碰到的那两项
+     * 跟着改一下 —— 界面形状才是这条要验的，数值怎么反推由 engine 那几条守着。
+     */
+    if (u.endsWith('/edit') && method === 'POST') {
+      editNumbers = JSON.parse(opts.body || '{}').numbers || {}
+      const panel = { ...snapshotFor() }
+      const notes = []
+      if (Number.isFinite(editNumbers.hp)) {
+        hpMaxOverride = Math.round(editNumbers.hp)
+        notes.push(`血条上限 ${panel.hp.max.toLocaleString()} → ${hpMaxOverride.toLocaleString()}`)
+        panel.hp = { ...panel.hp, max: hpMaxOverride, cur: Math.min(panel.hp.cur, hpMaxOverride) }
+      }
+      if (Number.isFinite(editNumbers.ce)) {
+        notes.push(`咒力上限 ${panel.ce.max.toLocaleString()} → ${Math.round(editNumbers.ce).toLocaleString()}`)
+        panel.ce = { ...panel.ce, max: Math.round(editNumbers.ce), cur: Math.min(panel.ce.cur, Math.round(editNumbers.ce)) }
+      }
+      return json({ usage: usageFixture, notes, panel })
     }
     if (u.endsWith('/state')) {
       return json({
@@ -793,8 +896,48 @@ async function waitFor(pattern, { timeout = 20000 } = {}) {
   }
   throw new Error(`等待超时：${pattern}（当前：${text().slice(0, 120)}）`)
 }
+
+/**
+ * 等右侧状态栏自己走到某个数。
+ *
+ * 血条上的数字是滚过去的（见 Fx.jsx 的 useCountUp），落定要小半秒。
+ * 这件事不能拿 waitFor 代劳 —— 它扫的是整个 #root，而结算卡里印着同一串
+ * 数字（"血条 58 / 100"），一进日志就匹配上了，那会儿血条自己还在半路上。
+ * 要等就等这块面板本身。
+ */
+async function waitSide(pattern, { timeout = 5000 } = {}) {
+  const re = new RegExp(pattern)
+  const el = () => dom.window.document.querySelector('.side')
+  const t0 = Date.now()
+  while (Date.now() - t0 < timeout) {
+    if (re.test(el()?.textContent || '')) return true
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  throw new Error(`状态栏没等到：${pattern}（当前：${(el()?.textContent || '').slice(0, 160)}）`)
+}
+
 const findButton = (label) =>
   [...dom.window.document.querySelectorAll('button')].find((b) => b.textContent.includes(label))
+
+/**
+ * 点开右侧状态栏里的日常轮盘，返回展开后的那块。
+ *
+ * 轮盘默认只剩一条可点的窄条（`.wheel-strip`），点一下才长出转盘和两个按钮 ——
+ * 它原来是横铺在中栏的一条，把最该读的正文挤扁了。所以凡是"要用轮盘"的用例
+ * 都得先经过这一下点击，顺带也就把"点得开"这条规则一起测了。
+ */
+function strip() {
+  return dom.window.document.querySelector('.side .wheel-strip')
+}
+async function openWheel() {
+  const s = strip()
+  if (!s) throw new Error('右侧状态栏里没有轮盘的窄条 —— 是没进战斗向，还是轮盘又跑回中栏了？')
+  click(s)
+  await new Promise((r) => setTimeout(r, 60))
+  const wp = dom.window.document.querySelector('.wheel-panel')
+  if (!wp) throw new Error('点了窄条，轮盘没展开')
+  return wp
+}
 
 test('dist 里没有残留的旧 bundle（否则测试可能在验证旧代码）', () => {
   assert.ok(bundle, '找不到构建产物，请先跑 npm run build')
@@ -1592,6 +1735,92 @@ test('侧栏四块面板都渲染出来了', async () => {
   // 面板要显示特级内部细分（玩家可见），不是被过滤后的"特级"
   assert.ok(t.includes('一级'), '角色等级没显示')
   assert.ok(t.includes('虎杖悠仁'), '关系网没有内容')
+
+  /*
+   * 宿傩的进度只有手指一条轴：二十根里吞了几根。从前那条 0~100% 的
+   * 「觉醒度」是自造的刻度，原著里没有，界面也不该再出现。
+   *
+   * 进度条画的是**容器**吞下的根数；玩家自己吞的那份另起一行，因为它
+   * 不推进复苏 —— 混进同一条进度里会让玩家以为自己也喂到了宿傩。
+   */
+  const sk = [...dom.window.document.querySelectorAll('.panel')]
+    .find((p) => p.textContent.includes('宿傩手指追踪')).textContent
+  assert.match(sk, /容器已吞下3 \/ 20 根/, `没有按手指数画进度：${sk}`)
+  assert.match(sk, /已收集4 \/ 20/, '没有已收集的根数')
+  assert.match(sk, /你自己吞下1 根/, '玩家自己吞下的那份没有单独列出来')
+  assert.match(sk, /隐隐作呕/, '吞下手指的代价（侵蚀）没有显示')
+  assert.match(sk, /好奇/, '没有宿傩的态度')
+  assert.ok(!sk.includes('觉醒'), '觉醒度这个自造刻度该彻底消失')
+})
+
+test('右侧面板的「编辑」：填个数就能改，回执说清改了什么', async () => {
+  /*
+   * 数值驱动的游戏里总会有"我想把这局调成我想要的样子"的时候。
+   * 与其让人去翻存档文件，不如把这扇门摆在面板上。
+   *
+   * 弹层里**没有「等级」这一项** —— 等级是这些数字推出来的标签，不是能单独设定的东西。
+   * 领域觉醒、术式消耗同理。
+   */
+  hpMaxOverride = null
+  await enterGame()
+  const btn = findButton('编辑')
+  assert.ok(btn, '状态栏上没有「编辑」按钮')
+  click(btn)
+  await waitFor('改数值', { timeout: 5000 })
+
+  const rows = [...dom.window.document.querySelectorAll('.edit-row')]
+  assert.ok(rows.length >= 6, `可改的项太少：${rows.length}`)
+  const rowOf = (label) => rows.find((r) => r.textContent.includes(label))
+  assert.ok(!rows.some((r) => r.textContent.trim().startsWith('等级')), '等级不该出现在可填项里')
+
+  const hpInput = rowOf('血条上限')?.querySelector('input')
+  assert.ok(hpInput, '没有血条上限这一项')
+  assert.equal(hpInput.value, '100', '输入框该预填当前值，不是空白')
+
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set
+  setter.call(hpInput, '260')
+  hpInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+  await new Promise((r) => setTimeout(r, 60))
+
+  const modal = () => dom.window.document.querySelector('.modal')
+  click([...modal().querySelectorAll('button')].find((b) => b.textContent.includes('应用')))
+  await waitFor('100 → 260', { timeout: 5000 })
+
+  assert.equal(editNumbers?.hp, 260, `送上去的不是填的那个数：${JSON.stringify(editNumbers)}`)
+  assert.match(modal().textContent, /血条上限/, '没有回执 —— 玩家不知道自己改没改中')
+  // 服务端夹过的值才是真值，输入框得跟着它走
+  assert.equal(rowOf('血条上限').querySelector('input').value, '260', '输入框没跟着服务端回的值走')
+
+  click([...modal().querySelectorAll('button')].find((b) => b.textContent.includes('关闭')))
+  await new Promise((r) => setTimeout(r, 200))
+  assert.ok(!dom.window.document.querySelector('.modal'), '没关掉')
+
+  // 关掉之后右边那块得是新数：改完要重同步，靠本地拼只会拼出半份面板。
+  // 数字滚过去要一点时间，等它落定
+  await waitSide('100 / 260')
+  const status = [...dom.window.document.querySelectorAll('.panel')]
+    .find((el) => el.textContent.includes('穿越者'))
+  assert.match(status.textContent, /260/, '关掉之后右边那块面板还是旧数')
+
+  hpMaxOverride = null
+})
+
+test('玩家没自己吞过手指，就不显示那两行代价', async () => {
+  /*
+   * 侵蚀那一行只有在玩家真的吞过之后才有意义。开局就挂着一句"侵蚀：无"
+   * 只会让玩家以为这是条常驻属性，而不是自己作出来的账。
+   */
+  fingersPlayerEaten = 0
+  try {
+    await enterGame()
+    const sk = [...dom.window.document.querySelectorAll('.panel')]
+      .find((p) => p.textContent.includes('宿傩手指追踪')).textContent
+    assert.match(sk, /容器已吞下3 \/ 20 根/, `进度条不见了：${sk}`)
+    assert.ok(!sk.includes('你自己吞下'), '没吞过却列出了玩家自己吞下的行')
+    assert.ok(!sk.includes('侵蚀'), '没吞过却列出了侵蚀行')
+  } finally {
+    fingersPlayerEaten = 1
+  }
 })
 
 test('遭遇战在对话流里询问，先问要不要打（可逃）', async () => {
@@ -1701,6 +1930,77 @@ test('手动模式：行动栏渲染，并能打完一场', async () => {
   assert.match(after, /战斗结算/, '没有出现战斗结算卡')
   assert.match(after, /胜利/, '结算卡没有写胜负')
   assert.match(after, /术式演练/, '结算卡没有战果')
+})
+
+/** 推进到"手动战斗刚开打"那一屏 —— 「属性」按钮要能点，得先站在这里 */
+async function enterManualCombat() {
+  await enterGame()
+  click(findButton('前进'))
+  await waitFor('遭遇', { timeout: 15000 })
+  click(findButton('迎战'))
+  await waitFor('选择战斗模式', { timeout: 15000 })
+  click(findButton('手动模式'))
+  await new Promise((r) => setTimeout(r, 250))
+}
+
+test('战斗中点「属性」：翻出对方的全部数值与技能', async () => {
+  /*
+   * 战斗卡上只挂得住血条、咒力估算和状态 —— 但那几个数不足以决定
+   * "这一手值不值得挡"。倍率、冷却、防御、性格、必中效果都在引擎手里，
+   * 得有个地方一次性翻到。
+   */
+  await enterManualCombat()
+
+  const cs = dom.window.document.querySelector('.combat-side')
+  const btn = [...cs.querySelectorAll('button')].find((b) => b.textContent.includes('属性'))
+  assert.ok(btn, '敌方区域没有「属性」按钮')
+
+  click(btn)
+  await waitFor('敌方档案', { timeout: 5000 })
+  const modal = dom.window.document.querySelector('.overlay .modal')
+  assert.ok(modal, '点了「属性」却没有弹出档案')
+
+  const mt = modal.textContent
+  assert.match(mt, /腐骨咒灵/, '档案里没有对方的名字')
+  assert.match(mt, /二级/, '档案里没有等级')
+  assert.match(mt, /狡诈/, '档案里没有性格')
+  assert.match(mt, /咒术伤害/, '档案里没有咒术伤害')
+  assert.match(mt, /体术伤害/, '档案里没有体术伤害')
+  assert.match(mt, /防御/, '档案里没有防御')
+  // 技能：术式名 + 效果 + 倍率，一行都不能少
+  assert.match(mt, /蚀骨/, '档案里没有术式名')
+  assert.match(mt, /碰到的骨头会从里面自己碎开/, '档案里没有术式效果')
+  assert.match(mt, /×2/, '档案里没有术式倍率')
+  // 二级的咒灵够不到领域，这一栏要说明白而不是空着
+  assert.match(mt, /未领悟/, '没有领域时应当写明未领悟')
+
+  click(findButton('关闭'))
+  await new Promise((r) => setTimeout(r, 50))
+  assert.ok(!dom.window.document.querySelector('.overlay'), '关掉之后弹层还挂着')
+  assert.ok(dom.window.document.querySelector('.combat-side'), '关了档案把战斗栏也关了')
+})
+
+test('特级敌人的档案里有领域：名称、类型、必中效果、剩余回合', async () => {
+  tierEnemy = true
+  try {
+    await enterManualCombat()
+
+    const cs = dom.window.document.querySelector('.combat-side')
+    const btn = [...cs.querySelectorAll('button')].find((b) => b.textContent.includes('属性'))
+    assert.ok(btn, '特级敌人也该有「属性」按钮')
+    click(btn)
+    await waitFor('敌方档案', { timeout: 5000 })
+
+    const mt = dom.window.document.querySelector('.overlay .modal').textContent
+    assert.match(mt, /少年院特级咒胎/)
+    assert.match(mt, /胎藏曼荼罗/, '档案里没有领域名')
+    assert.match(mt, /规则型/, '档案里没有领域类型')
+    assert.match(mt, /封住对方的术式/, '档案里没有必中效果')
+    assert.match(mt, /剩 2 回合/, '展开中的领域要写明还剩几回合')
+    assert.match(mt, /初步/, '档案里没有反转术式')
+  } finally {
+    tierEnemy = false
+  }
 })
 
 /** 推进到"手动战斗里已经出了一手"的状态，用那一手的面板驱动演出层 */
@@ -1837,26 +2137,30 @@ test('规则型领域压着玩家时：战斗栏要写明被封了什么', async
   }
 })
 
-test('转完一天：陈旧的剧情选项清掉，轮盘展开顶上', async () => {
+test('转完一天：陈旧的剧情选项清掉，轮盘不自己开也不自己收', async () => {
   /*
    * 两条规则合起来才是"时机不别扭"：
    *   · 转一天之后，上一轮留下的选项过期了 —— 里面还混着"迎战"这种带引擎语义的，
    *     留着就能被重复点，等于把一场已经打完的遭遇再触发一次。
-   *   · 选项清空之后，轮盘得顶上来当主操作台；否则玩家面前一个能按的都没有。
-   * 而剧情选项一回来，轮盘又要让位（见另一条用例）。
+   *   · 轮盘开合**只由玩家决定**。它原来会在选项清空时自动顶上来，看着贴心，
+   *     实际是把玩家刚收起来的东西又掰回去；现在它挪到了右侧状态栏，
+   *     不跟正文抢位置，也就没有"必须顶上来"的理由了。
    */
   playModeFixture = 'combat'
   try {
     await enterGame()
     await waitFor('日常轮盘', { timeout: 15000 })
     assert.ok(dom.window.document.querySelector('.choices-list'), '这时该摆着剧情选项')
+    assert.equal(dom.window.document.querySelector('.wheel-panel'), null,
+      '玩家还没伸手，轮盘就自己展开了')
 
+    await openWheel()
     click(findButton('转一天'))
-    await new Promise((r) => setTimeout(r, 200))
+    await waitFor('落点 体能', { timeout: 15000 })
 
     assert.equal(dom.window.document.querySelector('.choices-list'), null, '陈旧的剧情选项没清掉')
-    assert.ok(dom.window.document.querySelector('.wheel-panel').className.includes('open'),
-      '选项都清空了，轮盘还收着，玩家面前一个能按的都没有')
+    // 玩家自己开着的，就一直开着 —— 界面不该替他把东西收走
+    assert.ok(dom.window.document.querySelector('.wheel-panel'), '玩家开着的轮盘被界面自己收走了')
     // 自定义行动一直在，玩家想干什么仍然写得出来
     assert.ok(dom.window.document.querySelector('.custom-row'), '选项清空后连自定义行动都没了')
   } finally {
@@ -2065,26 +2369,30 @@ test('出错只弹一条能关掉的横幅，正文和选项都还在', async ()
   }
 })
 
-test('轮盘能收起也能展开，收起时仍然看得见这一次转到哪儿', async () => {
+test('轮盘默认收在右侧栏：点窄条才展开，收起时仍然看得见这一次转到哪儿', async () => {
   playModeFixture = 'combat'
   try {
     await enterGame()
     await waitFor('日常轮盘', { timeout: 15000 })
 
-    const panel = () => dom.window.document.querySelector('.wheel-panel')
-    assert.ok(panel().className.includes('compact'), '轮盘默认应该是收起的 —— 两个操作台并排会不知道该按哪边')
-    assert.equal(panel().querySelectorAll('.grow-row').length, 0, '收起时不该还摆着六条进度条')
+    // 默认只剩一条窄条，而且只在右侧状态栏里 —— 中栏要留给正文和选项
+    assert.ok(strip(), '右侧状态栏里没有轮盘的窄条')
+    assert.equal(dom.window.document.querySelector('.main .wheel-strip'), null, '轮盘的窄条跑到中栏去了')
+    assert.equal(dom.window.document.querySelector('.wheel-panel'), null, '还没点，轮盘就展开了')
+    assert.equal(dom.window.document.querySelector('.wheel-svg'), null, '收起时不该还画着转盘')
     // 收起了也得看得见落点，否则转完一天回到状态栏发现数字没动，像白转了
-    assert.ok(panel().querySelector('.wheel-landed'), '收起时应该把这次的落点顶在转盘下面')
+    assert.match(strip().textContent, /上次落在 体能/, '收起时应该把这次的落点写在窄条上')
 
-    click(panel().querySelector('.wheel-toggle'))
-    await new Promise((r) => setTimeout(r, 60))
-    assert.ok(panel().className.includes('open'), '点「进度」应该能展开')
-    assert.equal(panel().querySelectorAll('.grow-row').length, 6, '展开后应该给出六条进度条')
+    const wp = await openWheel()
+    assert.ok(wp.querySelector('.wheel-svg'), '展开后应该长出转盘')
+    // 六条成长不在这里重复：状态栏下面那块「成长」面板给的是同一份数据，而且更权威
+    assert.equal(wp.querySelectorAll('.grow-row').length, 0, '轮盘里不该再摆一份成长进度')
+    assert.equal(dom.window.document.querySelectorAll('.side .grow-row').length, 6, '右侧栏的成长面板不见了')
 
-    click(panel().querySelector('.wheel-toggle'))
+    click(wp.querySelector('.wheel-toggle'))
     await new Promise((r) => setTimeout(r, 60))
-    assert.ok(panel().className.includes('compact'), '再点一下应该收回去')
+    assert.equal(dom.window.document.querySelector('.wheel-panel'), null, '点「收起」没收回去')
+    assert.ok(strip(), '收回去之后窄条应该还在')
   } finally {
     playModeFixture = 'story'
   }
@@ -2147,19 +2455,26 @@ test('修炼也是对话流里的询问，不是弹窗', async () => {
 
 // ---------------------------------------------------------------- 战斗向
 
-test('战斗向：主界面有日常轮盘，转一天落一个方向', async () => {
+test('战斗向：轮盘收在右侧栏，转一天落一个方向', async () => {
   playModeFixture = 'combat'
   try {
     await enterGame()
-    const wp = dom.window.document.querySelector('.wheel-panel')
-    assert.ok(wp, '战斗向的主界面没有日常轮盘')
+    await waitFor('日常轮盘', { timeout: 15000 })
 
-    const t = wp.textContent
-    assert.match(t, /日常轮盘/, '没有标题')
-    assert.match(t, /累计修炼 12 天/, '没有累计天数')
-    assert.match(t, /疲劳/, '没有疲劳系数')
-    assert.match(t, /少年院任务/, '没有显示下一个剧情节点')
-    assert.match(t, /还有\s*19\s*天/, `没有显示倒计时：${t.slice(0, 80)}`)
+    // 位置：右侧状态栏，不在正文和选项之间
+    assert.equal(dom.window.document.querySelector('.main .wheel-strip'), null, '轮盘占着中栏')
+    assert.equal(dom.window.document.querySelector('.main .wheel-panel'), null, '轮盘占着中栏')
+    const s = strip()
+    assert.ok(s, '战斗向的右侧栏没有日常轮盘')
+
+    // 收起来不等于藏起来：练了几天、还差几天，是"要不要点开"的判据，必须写在窄条上
+    assert.match(s.textContent, /日常轮盘/, '没有标题')
+    assert.match(s.textContent, /累计 12 天/, '没有累计天数')
+    assert.match(s.textContent, /少年院任务/, '没有显示下一个剧情节点')
+    assert.match(s.textContent, /还有\s*19\s*天/, `没有显示倒计时：${s.textContent.slice(0, 80)}`)
+
+    const wp = await openWheel()
+    assert.match(wp.textContent, /疲劳/, '没有疲劳系数')
 
     // 六个扇区都画出来，落点计数跟着走
     const labels = [...wp.querySelectorAll('svg text')].map((n) => n.textContent)
@@ -2191,7 +2506,9 @@ test('战斗向：练到剧情当天，轮盘变成「介入这场战斗」', as
   playModeFixture = 'combat'
   try {
     await enterGame()
-    const btn = findButton('练到剧情当天')
+    await waitFor('日常轮盘', { timeout: 15000 })
+    const wp = await openWheel()
+    const btn = [...wp.querySelectorAll('.wheel-btn')].find((b) => b.textContent.includes('练到剧情当天'))
     assert.ok(btn, '没有「练到剧情当天」按钮')
     assert.match(btn.textContent, /19\s*天/, '没有标出还要练几天')
 
@@ -2205,15 +2522,58 @@ test('战斗向：练到剧情当天，轮盘变成「介入这场战斗」', as
     assert.match(log, /血条上限/, '没有显示成长')
     assert.match(log, /52%/, '日报没带出六条进度条各自到哪儿了')
 
-    // 到当天就该打起来：轮盘当场让位给这场仗的询问 —— 而不是继续摆着
-    // 一个可点的「转一天」让人接着转（那正是"到节点了还在让我转轮盘"的病灶）
+    // 到当天就该打起来：轮盘让位给这场仗的询问 —— 但**不摘掉**。
+    // 它现在长在右侧栏里（不在正文和选项之间），收走只会让玩家以为玩法坏了：
+    // 打架的时候，那一行「下一个节点还有几天」照样是玩家要看的读数。
     await waitFor('少年院特级咒胎', { timeout: 15000 })
-    assert.equal(dom.window.document.querySelector('.wheel-panel'), null,
-      '介入战都挂上了，轮盘还摆在那儿让人接着转')
+    // 这条开始时就把它点开了，所以此刻在右栏的是展开态 —— 两种形态都算"还在"
+    assert.ok(dom.window.document.querySelector('.side .wheel-strip, .side .wheel-panel'),
+      '介入战挂上之后轮盘从右栏整块消失了')
     assert.ok(dom.window.document.querySelector('.log .inquiry'), '介入战的询问块没进对话流')
     assert.ok(findButton('迎战'), '介入战缺少迎战选项')
     assert.ok(findButton('尝试脱离'), '介入战缺少脱离选项')
   } finally {
+    playModeFixture = 'story'
+  }
+})
+
+test('打起来的时候轮盘不摘掉：读数留着，按钮灰着，并写明为什么', async () => {
+  /*
+   * 这条是从一个真实的抱怨里长出来的："现在每日轮盘没有了"。
+   *
+   * 轮盘原来挂在正文和选项之间，那会儿打架时收走是对的 —— 战斗面板要占那一栏。
+   * 后来它搬进了右侧状态栏，`!liveCombat` 这道闸门却留了下来：玩家正打着一场，
+   * 眼角那行「距「少年院任务」还有 19 天」凭空消失，看着就像玩法坏了。
+   */
+  playModeFixture = 'combat'
+  try {
+    await enterGame()
+    await waitFor('日常轮盘', { timeout: 15000 })
+
+    click(findButton('前进'))
+    await waitFor('遭遇', { timeout: 15000 })
+    click(findButton('迎战'))
+    await waitFor('选择战斗模式', { timeout: 15000 })
+
+    // 开打的那一下，服务端的闸门就换成"战斗还没打完"了
+    wheelBlock = '战斗还没打完'
+    click(findButton('手动模式'))
+    await new Promise((r) => setTimeout(r, 400))
+
+    // 还在右栏里，读数也没丢
+    const s = strip()
+    assert.ok(s, '开打之后轮盘从右栏消失了')
+    assert.match(s.textContent, /累计 12 天/, '窄条上没了累计天数')
+    assert.match(s.textContent, /还有\s*19\s*天/, '窄条上没了倒计时')
+
+    // 按不动，而且说得出为什么 —— 那句话由服务端闸门给，本地不自己编
+    const wp = await openWheel()
+    assert.match(wp.textContent, /战斗还没打完/, `没说清为什么按不动：${wp.textContent.slice(0, 120)}`)
+    const btns = [...wp.querySelectorAll('.wheel-btn')]
+    assert.equal(btns.length, 2, `轮盘动作按钮应有 2 个，实际 ${btns.length}`)
+    assert.ok(btns.every((b) => b.disabled), '战斗还没打完，按钮却还能按')
+  } finally {
+    wheelBlock = null
     playModeFixture = 'story'
   }
 })
@@ -2223,8 +2583,12 @@ test('战斗向：开局就站在剧情节点当天，轮盘直接锁住等开�
   wheelReady = true
   try {
     await enterGame()
+    await waitFor('日常轮盘', { timeout: 15000 })
 
-    const wp = dom.window.document.querySelector('.wheel-panel')
+    // 今天就是剧情节点 —— 收起的窄条上也得说清楚，那是唯一的提示
+    assert.match(strip().textContent, /「少年院任务」就在今天/, `窄条没认出今天就是节点：${strip().textContent.slice(0, 80)}`)
+
+    const wp = await openWheel()
     assert.match(wp.textContent, /「少年院任务」就在今天/, `没认出今天就是剧情节点：${wp.textContent.slice(0, 80)}`)
 
     const btn = (label) => [...wp.querySelectorAll('.wheel-btn')].find((b) => b.textContent.includes(label))
@@ -2264,7 +2628,10 @@ test('反转术式不占回合：按下去血条当场动，回合数不动', as
     click(findButton('反转术式·初步'))
     await waitFor('伤口在数秒内收拢', { timeout: 15000 })
 
-    // 关键：血条当场走到 70，回合还是第 1 回合
+    // 关键：血条当场走到 70，回合还是第 1 回合。
+    // 数字是滚过去的（Fx.jsx 的 useCountUp），等它落定 —— 落定之后才说明
+    // 面板真的收到了新值，而不是停在旧数上。
+    await waitSide('70 / 100')
     assert.match(side(), /70 \/ 100/, `状态栏没有实时更新血条：${side().slice(0, 120)}`)
     assert.match(dom.window.document.querySelector('.combat-side').textContent, /第 1 回合/,
       '反转术式不该推进回合')
@@ -2324,6 +2691,8 @@ test('受伤时多出疗伤入口，选一种当场结算', async () => {
     const log = dom.window.document.querySelector('.log').textContent
     assert.match(log, /生命 \+18/, '没有显示回血量')
     assert.match(log, /耗时 1 天/, '没有显示花了几天')
+    // 血条上的数字是滚过去的（见 Fx.jsx 的 useCountUp），等它落定再断言
+    await waitSide('58 / 100')
     assert.match(dom.window.document.querySelector('.side').textContent, /58 \/ 100/,
       '状态栏没有刷新到结算后的血条')
   } finally {
@@ -2335,4 +2704,57 @@ test('没受伤时不该挂着疗伤入口', async () => {
   wounded = false
   await enterGame()
   assert.ok(!findButton('疗伤'), '满血时不该出现疗伤选项')
+})
+
+test('打完一仗：右栏多出一块战果，看得见结果、对手和剩血', async () => {
+  // 越界限制取消之后，"打过谁"成了这条时间线上最硬的事实之一。
+  // 每场都落一条，而且要一眼看出这一仗是什么性质的
+  battleFixture = {
+    turn: 12, date: '2018-10-31',
+    enemy: { name: '五条悟', grade: '超特级', canon: true },
+    result: '击杀', killed: true, ground: '介入战', node: '涩谷事变',
+    rewrite: '「涩谷事变」已改写 —— 五条悟死了，封住最强那整套局从一开始就不成立',
+    hpLeft: 40, hpMax: 100, note: '',
+  }
+  try {
+    await enterGame()
+    const panel = [...dom.window.document.querySelectorAll('.panel')]
+      .find((p) => p.textContent.includes('战果'))
+    assert.ok(panel, '没有战果面板')
+    const txt = panel.textContent
+    assert.match(txt, /击杀/, '没写结果')
+    assert.match(txt, /五条悟/, '没写对手')
+    assert.match(txt, /超特级/, '没写对手等级')
+    assert.match(txt, /原作/, '原作人物没标出来')
+    assert.match(txt, /2018-10-31 · 介入战 · 涩谷事变/, '没写清是哪一天、哪种仗')
+    assert.match(txt, /剩血 40%/, '没写打完还剩多少血')
+    assert.match(txt, /连带影响|已改写/, '杀了关键人物却没写出它改动了什么')
+  } finally {
+    battleFixture = null
+  }
+})
+
+test('没打过仗就不显示战果面板', async () => {
+  await enterGame()
+  const panel = [...dom.window.document.querySelectorAll('.panel')]
+    .find((p) => p.textContent.includes('战果'))
+  assert.ok(!panel, '一场没打却挂着一块空战果')
+})
+
+test('被改写的那一天：时间线上写清楚它变成了什么样', async () => {
+  /*
+   * 光一个「已改写」，玩家只知道那天变了、不知道变成了什么 ——
+   * 而"为什么变"恰恰是他自己那一刀换来的，得让他看见。
+   */
+  rewriteFixture = '五条悟死了 —— 涩谷那整套"封住最强"的局从一开始就不成立'
+  try {
+    await enterGame()
+    const panel = [...dom.window.document.querySelectorAll('.panel')]
+      .find((p) => p.textContent.includes('原作分歧追踪'))
+    assert.ok(panel, '没有时间线面板')
+    assert.match(panel.textContent, /涩谷事变已改写/, '节点状态没标成已改写')
+    assert.match(panel.textContent, /封住最强/, '没写出改写的理由')
+  } finally {
+    rewriteFixture = null
+  }
 })

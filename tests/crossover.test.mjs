@@ -168,6 +168,34 @@ test('换篇后关系表按新篇名单重建，不多不少', () => {
   assert.deepEqual(names, [...storylineOf('sukuna').characters].sort())
 })
 
+test('换篇后手指也跟着新篇重置', () => {
+  /*
+   * 怀玉篇在 2006 年，虎杖还没出生，全程一根手指都不该有。
+   * 跨进宿傩篇就是"虎杖刚吞下第一根"那一天 —— 所以这里要的是新篇的起点，
+   * 而不是把上一篇的计数原样带过来：那样恰好也是 0，数字对得上，
+   * 理由却完全不对，下一段（宿傩篇救回八根再跨未来篇）就会露馅。
+   */
+  const s = readyState('kaigyoku')
+  assert.deepEqual(
+    [s.sukuna.fingersCollected, s.sukuna.fingersEaten],
+    [0, 0],
+    '怀玉篇本就不该有手指',
+  )
+  completeCrossover(s, makeRng(12))
+  assert.equal(s.sukuna.fingersCollected, 1, '跨进宿傩篇应当回到"虎杖刚吞下第一根"')
+  assert.equal(s.sukuna.fingersEaten, 1)
+  assert.equal(s.sukuna.fingersPlayerEaten, 0)
+
+  // 反过来 宿傩篇 → 未来篇 也要重置：那条线的宿傩进度由它自己从零推
+  const fut = readyState('sukuna')
+  fut.sukuna.fingersCollected = 9
+  fut.sukuna.fingersEaten = 8
+  completeCrossover(fut, makeRng(13))
+  assert.equal(fut.storyline, 'future')
+  assert.equal(fut.sukuna.fingersCollected, 0, '未来篇从零起算，不继承上一篇的进度')
+  assert.equal(fut.sukuna.fingersEaten, 0)
+})
+
 // ------------------------------------------------------------------ 可用性
 
 test('走完衔接节点前不能跨篇，终篇也不能跨', () => {

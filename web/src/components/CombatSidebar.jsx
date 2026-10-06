@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { GradeTag } from './Panels.jsx'
 import { FxBar, FloatDamage, DomainAura, BeatRow, SealChip } from './Fx.jsx'
 
@@ -9,12 +9,123 @@ import { FxBar, FloatDamage, DomainAura, BeatRow, SealChip } from './Fx.jsx'
  * 战斗中显示敌方档案、本回合行动与伤害计算；不在战斗时显示自己的备战数据。
  */
 
-function EnemyCard({ enemy, fx }) {
+const num = (v) => (Number.isFinite(v) ? v.toLocaleString() : '—')
+
+/**
+ * 敌方档案弹层。
+ *
+ * 战斗卡上只挂得住几个数（血条、咒力估算、状态），但这几个数不足以做决定：
+ * "它这一手倍率多少、冷却几回合、领域是什么型、防御多厚"才是。
+ * 所以底牌单开一页，点开就全在。
+ */
+function EnemyDossier({ profile, onClose }) {
+  const t = profile.technique || {}
+  const d = profile.domain
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>敌方档案</h2>
+        <div className="hint">
+          {profile.name}
+          {profile.grade ? ` · ${profile.grade}` : ''}
+          {profile.archetype ? ` · 性格：${profile.archetype}` : ''}
+        </div>
+        {/*
+          原著人物按原作表校正过 —— 说清这一点，玩家才不会以为
+          超特级的五条悟是引擎随手掷出来的
+        */}
+        {profile.canon && <div className="canon-tag">{profile.canonNote || `${profile.name}（原作）`}</div>}
+
+        <div className="card">
+          <FxBar label="血条" cur={profile.hp?.cur ?? 0} max={profile.hp?.max ?? 0} cls="hp" />
+          <FxBar label="咒力" cur={profile.ce?.cur ?? 0} max={profile.ce?.max ?? 0} cls="ce" />
+          <div className="kv" style={{ marginTop: 8 }}>
+            <span>咒术伤害</span><span>{num(profile.cursedDamage)}</span>
+          </div>
+          <div className="kv"><span>体术伤害</span><span>{num(profile.physicalDamage)}</span></div>
+          <div className="kv">
+            <span>咒力效率</span><span>{Math.round((profile.efficiency ?? 0) * 100)}%</span>
+          </div>
+          <div className="kv"><span>防御</span><span>{num(profile.defense)}</span></div>
+          <div className="kv"><span>反转术式</span><span>{profile.reverse || '未掌握'}</span></div>
+          {profile.archetypeNote && (
+            <div className="kv"><span>打法</span><span>{profile.archetypeNote}</span></div>
+          )}
+        </div>
+
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="who-name" style={{ fontSize: 14 }}>术式 · {t.name || '未知术式'}</div>
+          {t.effect && (
+            <div style={{ fontSize: 12.5, color: 'var(--ink-dim)', margin: '5px 0 8px', lineHeight: 1.6 }}>
+              {t.effect}
+            </div>
+          )}
+          <div className="kv"><span>倍率</span><span>×{t.multiplier ?? '—'}</span></div>
+          <div className="kv"><span>消耗</span><span>{num(t.cost)} 咒力</span></div>
+          <div className="kv">
+            <span>冷却</span>
+            <span>
+              {t.cooldown ? `${t.cooldown} 回合` : '无'}
+              {t.cdLeft > 0 ? `（剩 ${t.cdLeft}）` : ''}
+            </span>
+          </div>
+        </div>
+
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="who-name" style={{ fontSize: 14 }}>
+            领域 · {d?.name || '未领悟'}
+          </div>
+          {d ? (
+            <>
+              <div className="kv" style={{ marginTop: 6 }}>
+                <span>类型</span>
+                <span>{d.type}{d.tierName ? ` · ${d.tierName}` : ''}</span>
+              </div>
+              <div className="kv">
+                <span>必中效果</span>
+                <span>{d.sureHit || d.brief || '——'}</span>
+              </div>
+              <div className="kv"><span>展开消耗</span><span>{num(d.cost)} 咒力</span></div>
+              <div className="kv">
+                <span>状态</span>
+                <span>{d.active ? `展开中（剩 ${d.turnsLeft} 回合）` : '未展开'}</span>
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 12.5, color: 'var(--ink-faint)', marginTop: 6 }}>
+              这个等级还够不到领域。
+            </div>
+          )}
+        </div>
+
+        <button className="choice" style={{ marginTop: 12, textAlign: 'center' }} onClick={onClose}>
+          关闭
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function EnemyCard({ enemy, fx, onOpen }) {
   return (
     <div className={`card${fx?.shake ? ` shake-${fx.shake}` : ''}`}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 3 }}>
         <span style={{ fontFamily: 'var(--font-narr)', fontSize: 16 }}>{enemy.name}</span>
         {enemy.grade && <GradeTag grade={enemy.grade} />}
+        {/*
+          底牌按钮。数值全在引擎手里，玩家想知道"这一手值不值得挡"，
+          得有地方翻 —— 战斗卡上摆不下，单开一页。
+        */}
+        {enemy.profile && (
+          <button
+            className="dossier-btn"
+            style={{ marginLeft: 'auto' }}
+            onClick={onOpen}
+            title="查看对方的全部属性与技能"
+          >
+            属性
+          </button>
+        )}
       </div>
 
       <div className="bar-wrap">
@@ -29,15 +140,19 @@ function EnemyCard({ enemy, fx }) {
         />
       </div>
 
-      {/* 连击：压着打的时候有个一直在涨的东西，比一行"造成 N 点伤害"有力得多 */}
+      {/*
+        连击：压着打的时候有个一直在涨的东西，比一行"造成 N 点伤害"有力得多。
+        从第三下起升温 —— 连击的爽感全在"还没断"这件事上，
+        数字一直长一个样的话，玩家不会注意到自己正连着。
+      */}
       {fx?.combo > 0 && (
-        <div className="combo-row">
+        <div className={`combo-row${fx.combo >= 3 ? ' hot' : ''}`}>
           <span className="combo-n" key={fx.combo}>{fx.combo}</span>
           <span className="combo-lb">连击</span>
         </div>
       )}
       {fx?.enemyCombo > 0 && (
-        <div className="combo-row enemy">
+        <div className={`combo-row enemy${fx.enemyCombo >= 3 ? ' hot' : ''}`}>
           <span className="combo-n" key={fx.enemyCombo}>{fx.enemyCombo}</span>
           <span className="combo-lb">对方连击</span>
         </div>
@@ -111,6 +226,7 @@ function Readiness({ panel }) {
 }
 
 export function CombatSidebar({ panel, liveCombat, busy, open, fx }) {
+  const [dossier, setDossier] = useState(false)
   const live = liveCombat?.panel
   const st = panel?.combat // 服务端的战斗态快照
 
@@ -124,10 +240,13 @@ export function CombatSidebar({ panel, liveCombat, busy, open, fx }) {
     status: undefined,
     technique: st.enemy.technique,
     domain: st.enemy.domainActive ? `${st.enemy.domain}（展开中）` : (st.enemy.domain || '未展开'),
+    profile: st.enemy.profile,
   } : null)
 
   const round = live?.turn ?? st?.turn
   const inCombat = !!enemy
+  // 实时那份优先，退回快照那份 —— 刷新页面之后仍然翻得动
+  const profile = live?.enemy?.profile || st?.enemy?.profile || null
 
   return (
     <aside className={`combat-side${open ? ' open' : ''}`}>
@@ -145,7 +264,7 @@ export function CombatSidebar({ panel, liveCombat, busy, open, fx }) {
               }[st.mode] || st.mode}</span>}
             </div>
 
-            <EnemyCard enemy={enemy} fx={live ? fx : null} />
+            <EnemyCard enemy={enemy} fx={live ? fx : null} onOpen={() => setDossier(true)} />
 
             <div className="combat-vs">— 本 回 合 —</div>
 
@@ -268,6 +387,10 @@ export function CombatSidebar({ panel, liveCombat, busy, open, fx }) {
             </div>
           </div>
         </div>
+      )}
+      {/* 战斗一结束 inCombat 就变 false，弹层跟着卸载 —— 不会留一份过期的档案挂在屏幕上 */}
+      {inCombat && dossier && profile && (
+        <EnemyDossier profile={profile} onClose={() => setDossier(false)} />
       )}
     </aside>
   )

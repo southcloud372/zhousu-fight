@@ -8,6 +8,30 @@ import { storylineOf, DEFAULT_STORYLINE } from './storylines.js'
  * 时间线追踪器会列出一堆 2018 年才发生的事。
  */
 
+/**
+ * 节点的四种状态。
+ *
+ * 「已改写」是后加的一种：关键人物被玩家提前杀掉之后，那个节点**照旧会来**，
+ * 只是内容已经不可能是原著里那件事了。它和「已改变」的区别在于谁改的 ——
+ *   已改变 = 玩家在那一天真的插手了，把这场仗打成了另一个样子
+ *   已改写 = 那一天还没到，但撑起它的那个人已经没了，剧本自己散了
+ * 两者都不能被时间点表覆盖回「未发生」，但只有前者算"这一天已经走过"。
+ */
+export const TODO = '未发生'
+export const DONE = '已发生'
+export const CHANGED = '已改变'
+export const REWRITTEN = '已改写'
+
+/**
+ * 轮盘还要不要为这一天停下。
+ * **已改写不在其中**，这是有意的：被改写的节点仍然占着那一天，
+ * 玩家照旧能在那里介入 —— 只是要面对一个陌生的局面。
+ */
+export const isResolvedForSchedule = (st) => st === DONE || st === CHANGED
+
+/** 已经落定的状态：时间点表重建节点时不能把它们冲回「未发生」 */
+export const isSettled = (st) => st === DONE || st === CHANGED || st === REWRITTEN
+
 /** 某条故事线的全部可选时间点 */
 export const pointsFor = (storylineId) => storylineOf(storylineId).timePoints
 
@@ -42,8 +66,8 @@ export function applyTimeline(state, point) {
   const next = {}
   for (const node of nodes) {
     const prev = state.timeline.nodes[node]
-    // 已经写成"已发生"的保持不动（玩家可能改过剧情），其余按时间点定
-    next[node] = prev === '已发生' || prev === '已改变' ? prev : (done.has(node) ? '已发生' : '未发生')
+    // 已经落定的保持不动（玩家可能改过剧情，也可能有人提前死了），其余按时间点定
+    next[node] = isSettled(prev) ? prev : (done.has(node) ? DONE : TODO)
   }
   state.timeline.nodes = next
 
@@ -55,7 +79,7 @@ export function applyTimeline(state, point) {
 /** 新建一条故事线的初始节点表 */
 export function initialNodes(storylineId) {
   const out = {}
-  for (const node of nodesFor(storylineId)) out[node] = '未发生'
+  for (const node of nodesFor(storylineId)) out[node] = TODO
   return out
 }
 
@@ -87,7 +111,7 @@ export function nextMilestone(state) {
 
   for (const s of scheduleFor(state.storyline)) {
     const st = state.timeline?.nodes?.[s.node]
-    if (st === '已发生' || st === '已改变') continue // 这天已经走过，看下一个
+    if (isResolvedForSchedule(st)) continue // 这天已经走过，看下一个
     if (s.date < today) continue // 已经过去了，不再补算
     return {
       id: s.node,
@@ -108,6 +132,9 @@ export function nextMilestone(state) {
  * 玩家能错过的只有一种情况 —— 在剧情向里让模型把日期推过去了，再切回战斗向。
  * 不补的话，那些节点会永远卡在"未发生"，而轮盘又永远不会为它们停下，
  * 界面和引擎对不上账。错过的就是没赶上，写成"已发生"最诚实。
+ *
+ * 只补「未发生」的：已经改写的节点是"那天会来，但内容变了"，
+ * 补成"已发生"等于把改写这件事抹掉。
  */
 export function missedNodes(state) {
   const today = state.time?.date
@@ -115,9 +142,9 @@ export function missedNodes(state) {
   const out = []
   for (const s of scheduleFor(state.storyline)) {
     const st = state.timeline?.nodes?.[s.node]
-    if (st !== '未发生') continue
+    if (st !== TODO) continue
     if (s.date >= today) continue
-    state.timeline.nodes[s.node] = '已发生'
+    state.timeline.nodes[s.node] = DONE
     out.push(s.node)
   }
   return out

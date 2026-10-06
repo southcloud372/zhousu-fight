@@ -1,7 +1,8 @@
 import { RANGES, TECH_MULT, GRADES, gradeIndex, isTier } from './tables.js'
 import { rfloat } from './dice.js'
 import { storylineOf } from './storylines.js'
-import { initialNodes, pointsFor } from './timeline.js'
+import { initialNodes, pointsFor, isSettled } from './timeline.js'
+import { initialFingers } from './state.js'
 import { hpStatus } from './formula.js'
 
 /**
@@ -162,7 +163,15 @@ export function completeCrossover(state, rng) {
   state.storyline = to.id
   state.timeline.nodes = initialNodes(to.id)
   state.timeline.changed = []
+  // 改写理由跟着节点表一起换 —— 上一篇「谁死了导致哪一天变了」在新篇里没有意义
+  state.timeline.rewrites = {}
   state.timeline.newEvents = []
+  /*
+   * 手指也跟着新篇重置。怀玉篇（2006）从头到尾一根都没有 —— 那时候虎杖还没出生；
+   * 跨进宿傩篇就是"虎杖刚吞下第一根"那一天，所以这里读的是新篇的起点，
+   * 而不是把上一篇的数带过来。
+   */
+  state.sukuna = initialFingers(to.id)
   state.time.date = to.startDate
   state.time.day = 1
   state.time.point = pointsFor(to.id)[0].id // 新篇从第一章重新算起
@@ -226,7 +235,13 @@ export function crossoverReady(state) {
   const line = storylineOf(state.storyline)
   if (!line.next || !line.crossoverNode) return { ok: false, reason: '本篇没有后续篇章' }
   if (state.crossover) return { ok: true, inProgress: true, stages: stagesFor(state.storyline).length, done: state.crossover.done }
-  if (state.timeline.nodes[line.crossoverNode] !== '已发生') {
+  /*
+   * 「已改变」和「已改写」都算走完了这一篇。
+   * 早先这里只认"已发生"，于是玩家把那一天打成了另一个样子、或者提前杀了
+   * 撑起那个节点的人，跨篇的门反而锁死了 —— 明明这一篇已经翻过去了，
+   * 界面却告诉他"走完「最终决战」之后才能跨篇"，而那个节点永远不会再变成"已发生"。
+   */
+  if (!isSettled(state.timeline.nodes[line.crossoverNode])) {
     return { ok: false, reason: `走完「${line.crossoverNode}」之后才能跨篇` }
   }
   return { ok: true, inProgress: false, stages: stagesFor(state.storyline).length, done: 0 }

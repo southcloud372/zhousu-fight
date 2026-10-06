@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { streamTool, streamText, models } from './llm.js'
 import { makeRng } from './engine/dice.js'
 import { blankState, applyProposal, panelSnapshot, modelStateView } from './engine/state.js'
-import { scrubTurn, clampProposal, noteNarrationLeak, checkEnemyLegality } from './engine/guard.js'
+import { scrubTurn, clampProposal, noteNarrationLeak, hasLethalIntent } from './engine/guard.js'
+import { applyCanon } from './engine/canon.js'
 import {
   generateAttributeProfiles, generateIdentityProfiles, buildCharacterAndOpening,
   generateCustomAttribute, generateCustomIdentity, rollTimeProfiles, generateCustomTime,
@@ -19,6 +20,7 @@ import { accumulate, usageSnapshot, estimateTokens } from './pricing.js'
 import { submitTurnFor } from './engine/schemas.js'
 import { NARRATION_MIN, visibleLength, overflowBy, clampNarration } from './engine/narration.js'
 import { rollEnemy, tuneAttributeProfile, suddenArrivalIdentity } from './engine/rolls.js'
+import { tunePlayer } from './engine/editor.js'
 import { byId, pointsFor, initialNodes, nextMilestone } from './engine/timeline.js'
 import { DEFAULT_STORYLINE, STORYLINES, storylineBriefs, storylineOf } from './engine/storylines.js'
 import { wipeLocalData, WIPE_CONFIRM } from './engine/wipe.js'
@@ -394,29 +396,39 @@ function postProcess(state, raw, { isOpening = false, playerInput = '' } = {}) {
     const rng = makeRng(state.seed + state.turn * 7)
     const enemy = rollEnemy(rng, raw.combatRequest.enemyGrade)
 
-    // 原作主要角色不能凭空变成敌人 —— 需要对应节点已发生
-    const legal = checkEnemyLegality(raw.combatRequest.enemyName, state.timeline, playerInput)
-    if (!legal.ok) {
-      entry.notes.push(`已拦截越界敌人：${legal.reason}`)
-      raw.combatRequest.enemyName = '无名咒灵'
-      raw.combatRequest.enemyTechniqueName = raw.combatRequest.enemyTechniqueName || '未知术式'
-      raw.combatRequest.enemyDomainName = null
-      raw.combatRequest.enemyDomainType = null
-    }
-
     enemy.name = raw.combatRequest.enemyName || '咒灵'
     enemy.technique.name = raw.combatRequest.enemyTechniqueName || '未知术式'
     enemy.technique.effect = raw.combatRequest.enemyTechniqueEffect || ''
+
+    /*
+     * 原著人物一律按原作表校正：等级、数值、生得术式、领域以表为准，
+     * 模型给的名字只决定"谁上场"。
+     *
+     * 越界限制已经取消 —— 谁想在什么时候打谁就打谁，模型不必再避讳主角团。
+     * 代价是自找的：龙级对一级是秒杀，引擎不会为了"合理"偷偷把对手调弱。
+     * 表外的人（无名咒灵、路人诅咒师）不受影响，照旧由模型自由发挥。
+     */
+    const canon = applyCanon(enemy, enemy.name, { storyline: state.storyline, date: state.time.date })
+    if (canon) {
+      enemy.name = canon.name
+      entry.notes.push(`已按原作校正「${canon.name}」${canon.notes.length ? `：${canon.notes.join('、')}` : ''}`)
+    }
+
     // 领域只有特级才有；模型没给名字就留个可辨认的占位
     if (enemy.domain?.unlocked) {
-      enemy.domain.name = raw.combatRequest.enemyDomainName || `${enemy.name}的领域`
-      /*
-       * 类型允许模型覆盖 rollEnemy 掷出来的那一型（模型更清楚这个敌人
-       * 该是什么路数），但认不出来的词一律丢掉 —— 放着它不管，最后会
-       * 一路兜成伤害型，等于模型写错一个字就改了整场打法。
-       */
-      const typed = normalizeDomainType(raw.combatRequest.enemyDomainType)
-      if (typed) enemy.domain.type = typed
+      if (canon?.domain) {
+        // 原著人物的领域名不容模型改写 —— 无量空处就是无量空处
+        enemy.domain.name = canon.domain.name
+      } else {
+        enemy.domain.name = raw.combatRequest.enemyDomainName || `${enemy.name}的领域`
+        /*
+         * 类型允许模型覆盖 rollEnemy 掷出来的那一型（模型更清楚这个敌人
+         * 该是什么路数），但认不出来的词一律丢掉 —— 放着它不管，最后会
+         * 一路兜成伤害型，等于模型写错一个字就改了整场打法。
+         */
+        const typed = normalizeDomainType(raw.combatRequest.enemyDomainType)
+        if (typed) enemy.domain.type = typed
+      }
     } else if (raw.combatRequest.enemyDomainName) {
       // 模型给非特级敌人编了领域 —— 按设定不该有，去掉
       entry.notes.push('非特级敌人不应持有领域，已忽略模型给出的领域名')
@@ -426,6 +438,11 @@ function postProcess(state, raw, { isOpening = false, playerInput = '' } = {}) {
       reason: raw.combatRequest.reason,
       mode: null,
       sinceTurn: state.turn,
+      // 这一手是不是奔着要命去的 —— 战后结算「击杀」还是「击退」看它（见 combat.js）
+      lethalIntent: hasLethalIntent(playerInput),
+      // 介入战的节点名由轮盘那条路给（wheel.js 的 startIntervention）；
+      // 剧情回合触发的只是遭遇战，打完不改写时间线
+      intervention: null,
     }
   }
   // 待结算的遭遇不在这里清 —— 它是"玩家还没决定打不打"，
@@ -744,7 +761,7 @@ function turnSystem(state) {
     )
   }
   if (!modelStateView(state).宿傩.可在意识中对话) {
-    parts.push('## 注意\n宿傩目前**不会**在玩家意识中对话（觉醒度不足或态度未达"感兴趣"）。不要让宿傩说话。')
+    parts.push('## 注意\n宿傩目前**不会**在玩家意识中对话（手指吞得还太少，他还没把玩家当回事）。不要让宿傩说话。')
   }
   parts.push(suddenBlock(state))
   return parts.filter(Boolean).join('\n\n---\n\n')
@@ -829,6 +846,8 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
       // 介入标记要跟着一起捡回来，否则中途重开这一场，
       // 打完之后"这一天"就记不进时间线了
       intervention: state.combat.intervention || null,
+      // 杀意同理：丢了这个，玩家点名要杀的人打完之后会被记成"击退"
+      lethalIntent: !!state.combat.lethalIntent,
     }
   }
 
@@ -839,8 +858,8 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
 
   const rng = makeRng(state.seed + state.turn * 101)
-  const { enemy, reason, intervention } = state.pendingCombat
-  initCombat(state, rng, { mode, enemy, reason, intervention })
+  const { enemy, reason, intervention, lethalIntent } = state.pendingCombat
+  initCombat(state, rng, { mode, enemy, reason, intervention, lethalIntent })
   state.lastEnemyName = enemy.name
   // 打起来了，场上那批剧情选项作废（两边本来就不该同时出现）
   clearChoices(state)
@@ -1113,6 +1132,9 @@ app.post('/api/session/:id/combat/evade', asyncRoute(async (req, res) => {
     if (missed && state.timeline.nodes[missed] === '未发生') {
       state.timeline.nodes[missed] = '已发生'
       note += `。「${missed}」如期发生，你不在场`
+    } else if (missed && state.timeline.nodes[missed] === '已改写') {
+      // 这一天早就被改写了（撑起它的人没了），但照旧会来 —— 只是你不在场
+      note += `。已经被改写的「${missed}」照旧来了，你不在场`
     }
     state.timeline.newEvents.push(note)
     if (state.timeline.newEvents.length > 40) state.timeline.newEvents.shift()
@@ -1483,6 +1505,25 @@ app.get('/api/session/:id/training-options', (req, res) => {
       progress: Math.round(state.player?.training?.[name] || 0),
     })),
   })
+})
+
+// ---------------------------------------------------------------- 改自己
+
+/**
+ * 随时改自己的数值。
+ *
+ * 纯引擎结算，不走模型：等级、领域觉醒、术式消耗全是从数字反推的，
+ * 没有什么需要模型拿主意的地方。改完回一句"改了什么"，
+ * 界面拿它写回执 —— 静默生效的话玩家会怀疑自己有没有点中。
+ */
+app.post('/api/session/:id/edit', (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  if (!state.player) return res.status(400).json({ error: '还没有角色可以改' })
+
+  const notes = tunePlayer(state, req.body?.numbers || {})
+  persist(state)
+  res.json(withUsage(state, { notes, panel: panelSnapshot(state) }))
 })
 
 // ---------------------------------------------------------------- 状态

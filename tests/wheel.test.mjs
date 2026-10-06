@@ -345,6 +345,30 @@ test('打完这一场：赢了算改写，没赢算发生，跑了不算', () =>
   assert.match(fled.timeline.newEvents.at(-1), /避开了「少年院任务」/)
 })
 
+test('已经改写过的那一天，赢了也变不回原著', () => {
+  // 「已改写」的理由是"撑起那一天的人已经死了"——玩家在那天再赢一次，
+  // 也不可能把那个人赢回来，所以这个状态不许被覆盖
+  const s = combatState()
+  s.timeline.nodes['少年院任务'] = '已改写'
+  completeIntervention(s, '少年院任务', { winner: 'player' })
+  assert.equal(s.timeline.nodes['少年院任务'], '已改写')
+  assert.match(s.timeline.newEvents.at(-1), /赢下了已经改写的「少年院任务」/)
+})
+
+test('已改写的节点照旧让轮盘停下 —— 那天还是会来', () => {
+  // 玩家的选择是"节点改写，仍然发生"：不能被跳过，也不能被无视
+  const s = combatState()
+  const first = nextMilestone(s)
+  s.timeline.nodes[first.node] = '已改写'
+  s.time.date = first.date
+  const day = spinWheel(s, makeRng(2))
+  assert.equal(day.kind, 'blocked', '已改写的那一天不该还能继续转轮盘')
+  assert.match(day.notes[0], new RegExp(first.node))
+
+  // 而它仍然是"下一个节点"，轮盘不会越过去等后面那个
+  assert.equal(nextMilestone(s).node, first.node)
+})
+
 test('介入过的节点不再排期 —— 否则会无限重打同一场', () => {
   const s = combatState()
   const rng = makeRng(4)

@@ -229,7 +229,8 @@ export function salvageToolInput(buf) {
     choices,
     proposal: {
       hpDelta: 0, ceDelta: 0, relationDelta: {},
-      sukunaAwakeningDelta: 0, flags: [], timeAdvance: '0',
+      sukunaFingersCollectedDelta: 0, sukunaFingersEatenDelta: 0, sukunaFingersPlayerEatenDelta: 0,
+      flags: [], timeAdvance: '0',
     },
     combatRequest: null,
   }

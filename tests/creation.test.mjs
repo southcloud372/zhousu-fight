@@ -21,7 +21,8 @@ import {
 } from '../server/engine/rolls.js'
 import { makeRng } from '../server/engine/dice.js'
 import { defenseOf } from '../server/engine/formula.js'
-import { buildPlayer } from '../server/engine/state.js'
+import { buildPlayer, TECH_COST_RATIO } from '../server/engine/state.js'
+import { tunePlayer } from '../server/engine/editor.js'
 import { suddenArrivalRulesFor, SUDDEN_ARRIVAL_RULES } from '../server/prompts.js'
 import { charactersFor } from '../server/engine/timeline.js'
 
@@ -357,4 +358,151 @@ test('穿越者这份档案喂给模型时，背景类型就是「穿越者」',
   Object.assign(attr, { techniqueName: 't', techniqueEffect: 'e', techniqueCooldown: 1, talents: [], playstyle: '' })
   const p = buildPlayer(attr, attr, ident, ident)
   assert.equal(suddenArrivalRulesFor(p), SUDDEN_ARRIVAL_RULES)
+})
+
+// ------------------------------------------------------------ 局内改数值
+
+/**
+ * 一个"已经在局里"的角色。
+ *
+ * 和创建流程里那张卡的区别，全在只有进了游戏才存在的字段上：当前血/当前咒力、
+ * 术式消耗、状态、以及领域到底是"未领悟"还是一个真的对象。tunePlayer 要处理的是这些人 ——
+ * 拿 tuneAttributeProfile 的档案去测，会漏掉这里一半的分支。
+ */
+function livePlayer(grade) {
+  const t = tuneAttributeProfile(rolled(), {
+    ce: RANGES[grade].ce[0], hp: RANGES[grade].hp[0],
+    cursedDamage: RANGES[grade].cd[0], physicalDamage: RANGES[grade].pd[0],
+    efficiency: Math.round(RANGES[grade].eff * 100),
+    techniqueMultiplier: TECH_MULT[grade], techniqueCooldown: 2,
+  })
+  const flavor = {
+    ...t, techniqueName: '测试术式', techniqueEffect: '测试效果足够长', playstyle: '测试玩法',
+    talents: [], tool: null,
+    domain: t.domainUnlocked
+      ? { unlocked: true, name: '测试领域', sureHit: '必中', cost: '代价', tierName: t.domainTierName, type: '伤害型' }
+      : null,
+  }
+  return buildPlayer(t, flavor, { kind: '穿越者', age: 17 }, flavor)
+}
+
+/**
+ * 把某一档的五项全填成区间中点 —— 一份确定落在该等级的输入。
+ *
+ * 特意不取端点：档位区间是首尾相接的，端点归上一档，拿端点当"落在本级"会差一级。
+ */
+const mid = ([lo, hi]) => Math.round((lo + hi) / 2)
+const at = (grade) => ({
+  ce: mid(RANGES[grade].ce), hp: mid(RANGES[grade].hp),
+  cursedDamage: mid(RANGES[grade].cd), physicalDamage: mid(RANGES[grade].pd),
+  efficiency: Math.round(RANGES[grade].eff * 100),
+})
+
+test('局内改数值：等级由数字反推，没提交的那项一个字都不动', () => {
+  const p = livePlayer('四级')
+  const ceBefore = p.ce.max
+  const notes = tunePlayer({ player: p }, {
+    hp: mid(RANGES['一级'].hp), cursedDamage: mid(RANGES['一级'].cd),
+  })
+
+  assert.equal(p.hp.max, mid(RANGES['一级'].hp))
+  assert.equal(p.hp.grade, '一级')
+  assert.equal(p.cursedDamage.grade, '一级')
+  assert.equal(p.ce.max, ceBefore, '只提交了两项，咒力上限不该被动')
+  // 回执要说人话 —— 静默生效的话，玩家会怀疑自己有没有点中
+  assert.ok(notes.some((n) => /血条上限/.test(n)), notes.join('|'))
+  assert.ok(notes.some((n) => /咒术伤害/.test(n)), notes.join('|'))
+  assert.ok(!notes.some((n) => /咒力上限/.test(n)), '没变的项不该写进回执')
+})
+
+test('五项一起抬，综合等级跟着跳 —— 等级是推出来的，不是能单独设的一项', () => {
+  const p = livePlayer('四级')
+  const notes = tunePlayer({ player: p }, at('一级'))
+  assert.equal(p.grade, '一级')
+  assert.ok(notes.some((n) => /等级 四级 → 一级/.test(n)), notes.join('|'))
+})
+
+test('改血条上限：当前血按比例跟着走 —— 不凭空痊愈，也不凭空添伤', () => {
+  const p = livePlayer('三级')
+  p.hp.cur = Math.round(p.hp.max / 2)
+  const ratio = p.hp.cur / p.hp.max
+
+  tunePlayer({ player: p }, { hp: RANGES['一级'].hp[1] })
+  assert.equal(p.hp.max, RANGES['一级'].hp[1])
+  assert.equal(p.hp.cur, Math.round(p.hp.max * ratio), '比例才是这里唯一说得通的不变量')
+  assert.ok(p.hp.cur > 0 && p.hp.cur < p.hp.max, '改完还是个半血的人')
+})
+
+test('显式填了当前血就用填的那个，并且夹在 0~上限之间', () => {
+  const p = livePlayer('二级')
+  tunePlayer({ player: p }, { hp: p.hp.max, hpCur: -50 })
+  assert.equal(p.hp.cur, 0, '负数夹成 0，不能改出负血')
+
+  tunePlayer({ player: p }, { hp: p.hp.max, hpCur: 999999999 })
+  assert.equal(p.hp.cur, p.hp.max, '超过上限的当前值夹回上限')
+
+  tunePlayer({ player: p }, { hp: p.hp.max, hpCur: 7 })
+  assert.equal(p.hp.cur, 7)
+})
+
+test('已经走到龙级的人再改数值，不会被夹回超特级的上限', () => {
+  const p = livePlayer('超特级')
+  tunePlayer({ player: p }, at('龙级'))
+  assert.equal(p.grade, '龙级')
+  const ceBefore = p.ce.max
+  const cdBefore = p.cursedDamage.value
+
+  // 只动血条。开局那道的封顶是超特级，局内这道的封顶是龙级 —— 走到哪儿就别把人拽回来
+  tunePlayer({ player: p }, { hp: RANGES['龙级'].hp[1] })
+  assert.equal(p.hp.max, RANGES['龙级'].hp[1])
+  assert.equal(p.ce.max, ceBefore, '没动的那项被超特级的上限夹下来了')
+  assert.equal(p.cursedDamage.value, cdBefore)
+  assert.equal(p.grade, '龙级')
+})
+
+test('咒力上限一改，术式消耗跟着走（消耗是上限的比例，不是自由变量）', () => {
+  const p = livePlayer('二级')
+  const costBefore = p.technique.cost
+
+  tunePlayer({ player: p }, { ce: RANGES['一级'].ce[1] })
+  assert.equal(p.ce.max, RANGES['一级'].ce[1])
+  assert.equal(p.technique.cost, Math.max(1, Math.round(p.ce.max * TECH_COST_RATIO)))
+  assert.ok(p.technique.cost > costBefore, '上限涨了，消耗没道理不动')
+})
+
+test('改到跨进特级：领域当场觉醒，而且名字、档位、类型一样不缺', () => {
+  const p = livePlayer('一级')
+  assert.equal(p.domain.unlocked, false, '一级的人本来不该有领域')
+
+  const notes = tunePlayer({ player: p }, at('弱特级'))
+  assert.equal(p.grade, '弱特级')
+  assert.equal(p.domain.unlocked, true)
+  assert.equal(p.domain.tierName, '半成品')
+  assert.ok(p.domain.name, '新觉醒的领域得有名字，不能是 undefined')
+  assert.ok(p.domain.type, '打法类型也得补上，不然档案里是空的')
+  assert.equal(p.domain.active, false, '觉醒不等于当场展开')
+  assert.ok(notes.some((n) => /领域/.test(n)), notes.join('|'))
+  assert.ok(notes.some((n) => /跨进特级/.test(n)), notes.join('|'))
+})
+
+test('术式倍率与冷却能单独改，改动写进回执', () => {
+  const p = livePlayer('一级')
+  const notes = tunePlayer({ player: p }, { techniqueMultiplier: 3.5, techniqueCooldown: 4 })
+  assert.equal(p.technique.multiplier, 3.5)
+  assert.equal(p.technique.cooldown, 4)
+  assert.ok(notes.some((n) => /术式倍率/.test(n)), notes.join('|'))
+  assert.ok(notes.some((n) => /术式冷却/.test(n)), notes.join('|'))
+})
+
+test('什么都没改就返回空回执 —— 界面靠它说「数值没有变化」', () => {
+  const p = livePlayer('三级')
+  assert.deepEqual(tunePlayer({ player: p }, {}), [])
+
+  const same = { hp: p.hp.max, cursedDamage: p.cursedDamage.value }
+  assert.deepEqual(tunePlayer({ player: p }, same), [], '填了原值等于没填')
+})
+
+test('没有角色时不炸，返回空回执', () => {
+  assert.deepEqual(tunePlayer({}, {}), [])
+  assert.deepEqual(tunePlayer({ player: null }, { hp: 100 }), [])
 })

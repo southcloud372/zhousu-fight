@@ -358,6 +358,15 @@ body::before {
   background: #fdf6f5;
   transform: translateX(2px);
 }
+/*
+ * 按下去要有个"按到了"的回执。选完一条之后界面要等模型好几秒，
+ * 这期间手指底下没有任何反应的话，很容易被当成没点上而反复点。
+ */
+.choice:active:not(:disabled) {
+  background: #f7ebe9;
+  transform: translateX(2px) scale(0.985);
+  transition-duration: 0.04s;
+}
 .choice:disabled { opacity: 0.45; }
 .choice .idx {
   display: inline-block;
@@ -444,9 +453,34 @@ body::before {
 .bar-head b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
 /* position:relative 是给残影那一层当定位基准的，别删 */
 .bar-track { position: relative; height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; }
-.bar-fill { height: 100%; transition: width 0.45s ease; border-radius: 3px; }
+/* overflow:hidden 是给扫光用的：光得被裁在"有血的那一截"里，不能扫到空槽上 */
+.bar-fill { position: relative; overflow: hidden; height: 100%; transition: width 0.45s ease; border-radius: 3px; }
 .bar-fill.hp { background: linear-gradient(90deg, #8f1d16, #d4453a); }
 .bar-fill.ce { background: linear-gradient(90deg, #14607d, #2b9ec4); }
+/*
+ * 扫光。一条满格的血条是一块死色 —— 加上一层慢慢走过的反光之后，
+ * "这条还活着"就成了不用读数也能看见的事。咒力条尤其需要：
+ * 它一格格回，玩家得知道它回来了。
+ *
+ * 挂在 .bar-track 上而不是 .bar-fill 里：fill 的宽度一直在变，
+ * 反光跟着它的宽度走的话，条越短光跑得越快。
+ */
+.bar-sheen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -60%;
+  width: 55%;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  opacity: 0.55;
+  animation: barSheen 3200ms ease-in-out infinite;
+}
+.bar-fill.ce .bar-sheen { animation-duration: 2400ms; opacity: 0.5; }
+@keyframes barSheen {
+  0% { left: -60%; }
+  55%, 100% { left: 105%; }
+}
 
 .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 3px 0; }
 .kv span:first-child { color: var(--ink-dim); flex: none; }
@@ -478,6 +512,66 @@ body::before {
 .tl-row .st { font-size: 11px; color: var(--ink-faint); }
 .tl-row .st.已发生 { color: var(--ok); }
 .tl-row .st.已改变 { color: var(--gold); }
+/* 已改写是人命换来的，用血的颜色 —— 它比「已改变」更重 */
+.tl-row .st.已改写 { color: var(--blood); font-weight: 600; }
+.tl-why {
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink-faint);
+  padding: 2px 0 6px 8px;
+  border-left: 2px solid var(--blood);
+  margin-bottom: 2px;
+}
+
+/* ---------------------------------------------------------------- 战果 */
+
+/* 原作标记：敌方档案顶上的一行小字 */
+.canon-tag {
+  display: inline-block;
+  margin: 6px 0 2px;
+  padding: 1px 7px;
+  font-size: 11px;
+  border-radius: 2px;
+  background: #f7f0d9;
+  color: var(--gold);
+  border: 1px solid var(--gold);
+}
+
+.bt-row { display: flex; gap: 6px; padding: 4px 0; border-top: 1px solid var(--line-soft); }
+.bt-row:first-of-type { border-top: 0; }
+.bt-result {
+  flex: none;
+  width: 34px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.6;
+  border-radius: 2px;
+  height: 18px;
+}
+.bt-result.kill { background: var(--blood); color: #fff; }
+.bt-result.win { background: #e2f0e7; color: var(--ok); }
+.bt-result.flee { background: var(--track); color: var(--ink-faint); }
+.bt-result.lose { background: #fbe4e1; color: var(--blood); }
+.bt-result.draw { background: var(--track); color: var(--gold); }
+.bt-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.bt-name { font-size: 12.5px; display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; }
+.bt-name em { font-style: normal; font-size: 11px; color: var(--ink-faint); }
+.bt-name b {
+  font-weight: 500;
+  font-size: 10px;
+  color: var(--gold);
+  border: 1px solid var(--gold);
+  border-radius: 2px;
+  padding: 0 3px;
+}
+.bt-meta { font-size: 11px; color: var(--ink-faint); }
+.bt-why {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--blood);
+  padding-left: 6px;
+  border-left: 2px solid var(--blood);
+}
 
 /* ---------------------------------------------------------- 战斗栏（左） */
 
@@ -515,6 +609,25 @@ body::before {
   letter-spacing: 0.18em;
   text-align: center;
   margin: 10px 0 2px;
+}
+
+/* 敌方「属性」按钮：翻底牌用。压得很轻 —— 它是随时能点的入口，不是提醒 */
+.dossier-btn {
+  flex: none;
+  padding: 1px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--ink-dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.dossier-btn:hover {
+  color: var(--blood);
+  border-color: var(--blood);
+  background: var(--bg-3);
 }
 
 .calc {
@@ -1004,6 +1117,43 @@ body::before {
 }
 .modal .hint { font-size: 12.5px; color: var(--ink-faint); margin-bottom: 15px; }
 
+/* 改数值的九宫格：标签在左、输入框在右，两列排开。
+   一行一项的话，九个字段会拖出一条要滚的竖条 */
+.edit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 14px;
+}
+@media (max-width: 560px) {
+  .edit-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.edit-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--ink-dim);
+}
+.edit-row > span { flex: 1; min-width: 0; }
+.edit-row input {
+  width: 108px;
+  flex: none;
+  padding: 4px 7px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.edit-row input:focus {
+  outline: none;
+  border-color: var(--cursed);
+  background: var(--bg-2);
+}
+
 .trow {
   display: flex;
   align-items: center;
@@ -1198,50 +1348,96 @@ body::before {
 /* ---------------------------------------------------------- 日常轮盘（战斗向） */
 
 /*
- * 两段剧情之间的空闲时间全靠它推进，所以它长在正文和选项之间、占满整栏宽度，
- * 而不是缩在右侧那条窄状态栏里。
+ * 位置：右侧状态栏最上面那一块，**不在正文和选项之间**。
+ * 它原来是横向铺满中栏的一条，把最该读的正文挤扁了；现在收进窄栏之后
+ * 改成竖排 —— 栏宽只有 340px，横排的转盘+文字+按钮在这里会被挤成一条缝。
  */
-.wheel-panel {
-  border-top: 1px solid var(--line);
+
+/* ---- 收起态：一条可点的窄条 ---- */
+.wheel-strip {
+  width: 100%;
+  display: block;
+  text-align: left;
+  padding: 9px 10px;
+  margin-bottom: 10px;
   background: var(--bg-3);
-  padding: 9px 24px 11px;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-family: inherit;
+  color: var(--ink);
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+.wheel-strip:hover { border-color: var(--ink-dim); }
+/* 到节点当天：这条窄条是"该动手了"的唯一信号，必须跳出来 */
+.wheel-strip.ready {
+  border-color: var(--blood);
+  background: linear-gradient(90deg, rgba(168, 35, 27, 0.07), transparent 70%);
+}
+
+.ws-row { display: flex; align-items: baseline; gap: 8px; }
+.ws-title { font-size: 12px; letter-spacing: 0.22em; color: var(--ink-dim); }
+.ws-days { font-size: 12px; color: var(--ink-faint); }
+.ws-more { margin-left: auto; font-size: 12px; color: var(--ink-faint); }
+.ws-next { display: block; margin-top: 4px; font-size: 12.5px; color: var(--ink-dim); }
+.ws-next b { color: var(--ink); }
+.ws-next b.hot { color: var(--blood); }
+.ws-sub { margin-left: 7px; font-size: 11.5px; color: var(--ink-faint); }
+.ws-landed {
+  display: block;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px dashed var(--line-soft);
+  font-size: 11.5px;
+  color: var(--gold);
+}
+
+/* ---- 展开态：竖排的一整块 ---- */
+.wheel-panel {
+  margin-bottom: 10px;
+  padding: 10px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 5px;
 }
 .wheel-panel.ready {
-  background: linear-gradient(90deg, rgba(168, 35, 27, 0.07), transparent 65%);
-  border-top-color: var(--blood);
+  border-color: var(--blood);
+  background: linear-gradient(180deg, rgba(168, 35, 27, 0.06), transparent 60%);
 }
-
-.wheel-left { flex: none; line-height: 0; }
-.wheel-svg { overflow: visible; }
-
-.wheel-mid { flex: 1; min-width: 0; }
 
 .wheel-head {
   display: flex;
   align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 4px;
+  gap: 10px;
+  margin-bottom: 8px;
 }
 .wheel-title { font-size: 12px; letter-spacing: 0.22em; color: var(--ink-dim); }
-.wheel-days { font-size: 12px; color: var(--ink-faint); }
-.wheel-fatigue { font-size: 12px; color: var(--ink-faint); cursor: help; }
+.wheel-toggle {
+  margin-left: auto;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--ink-faint);
+  font-family: inherit;
+  font-size: 11.5px;
+  transition: border-color 0.12s, color 0.12s;
+}
+.wheel-toggle:hover { border-color: var(--ink-dim); color: var(--ink); }
 
-.wheel-next { font-size: 13.5px; color: var(--ink-dim); }
+/* 转盘居中 —— 窄栏里它是这块的视觉主体 */
+.wheel-left { line-height: 0; text-align: center; margin-bottom: 8px; }
+.wheel-svg { overflow: visible; }
+
+.wheel-next { font-size: 12.5px; color: var(--ink-dim); line-height: 1.7; }
 .wheel-next b { color: var(--ink); }
 .wheel-next b.hot { color: var(--blood); }
-.wheel-sub { margin-left: 8px; font-size: 12px; color: var(--ink-faint); }
+.wheel-sub { display: block; font-size: 11.5px; color: var(--ink-faint); }
 
 .wheel-actions {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 8px;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 9px;
 }
 .wheel-btn {
   padding: 6px 14px;
@@ -1256,8 +1452,15 @@ body::before {
 .wheel-btn.primary { border-color: var(--blood); color: var(--blood); }
 .wheel-btn.primary:hover:not(:disabled) { background: rgba(168, 35, 27, 0.06); }
 .wheel-btn:disabled { opacity: 0.45; }
-.wheel-block { font-size: 12px; color: var(--ink-faint); }
+.wheel-block { font-size: 11.5px; color: var(--ink-faint); margin-top: 6px; line-height: 1.6; }
 .wheel-block.hot { color: var(--blood); }
+.wheel-meta {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
 
 /*
  * 六条成长进度条。
@@ -1333,8 +1536,8 @@ body::before {
 .choice-reason { color: var(--ink-faint); font-size: 12px; }
 
 @media (max-width: 900px) {
-  .wheel-panel { padding: 8px 14px 10px; gap: 10px; }
-  .wheel-svg { width: 96px; height: 96px; }
+  /* 小屏上侧栏是 88vw 的抽屉，转盘跟着缩一点，免得把这块顶得老长 */
+  .wheel-svg { width: 112px; height: 112px; }
 }
 
 /* ==========================================================================
@@ -1513,6 +1716,130 @@ body::before {
   animation: dcUp 500ms 1200ms both;
 }
 
+/*
+ * 收场那一屏走的是同一套骨架，配色换一档。
+ * 打完一场是整局里情绪最高的一拍 —— 一颗角落里的轻提示接不住它，
+ * 得有和领域展开同等的排面，而且要一眼分得出是赢是输。
+ * 底色压得更黑：这一屏后面没有别的东西需要被看见，除了这两个字。
+ */
+.domain-cutin.is-outcome { background: rgba(8, 6, 5, 0.93); }
+.domain-cutin.tone-win .dc-wash {
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(198, 148, 44, 0.52),
+    rgba(96, 66, 8, 0.18) 42%,
+    transparent 68%
+  );
+}
+.domain-cutin.tone-lose .dc-wash {
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(136, 26, 18, 0.55),
+    rgba(52, 8, 6, 0.2) 42%,
+    transparent 68%
+  );
+}
+.domain-cutin.tone-win .dc-kanji span {
+  text-shadow:
+    0 0 26px rgba(255, 206, 110, 0.9),
+    0 0 62px rgba(198, 148, 44, 0.65),
+    0 4px 0 rgba(0, 0, 0, 0.35);
+}
+.domain-cutin.is-outcome .dc-name { letter-spacing: 0.24em; text-indent: 0.24em; }
+.domain-cutin.is-outcome .dc-fx { color: #ffdc9e; }
+
+/* ------------------------------------------------------------ 全屏冲击 */
+
+/*
+ * 命中那一下。
+ *
+ * 左边那一栏的数字是"信息"，可玩家的眼睛盯的是中间那一栏 —— 一记重击
+ * 如果只让血条短一截，那是数据更新；屏幕真的震一下、白一下、从命中点
+ * 炸开一圈，才叫打中了。
+ *
+ * 三层各管一件事：
+ *   .im-flash  整屏一亮      —— 这一下真打到了
+ *   .im-edge   边缘压上血色  —— 这一下很重
+ *   .im-burst  从命中点炸开  —— 是从哪儿打进去的
+ * 强度分三档（graze / heavy / brutal），只有重的两档才震屏。
+ */
+.impact {
+  position: fixed;
+  inset: 0;
+  z-index: 88;
+  pointer-events: none;   /* 演出层不挡任何操作 */
+  overflow: hidden;
+}
+.impact .im-flash,
+.impact .im-edge,
+.impact .im-burst { position: absolute; inset: 0; }
+
+.impact .im-flash {
+  background: radial-gradient(circle at 50% 46%, rgba(255, 255, 255, 0.46), transparent 62%);
+  animation: imFlash 250ms ease-out both;
+}
+.impact.tone-crit .im-flash {
+  background: radial-gradient(circle at 50% 46%, rgba(255, 236, 200, 0.62), transparent 64%);
+}
+.impact.tone-sure .im-flash {
+  background: radial-gradient(circle at 50% 46%, rgba(214, 180, 255, 0.5), transparent 64%);
+}
+@keyframes imFlash { from { opacity: 0.95; } to { opacity: 0; } }
+
+.impact .im-edge {
+  box-shadow: inset 0 0 56px 10px rgba(168, 35, 27, 0.42);
+  animation: imEdge 480ms ease-out both;
+}
+.impact.lv-graze .im-edge { animation-duration: 280ms; }
+.impact.tone-taken .im-edge { box-shadow: inset 0 0 92px 22px rgba(168, 35, 27, 0.72); }
+@keyframes imEdge { from { opacity: 0.92; } to { opacity: 0; } }
+
+/*
+ * 炸开的那一圈落在哪一侧：打对方炸左上（那张卡在左栏上半），
+ * 自己挨打炸左下（我方那张卡在左栏下半）。不用看字就知道这回合谁挨了。
+ */
+.impact .im-burst {
+  background: radial-gradient(
+    circle at var(--im-at, 22% 30%),
+    transparent 0,
+    rgba(255, 120, 80, 0.4) 17%,
+    transparent 46%
+  );
+  animation: imBurst 440ms cubic-bezier(0.15, 0.8, 0.25, 1) both;
+}
+.impact.from-enemy .im-burst { --im-at: 22% 30%; }
+.impact.from-self .im-burst { --im-at: 22% 70%; }
+@keyframes imBurst {
+  from { opacity: 0.95; transform: scale(0.55); }
+  to { opacity: 0; transform: scale(1.25); }
+}
+
+/*
+ * 震屏。挂在 .shell 上 —— 只有背景在闪的话，那是"屏幕上蒙了一层东西"，
+ * 不是"这一下打在这间屋子里"。
+ *
+ * soft/hard × 0/1 四条：0 和 1 是两条同款的 keyframes，靠奇偶轮换逼浏览器
+ * 重播。同一个动画名连着用两次，第二下是不会有反应的。
+ * fill-mode 必须是默认的 none —— 留着终态 transform 的话，.shell 会一直
+ * 是个"有 transform 的祖先"，里面那些 position:fixed 的层会被它接管。
+ */
+.shell[data-shake="soft-0"] { animation: imShakeA 260ms cubic-bezier(0.3, 0.8, 0.3, 1); }
+.shell[data-shake="soft-1"] { animation: imShakeB 260ms cubic-bezier(0.3, 0.8, 0.3, 1); }
+.shell[data-shake="hard-0"] { animation: imShakeA 420ms cubic-bezier(0.3, 0.8, 0.3, 1); }
+.shell[data-shake="hard-1"] { animation: imShakeB 420ms cubic-bezier(0.3, 0.8, 0.3, 1); }
+@keyframes imShakeA {
+  0%, 100% { transform: translate(0, 0); }
+  22% { transform: translate(-6px, 4px) rotate(-0.22deg); }
+  48% { transform: translate(5px, -3px) rotate(0.18deg); }
+  74% { transform: translate(-3px, 2px); }
+}
+@keyframes imShakeB {
+  0%, 100% { transform: translate(0, 0); }
+  26% { transform: translate(5px, -3px) rotate(0.2deg); }
+  52% { transform: translate(-6px, 4px) rotate(-0.24deg); }
+  78% { transform: translate(3px, -1px); }
+}
+
 /* ------------------------------------------------------------------ 轻提示 */
 
 .toasts {
@@ -1540,19 +1867,28 @@ body::before {
   box-shadow: var(--shadow-lg);
   font-size: 13px;
   color: var(--ink);
-  animation: toastIn 260ms cubic-bezier(0.2, 0.9, 0.25, 1.1) both;
+  animation: toastIn 300ms cubic-bezier(0.18, 1.1, 0.3, 1.05) both;
 }
 @keyframes toastIn {
-  from { opacity: 0; transform: translateX(28px); }
-  to { opacity: 1; transform: none; }
+  0% { opacity: 0; transform: translateX(28px) scale(0.94); }
+  60% { opacity: 1; transform: translateX(-3px) scale(1.015); }
+  100% { opacity: 1; transform: none; }
 }
 .toast-title { font-size: 11px; letter-spacing: 0.22em; color: var(--gold); }
 .toast.tone-blood { border-left-color: var(--blood); }
 .toast.tone-blood .toast-title { color: var(--blood); }
 .toast.tone-cursed { border-left-color: var(--cursed); }
 .toast.tone-cursed .toast-title { color: var(--cursed); }
-.toast.big { padding: 12px 18px; font-size: 15px; }
+.toast.big {
+  padding: 13px 20px;
+  font-size: 15.5px;
+  border-left-width: 4px;
+  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(0, 0, 0, 0.03);
+}
 .toast.big .toast-text { font-weight: 600; }
+/* 大的那几条自带一层同色的辉光：一屏里同时有好几条时，先看哪条不用想 */
+.toast.big.tone-gold { box-shadow: var(--shadow-lg), 0 0 22px rgba(196, 146, 42, 0.3); }
+.toast.big.tone-blood { box-shadow: var(--shadow-lg), 0 0 22px rgba(168, 35, 27, 0.28); }
 
 /* -------------------------------------------------------------- 战斗数值演出 */
 
@@ -1642,6 +1978,19 @@ body::before {
   from { transform: scale(1.7); opacity: 0.4; }
   to { transform: none; opacity: 1; }
 }
+/*
+ * 连击从第三下起升温：字变大、烧起来、一直微微搏动。
+ * 连击的爽感全在"还没断"这件事上 —— 数字一路都长一个样的话，
+ * 玩家不会注意到自己正连着。对方连过来时同理，那是警告。
+ */
+.combo-row.hot .combo-n {
+  font-size: 25px;
+  text-shadow: 0 0 15px currentColor;
+  animation:
+    comboPop 320ms cubic-bezier(0.2, 0.9, 0.3, 1.4) both,
+    comboThrob 900ms ease-in-out 320ms infinite;
+}
+@keyframes comboThrob { 50% { transform: scale(1.13); } }
 
 /* 领域展开中挂在角色卡上的光环 */
 .domain-aura {
@@ -1793,36 +2142,8 @@ body::before {
 .choice.act-technique .idx { color: var(--cursed); }
 .choice.act-defend .idx { color: var(--ink-faint); }
 
-/* ------------------------------------------------------- 轮盘：收起 / 展开 */
-
-.wheel-panel.compact { padding: 6px 24px 7px; gap: 12px; }
-.wheel-panel.compact .wheel-mid { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.wheel-panel.compact .wheel-head { margin-bottom: 0; }
-.wheel-panel.compact .wheel-next { flex: 1; min-width: 0; }
-.wheel-panel.compact .wheel-actions { margin-top: 0; }
-.wheel-panel.compact .wheel-btn { padding: 5px 12px; font-size: 12.5px; }
-
-/* 收起时把这次的落点顶在转盘下面 —— 转完一天最想先看到的就是它 */
-.wheel-landed {
-  display: block;
-  margin-top: 4px;
-  text-align: center;
-  font-size: 11.5px;
-  letter-spacing: 0.1em;
-  color: var(--gold);
-  animation: comboPop 320ms cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
-}
-
-.wheel-toggle {
-  padding: 5px 10px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ink-faint);
-  font-size: 12px;
-  transition: color 0.14s ease, border-color 0.14s ease;
-}
-.wheel-toggle:hover { border-color: var(--line); color: var(--ink-dim); }
+/* 落点只写在收起后的窄条上，转完一天最想先看到的就是它，得弹一下 */
+.ws-landed { animation: comboPop 320ms cubic-bezier(0.2, 0.9, 0.3, 1.3) both; }
 
 /* ------------------------------------------------------ 正文：点击跳过打字 */
 
@@ -1910,10 +2231,21 @@ body::before {
 @media (prefers-reduced-motion: reduce) {
   .dc-wash, .dc-rings i, .dc-kanji span { animation: none; }
   .dc-rings { display: none; }
-  .float-dmg, .bar-flash, .combo-row .combo-n, .crit-chip, .toast, .wheel-landed { animation: none; }
+  .float-dmg, .bar-flash, .combo-row .combo-n, .crit-chip, .toast, .ws-landed { animation: none; }
   .beat, .seal-chip { animation: none; }
   .domain-aura .da-ring { display: none; }
   .shake-hit, .shake-taken { animation: none; }
   /* 残影是纯动画的一层：关掉动画之后它只会留下一条没用的红条 */
   .bar-ghost { display: none; }
+  /* 扫光是纯氛围，没有它什么都不缺 */
+  .bar-sheen { display: none; }
+  /*
+   * 震屏和整屏闪光是最容易引发不适的两样，一律停掉。
+   * 但**保留**亮一下的终态之外的东西：冲击层本身还留着边缘压色，
+   * 那一层是静态的，玩家仍能看出"这一下很重"。
+   */
+  .shell[data-shake] { animation: none; }
+  .impact .im-flash { animation: none; opacity: 0; }
+  .impact .im-burst { display: none; }
+  .impact .im-edge { animation: none; opacity: 0.75; }
 }

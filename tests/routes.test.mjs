@@ -18,7 +18,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const { blankState, buildPlayer } = await import('../server/engine/state.js')
+const { blankState, buildPlayer, TECH_COST_RATIO } = await import('../server/engine/state.js')
 const { makeRng } = await import('../server/engine/dice.js')
 const { rollAttributeProfile, rollIdentity, rollIdentityKind, rollEnemy } = await import('../server/engine/rolls.js')
 const { initCombat } = await import('../server/engine/combat.js')
@@ -40,6 +40,8 @@ const S = {
   oldsave: `rt-${RUN}-oldsave`,
   tune: `rt-${RUN}-tune`,
   tuneEmpty: `rt-${RUN}-tuneblank`,
+  edit: `rt-${RUN}-edit`,
+  editNone: `rt-${RUN}-editblank`,
   sudden: `rt-${RUN}-sudden`,
   suddenNone: `rt-${RUN}-suddennone`,
 }
@@ -349,6 +351,40 @@ console.log('\n──── 自定义属性：玩家直接填数字 ────
   ok('没生成过自定义档案时，说清楚要先做什么', t4.status === 400, t4.j?.error)
   ok('会话不存在时给 404，不是 500',
     (await post('/api/session/nope-xyz/attributes/custom/tune', { numbers: {} })).status === 404)
+
+  console.log('\n──── 局内改数值：右侧面板那个「编辑」 ────')
+  /*
+   * 和开局那张卡的区别只有一处：封顶。开局封在超特级（龙级该靠成长走到），
+   * 局内封在龙级 —— 已经站在那儿的人，不该因为动了一下输入框就被拽回来。
+   * 其余（等级反推、领域觉醒、术式消耗）走的都是同一份 tuneAttributeProfile。
+   */
+  seed(S.edit, () => {})
+
+  const e1 = await post(`/api/session/${S.edit}/edit`, { numbers: { ce: 1e15, hp: 1e15 } })
+  ok('越界的数字夹到局内上限（龙级），不是开局那张卡的超特级',
+    e1.j?.panel?.ce?.max === RANGES['龙级'].ce[1] && e1.j?.panel?.hp?.max === RANGES['龙级'].hp[1],
+    `ce=${e1.j?.panel?.ce?.max} hp=${e1.j?.panel?.hp?.max}`)
+  ok('回执说得清改了什么', Array.isArray(e1.j?.notes) && e1.j.notes.some((n) => /咒力上限/.test(n)),
+    JSON.stringify(e1.j?.notes))
+  ok('回执里直接带最新面板，界面不用再拉一次', e1.j?.panel?.name === '联调者', e1.j?.panel?.name)
+
+  const e2 = await post(`/api/session/${S.edit}/edit`, { numbers: { ce: RANGES['四级'].ce[0] } })
+  ok('往下调也一样生效', e2.j?.panel?.ce?.max === RANGES['四级'].ce[0], String(e2.j?.panel?.ce?.max))
+  ok('污染数据当作没填，数值不被打成 0',
+    (await post(`/api/session/${S.edit}/edit`, { numbers: { ce: 'abc', hp: null } })).j?.panel?.ce?.max
+      === RANGES['四级'].ce[0])
+
+  const eDisk = onDisk(S.edit).player
+  ok('改完落了盘（服务端重启也读得到）', eDisk?.ce?.max === RANGES['四级'].ce[0], String(eDisk?.ce?.max))
+  ok('术式消耗跟着咒力上限重算',
+    eDisk?.technique?.cost === Math.max(1, Math.round(eDisk.ce.max * TECH_COST_RATIO)),
+    String(eDisk?.technique?.cost))
+
+  seed(S.editNone, (s) => { s.player = null })
+  const e3 = await post(`/api/session/${S.editNone}/edit`, { numbers: { hp: 100 } })
+  ok('还没建角色时说清楚，不是 500', e3.status === 400, e3.j?.error)
+  ok('会话不存在时给 404',
+    (await post('/api/session/nope-xyz/edit', { numbers: {} })).status === 404)
 
   console.log('\n──── 第五个身份：突然出现的人 ────')
   seed(S.suddenNone, (s) => { s.identityProfiles = [] })

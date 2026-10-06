@@ -298,7 +298,8 @@ export async function buildCharacterAndOpening(state, attrProfile, identityProfi
   state.relations = { ...identityProfile.initialRelations }
   // 穿越时间决定起始日期与原作进度 —— 不写进去的话这个选择就只是装饰
   if (timePoint) applyTimeline(state, timePoint)
-  state.sukuna.fingersEaten = 1
+  // 手指的起点由故事线决定（见 state.js 的 initialFingers）：宿傩篇是"虎杖刚吞下第一根"，
+  // 怀玉篇在 2006 年、虎杖还没出生 —— 硬塞一根进去会和时间线自相矛盾。
 
   const relationsForModel = Object.fromEntries(
     Object.entries(state.relations)

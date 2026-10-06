@@ -2,7 +2,7 @@ import {
   RANGES, TECH_MULT, INITIAL_WEIGHTS, ATTR_SHIFT, DOMAIN_TIER, GRADES,
   gradeIndex, shiftGrade, isTier,
   gradeForValue, gradeForEfficiency, gradeForMultiplier, overallFromGrades,
-  valueBounds, EFF_BOUNDS, MULT_BOUNDS, numeric,
+  valueBounds, effBounds, multBounds, numeric, ATTR_GRADE_CAP,
 } from './tables.js'
 import { rint, pickByProb, weightedPick, rfloat } from './dice.js'
 import { defenseOf } from './formula.js'
@@ -70,23 +70,25 @@ export function rollAttributeProfile(rng, slot) {
  * 综合等级、领域觉醒、防御力都是从上面几项推导出来的，必须一起重算 ——
  * 少算一个，玩家就会顶着一个和数值不匹配的等级进游戏。
  */
-export function tuneAttributeProfile(profile, numbers = {}) {
+export function tuneAttributeProfile(profile, numbers = {}, { cap = ATTR_GRADE_CAP } = {}) {
   const pick = (key, raw, dflt) => {
-    const [lo, hi] = valueBounds(key)
+    const [lo, hi] = valueBounds(key, cap)
     const v = numeric(raw)
     return Number.isNaN(v) ? dflt : Math.max(lo, Math.min(hi, Math.round(v)))
   }
 
   // 效率在界面上是百分数（130 而不是 1.3），进来先除回去
+  const [effLo, effHi] = effBounds(cap)
   const effRaw = numeric(numbers.efficiency)
   const eff = Number.isNaN(effRaw)
     ? profile.efficiency.value
-    : Math.max(EFF_BOUNDS[0], Math.min(EFF_BOUNDS[1], effRaw / 100))
+    : Math.max(effLo, Math.min(effHi, effRaw / 100))
 
+  const [multLo, multHi] = multBounds(cap)
   const multRaw = numeric(numbers.techniqueMultiplier)
   const multGrade = Number.isNaN(multRaw)
     ? profile.techniqueGrade
-    : gradeForMultiplier(Math.max(MULT_BOUNDS[0], Math.min(MULT_BOUNDS[1], multRaw)))
+    : gradeForMultiplier(Math.max(multLo, Math.min(multHi, multRaw)))
 
   const cdRaw = numeric(numbers.techniqueCooldown)
   const cooldown = Number.isNaN(cdRaw)

@@ -38,49 +38,26 @@ export function scrubTurn(turn) {
 }
 
 /**
- * 原作主要角色不得凭空变成敌人。
- * 模型很容易为了制造冲突把虎杖、伏黑这些人写成敌人，但那需要对应的原作节点
- * 已经发生（比如虎杖被宿傩夺舍要等到少年院任务）。
- * 这里做一次硬拦截：条件不满足就把敌人换成无名咒灵。
+ * 这一手是不是奔着要命去的。
+ *
+ * 只决定战后那句结算是「击杀」还是「击退」（见 combat.js 的 finishCombat），
+ * 不参与掷骰，也不影响伤害 —— 判错顶多是战报措辞不准，不会改写胜负。
+ *
+ * 两条规则：正面词表命中就算要命，否定说法一票否决。
+ * 为什么需要否定词：玩家写「别杀他」时"杀"也在里面，只看正面词就会把一句
+ * 求饶读成杀令，战报上于是写着他杀了人 —— 那是引擎替玩家编造他没做过的事。
+ *
+ * 这里是宽松匹配，不做句法分析。真判错了也不要紧：玩家手里的编辑按钮
+ * 能改数值，模型那边也能把"我本来只是打晕"说清楚。
  */
-export const PROTECTED_CHARACTERS = {
-  虎杖悠仁: '宿傩夺舍',
-  伏黑惠: '涩谷事变',
-  钉崎野蔷薇: '涩谷事变',
-  五条悟: '涩谷事变',
-  七海建人: '涩谷事变',
-  禅院真希: '涩谷事变',
-  狗卷棘: '涩谷事变',
-  熊猫: '涩谷事变',
-  夜蛾正道: '涩谷事变',
-}
+const LETHAL_RE = /杀|宰|干掉|弄死|斩|捅死|毙|取他性命|要他的命|结果了他/
+const SPARE_RE = /不要杀|别杀|别下杀手|留他.{0,2}(命|活)|留活口|饶|放他.{0,2}命|不必杀|别弄死/
 
-export function checkEnemyLegality(enemyName, timeline, playerInput = '') {
-  for (const [who, requiredNode] of Object.entries(PROTECTED_CHARACTERS)) {
-    if (!String(enemyName || '').includes(who)) continue
-
-    // 玩家自己点名要打的，一律放行。
-    // 这道护栏是防"模型自作主张把同伴派成敌人"的，不是用来否决玩家的 ——
-    // 玩家有权改写任何人的命运，包括原作主角。之前没做这个区分，
-    // 导致玩家写"我要杀了虎杖"时敌人被偷偷换成无名咒灵，行动等于没执行。
-    //
-    // 匹配要宽松：玩家写"杀了虎杖"时不会写全名"虎杖悠仁"，
-    // 所以姓氏（前两字）也要认。
-    const input = String(playerInput || '')
-    if (input && (input.includes(who) || input.includes(who.slice(0, 2)))) {
-      return { ok: true, playerInitiated: true }
-    }
-
-    const nodeState = timeline?.nodes?.[requiredNode]
-    if (nodeState === '已发生' || nodeState === '已改变') {
-      return { ok: true } // 对应节点已发生，站在对立面是合理的
-    }
-    return {
-      ok: false,
-      reason: `「${who}」不能在这个时间点成为敌人（需要「${requiredNode}」已发生，当前为「${nodeState || '未发生'}」）—— 模型自作主张，玩家没点名`,
-    }
-  }
-  return { ok: true }
+export function hasLethalIntent(text) {
+  const s = String(text || '')
+  if (!s) return false
+  if (SPARE_RE.test(s)) return false
+  return LETHAL_RE.test(s)
 }
 
 const TIME_RANK = { 0: 0, '1d': 1, '3d': 3, '1w': 7 }
@@ -140,7 +117,14 @@ export function clampProposal(proposal, state) {
     if (d !== num(v)) notes.push(`关系值 ${k} 变动超限已夹紧`)
   }
 
-  const awakeningDelta = Math.max(-10, Math.min(10, num(p.sukunaAwakeningDelta)))
+  // 手指是极稀有的事：全篇二十根。一回合最多到手三根、被吞下一根（谁吞的都算），
+  // 放宽了模型会拿它当日常奖励发，宿傩的复苏就没了分量。
+  const fingersCollected = Math.max(0, Math.min(3, num(p.sukunaFingersCollectedDelta)))
+  const fingersEaten = Math.max(0, Math.min(1, num(p.sukunaFingersEatenDelta)))
+  const fingersPlayerEaten = Math.max(0, Math.min(1, num(p.sukunaFingersPlayerEatenDelta)))
+  if (fingersCollected !== num(p.sukunaFingersCollectedDelta)) notes.push('本回合到手的手指超限已夹紧')
+  if (fingersEaten !== num(p.sukunaFingersEatenDelta)) notes.push('本回合容器吞下的手指超限已夹紧')
+  if (fingersPlayerEaten !== num(p.sukunaFingersPlayerEatenDelta)) notes.push('本回合玩家吞下的手指超限已夹紧')
 
   // 死亡是永久事实，引擎自己记一份 —— 光靠模型记住迟早会让人复活
   const deaths = Array.isArray(p.deaths)
@@ -156,7 +140,9 @@ export function clampProposal(proposal, state) {
     hpDelta: Math.round(hp),
     ceDelta: Math.round(ce),
     relationDelta,
-    sukunaAwakeningDelta: awakeningDelta,
+    sukunaFingersCollectedDelta: fingersCollected,
+    sukunaFingersEatenDelta: fingersEaten,
+    sukunaFingersPlayerEatenDelta: fingersPlayerEaten,
     deaths,
     flags: Array.isArray(p.flags) ? p.flags.slice(0, 8).map(String) : [],
     timeAdvance: time.value,

@@ -41,7 +41,7 @@ const toolInput = (narration) => JSON.stringify({
   dialogue: [],
   choices: ['抢攻', '后撤重整', '盯住它的手'],
   proposal: {
-    hpDelta: 0, ceDelta: 0, relationDelta: {}, sukunaAwakeningDelta: 0,
+    hpDelta: 0, ceDelta: 0, relationDelta: {}, sukunaFingersCollectedDelta: 0, sukunaFingersEatenDelta: 0,
     deaths: [], flags: [], timeAdvance: '0',
   },
   combatRequest: null,

@@ -8,10 +8,12 @@ import { clampProposal } from '../server/engine/guard.js'
 import { COMBAT_MODES, MODE_LABELS } from '../server/engine/combat.js'
 import { TRAINING_TABLE } from '../server/engine/commands.js'
 import { DOMAIN_TYPES } from '../server/engine/domains.js'
-import { GRADES, TIER_GRADES, DOMAIN_TIER } from '../server/engine/tables.js'
+import { GRADES, TIER_GRADES, DOMAIN_TIER, RANGES } from '../server/engine/tables.js'
 import { CORE_RULES, CONTRACT } from '../server/prompts.js'
 import { ENEMY_ARCHETYPES } from '../server/engine/rolls.js'
-import { PROTECTED_CHARACTERS } from '../server/engine/guard.js'
+import { PLOT_ANCHORS } from '../server/engine/plotdeps.js'
+import { CANON, canonFor } from '../server/engine/canon.js'
+import { storylineOf } from '../server/engine/storylines.js'
 import { blankState } from '../server/engine/state.js'
 import { makeRng } from '../server/engine/dice.js'
 
@@ -68,7 +70,7 @@ test('改写过的 schema 是副本，不能污染 submitTurn 常量', () => {
 test('proposal 的字段必须覆盖 clampProposal 读取的全部字段', () => {
   const proposalProps = Object.keys(submitTurn.input_schema.properties.proposal.properties)
   // clampProposal 实际读取的字段（见 guard.js）
-  const read = ['hpDelta', 'ceDelta', 'relationDelta', 'sukunaAwakeningDelta', 'deaths', 'flags', 'timeAdvance']
+  const read = ['hpDelta', 'ceDelta', 'relationDelta', 'sukunaFingersCollectedDelta', 'sukunaFingersEatenDelta', 'sukunaFingersPlayerEatenDelta', 'deaths', 'flags', 'timeAdvance']
   for (const k of read) {
     assert.ok(proposalProps.includes(k), `proposal 声明里缺少 ${k}，clampProposal 会读到 undefined`)
   }
@@ -175,10 +177,53 @@ test('领域强度表覆盖全部特级档位', () => {
   }
 })
 
-test('受保护角色引用的原作节点都存在于时间线里', () => {
-  const nodes = Object.keys(blankState(makeRng(1)).timeline.nodes)
-  for (const [who, node] of Object.entries(PROTECTED_CHARACTERS)) {
-    assert.ok(nodes.includes(node), `「${who}」要求的节点「${node}」不在时间线节点表里，拦截永远不会生效`)
+test('剧情依赖表引用的节点都存在于时间线里', () => {
+  // 对不上的话，「已改写」永远不会生效 —— 而且是静默失效，
+  // 玩家杀了虎杖，那一天照旧按原著演
+  for (const [storylineId, table] of Object.entries(PLOT_ANCHORS)) {
+    const nodes = Object.keys(blankState(makeRng(1), storylineId).timeline.nodes)
+    for (const [who, v] of Object.entries(table)) {
+      assert.ok(nodes.includes(v.node),
+        `${storylineId}：「${who}」指向的节点「${v.node}」不在时间线节点表里`)
+      assert.ok(v.rewrite?.length > 10,
+        `${storylineId}：「${who}」的改写理由太短，模型看不出那天变成了什么样`)
+    }
+  }
+})
+
+test('剧情依赖表里的人都能在原作表或登场名单里找到', () => {
+  // noteDeath 先按原作表归一名字再查锚点。表里查不到、又不在登场名单里的话，
+  // 玩家写全名也匹配不上 —— 那条依赖等于白写
+  for (const [storylineId, table] of Object.entries(PLOT_ANCHORS)) {
+    const line = storylineOf(storylineId)
+    for (const who of Object.keys(table)) {
+      assert.ok(
+        canonFor(who, storylineId) || line.characters.includes(who),
+        `${storylineId}：「${who}」既不在原作表里，也不在本线登场角色里`,
+      )
+    }
+  }
+})
+
+test('原作表里的角色都站得住', () => {
+  for (const [storylineId, table] of Object.entries(CANON)) {
+    assert.ok(storylineOf(storylineId), `原作表里有个不存在的故事线：${storylineId}`)
+    for (const [who, e] of Object.entries(table)) {
+      const grades = e.eras?.length ? e.eras.map((x) => x.grade) : [e.grade]
+      for (const g of grades) {
+        assert.ok(GRADES.includes(g), `${storylineId}「${who}」的等级 ${g} 不在等级表里`)
+        assert.ok(RANGES[g], `${storylineId}「${who}」的等级 ${g} 没有数值区间 —— 校正时会崩`)
+      }
+      // eras 必须按日期升序，否则 resolveCanonGrade 会取到错误的那一档
+      if (e.eras?.length) {
+        const dates = e.eras.map((x) => x.from)
+        assert.deepEqual(dates, [...dates].sort(), `${storylineId}「${who}」的 eras 不是按日期升序`)
+      }
+      assert.ok(e.technique?.name, `${storylineId}「${who}」没写生得术式`)
+      assert.ok(e.archetype, `${storylineId}「${who}」没写战斗性格`)
+      // 表里没有领域就是"原著里他没有"，得显式写 null，不能漏
+      assert.ok('domain' in e, `${storylineId}「${who}」的 domain 字段缺失（没有就写 null）`)
+    }
   }
 })
 

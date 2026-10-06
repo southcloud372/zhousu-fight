@@ -165,13 +165,26 @@ export function overallFromGrades(grades) {
   return GRADES[idx[Math.floor(idx.length / 2)]]
 }
 
-/** 单项数值的合法上下限：最低一级的下限 → 开局上限那一级的上限 */
-export function valueBounds(key) {
-  return [RANGES[GRADES[0]][key][0], RANGES[ATTR_GRADE_CAP][key][1]]
+/*
+ * 单项数值的合法上下限：最低一级的下限 → 上限那一级的上限。
+ *
+ * cap 默认是开局的封顶（超特级）—— 起手牌不该直接摸到龙级，那是要靠成长
+ * 走到的地方。但**已经走到那儿的人**再回来改数值时，得按龙级封顶：
+ * 否则一个龙级角色只要动一下滑条，血条就会被打回超特级的上限。
+ */
+export function valueBounds(key, cap = ATTR_GRADE_CAP) {
+  const row = RANGES[cap] || RANGES[ATTR_GRADE_CAP]
+  return [RANGES[GRADES[0]][key][0], row[key][1]]
 }
 
-export const EFF_BOUNDS = [RANGES[GRADES[0]].eff, RANGES[ATTR_GRADE_CAP].eff]
-export const MULT_BOUNDS = [TECH_MULT[GRADES[0]], TECH_MULT[ATTR_GRADE_CAP]]
+/** 效率和倍率在每个等级是定值（不是区间），所以上界就是那一档的定值 */
+export const effBounds = (cap = ATTR_GRADE_CAP) =>
+  [RANGES[GRADES[0]].eff, (RANGES[cap] || RANGES[ATTR_GRADE_CAP]).eff]
+export const multBounds = (cap = ATTR_GRADE_CAP) =>
+  [TECH_MULT[GRADES[0]], TECH_MULT[cap] ?? TECH_MULT[ATTR_GRADE_CAP]]
+
+export const EFF_BOUNDS = effBounds()
+export const MULT_BOUNDS = multBounds()
 
 export function shiftGrade(g, delta) {
   const i = gradeIndex(g)

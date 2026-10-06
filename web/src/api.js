@@ -44,6 +44,10 @@ export const chooseTime = (id, pointId) =>
   req(`/api/session/${id}/choose-time`, { method: 'POST', headers: J, body: JSON.stringify({ id: pointId }) })
 
 export const getState = (id) => req(`/api/session/${id}/state`)
+// 局内改自己的数值。等级、领域觉醒、术式消耗全由服务端按数字反推，
+// 客户端只负责把输入框里的数原样送上去，不自己算等级
+export const editPlayer = (id, numbers) =>
+  req(`/api/session/${id}/edit`, { method: 'POST', headers: J, body: JSON.stringify({ numbers }) })
 export const train = (id, item) =>
   req(`/api/session/${id}/train`, { method: 'POST', headers: J, body: JSON.stringify({ item }) })
 export const trainingOptions = (id) => req(`/api/session/${id}/training-options`)

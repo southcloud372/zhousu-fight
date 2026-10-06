@@ -235,7 +235,19 @@ const after = await (await fetch(B+'/api/saves')).json()
 ok('删除生效', !after.saves.some(s=>s.id===sv.id))
 
 hdr('8. 巡查：设定一致性')
-ok('敌人不是越界的原作角色', !enemyNames.some(n => ['虎杖悠仁','伏黑惠','钉崎野蔷薇','五条悟','七海建人','禅院真希','狗卷棘','熊猫','夜蛾正道'].some(w => n.includes(w))), enemyNames.join(',')||'无')
+/*
+ * 越界限制已经取消 —— 虎杖、五条这些人现在可以正常当敌人。
+ * 要盯的不再是"他有没有出现"，而是"出现时数值对不对"：
+ * 原著人物一律经过 canon.js 校正，等级必须落在原作表那一档。
+ * 这一条只做粗查（名字与等级的对应），细查在 engine.test.mjs 里。
+ */
+const CANON_GRADES = { 五条悟: '超特级', 宿傩: '龙级' }
+for (const name of enemyNames) {
+  const who = Object.keys(CANON_GRADES).find(w => name.includes(w))
+  if (!who) continue
+  const eg = pending?.enemy?.grade
+  ok(`原作角色「${who}」的等级被校正过`, eg === CANON_GRADES[who], `实际 ${eg}`)
+}
 ok('NPC 台词无特级细分泄漏', dialogueLeaks.length === 0,
    dialogueLeaks.length ? `${dialogueLeaks.length} 处：${dialogueLeaks[0]}` : '（引擎后处理生效）')
 

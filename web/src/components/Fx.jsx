@@ -12,14 +12,101 @@ import React, { useEffect, useRef, useState } from 'react'
  * 爽感来自差异，差异必须先被看见。
  */
 
-// ---------------------------------------------------------------- 领域展开
+/**
+ * 系统层开了「减少动态效果」就把动画让路。
+ * 数字滚动、屏幕冲击、残影都读它 —— 医嘱优先于爽感。
+ */
+const reducedMotion = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  !!window.matchMedia('(prefers-reduced-motion: reduce)')?.matches
 
 /**
- * 「領域展開」大字过场。
+ * 数字滚动。
+ *
+ * 血条的宽度本来就是过渡着走的，数字却是直接跳的 —— 一条慢慢变短的血条
+ * 旁边顶着一个已经落了地的数，看起来是两回事。让数字自己滚过去，
+ * 那 0.4 秒里"被削掉了多少"就变成一个过程，而不只是一个结果。
+ *
+ * 第一次渲染不滚（旧值就是新值），所以刷新页面看到的是静止的数字，
+ * 只有真的变了才动。
+ */
+export function useCountUp(value, ms = 430) {
+  const to = Number(value) || 0
+  const [shown, setShown] = useState(to)
+  const shownRef = useRef(to)
+  const raf = useRef(0)
+
+  useEffect(() => {
+    const from = shownRef.current
+    if (from === to) return undefined
+    if (reducedMotion() || typeof requestAnimationFrame !== 'function') {
+      shownRef.current = to
+      setShown(to)
+      return undefined
+    }
+    /*
+     * 计时基准取**第一帧的时间戳**，不取 performance.now()。
+     * 两者在浏览器里同源，但不是所有环境都保证 —— 对不上的话
+     * 差值会是几千万毫秒的负数，数字直接飞出去。只认 rAF 自己的时间轴，
+     * 到哪儿都不会错。
+     */
+    let t0 = null
+    const tick = (now) => {
+      if (t0 === null) t0 = now
+      const p = Math.max(0, Math.min(1, (now - t0) / ms))
+      // ease-out：先快后慢，像真的被削掉
+      const v = p >= 1 ? to : from + (to - from) * (1 - (1 - p) ** 3)
+      shownRef.current = v
+      setShown(v)
+      if (p < 1) raf.current = requestAnimationFrame(tick)
+    }
+    raf.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf.current)
+  }, [to, ms])
+
+  return shown
+}
+
+// ---------------------------------------------------------------- 全屏冲击
+
+/**
+ * 命中、被打、暴击、必中 —— 每一记都该在屏幕上留一下。
+ *
+ * 左边那一栏的数字是"信息"，可玩家的眼睛盯的是中间那一栏。
+ * 一记重击如果只让血条短一截，那是数据更新；屏幕真的震一下、白一下、
+ * 从命中点炸开一圈，才叫打中了。
+ *
+ * 强度按"这一下占了多少血条"分档，不按绝对伤害 —— 血条长的对手挨 300
+ * 和血条短的挨 300 不是一回事。三档：擦到、重击、致命。
+ */
+export function Impact({ data }) {
+  if (!data) return null
+  return (
+    // key 换掉就重挂载，动画自然重播 —— 连着两回合命中不会因为上一次没播完而静默
+    <div
+      key={data.token}
+      className={`impact lv-${data.level} tone-${data.tone} from-${data.side || 'enemy'}`}
+      aria-hidden="true"
+    >
+      <span className="im-flash" />
+      <span className="im-edge" />
+      <span className="im-burst" />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------- 大字过场
+
+/**
+ * 「領域展開」/「撃破」大字过场。
  *
  * 领域是这套设定里最贵的一招（一次要吃掉一大截咒力、还只看几回合），
  * 原来它和"体术命中"共用同一条文字通道 —— 花了大价钱铺开领域，
  * 屏幕上和普通一拳长得一模一样。这一段就是给它补的排面。
+ *
+ * 收场那一拍走的是同一块屏：打完一场是整局里情绪最高的时候，
+ * 一颗轻提示接不住它，得有和领域展开同等的排面。
  */
 /**
  * 领域三型的展示口径。
@@ -38,20 +125,25 @@ export function DomainCutin({ data, onDone }) {
   const doneRef = useRef(onDone)
   doneRef.current = onDone
 
+  // 收场那一拍比领域多留半秒：它后面还接着战果结算，急着走会显得草率
+  const hold = data?.kind === 'win' || data?.kind === 'lose' ? 3100 : 2600
+
   useEffect(() => {
     if (!data) return undefined
     // 自动收场；玩家也可以点一下提前跳过
-    const t = setTimeout(() => doneRef.current?.(), 2600)
+    const t = setTimeout(() => doneRef.current?.(), hold)
     return () => clearTimeout(t)
-  }, [data])
+  }, [data, hold])
 
   if (!data) return null
+  const outcome = data.kind === 'win' || data.kind === 'lose'
   const enemy = data.side === 'enemy'
-  const tone = DOMAIN_TONE[data.type] || 'dmg'
+  const tone = outcome ? data.kind : (DOMAIN_TONE[data.type] || 'dmg')
+  const kanji = outcome ? (data.kind === 'win' ? '撃破' : '敗北') : '領域展開'
 
   return (
     <div
-      className={`domain-cutin tone-${tone}${enemy ? ' from-enemy' : ''}`}
+      className={`domain-cutin tone-${tone}${enemy ? ' from-enemy' : ''}${outcome ? ' is-outcome' : ''}`}
       onClick={() => doneRef.current?.()}
       role="presentation"
     >
@@ -61,29 +153,41 @@ export function DomainCutin({ data, onDone }) {
       </div>
 
       <div className="dc-body">
-        <div className="dc-kanji" aria-label="领域展开">
-          {'領域展開'.split('').map((ch, i) => (
+        <div className="dc-kanji" aria-label={outcome ? kanji : '领域展开'}>
+          {kanji.split('').map((ch, i) => (
             <span key={i} style={{ animationDelay: `${120 + i * 90}ms` }}>{ch}</span>
           ))}
         </div>
 
-        {data.type && <div className="dc-type">{data.type}</div>}
+        {!outcome && data.type && <div className="dc-type">{data.type}</div>}
         <div className="dc-name">{data.name}</div>
 
-        {data.sureHit && <div className="dc-sure">{data.sureHit}</div>}
+        {!outcome && data.sureHit && <div className="dc-sure">{data.sureHit}</div>}
+        {outcome && data.summary && <div className="dc-sure">{data.summary}</div>}
 
         {/*
           展开当回合真正落下去的那几个数字：伤害型那一下重击、增益型那两口。
           以前只报"必中效果落下"，玩家看不出这一开到底换来了什么。
         */}
-        <div className="dc-fx">
-          {data.burst > 0 && (
-            <span className="dc-line dmg">必中重击 · 无视防御 <b>{data.burst}</b></span>
-          )}
-          {data.healed > 0 && <span className="dc-line heal">回复生命 <b>{data.healed}</b></span>}
-          {data.recovered > 0 && <span className="dc-line ce">回复咒力 <b>{data.recovered}</b></span>}
-          {data.brief && <span className="dc-line brief">{data.brief}</span>}
-        </div>
+        {!outcome && (
+          <div className="dc-fx">
+            {data.burst > 0 && (
+              <span className="dc-line dmg">必中重击 · 无视防御 <b>{data.burst}</b></span>
+            )}
+            {data.healed > 0 && <span className="dc-line heal">回复生命 <b>{data.healed}</b></span>}
+            {data.recovered > 0 && <span className="dc-line ce">回复咒力 <b>{data.recovered}</b></span>}
+            {data.brief && <span className="dc-line brief">{data.brief}</span>}
+          </div>
+        )}
+
+        {/* 打完这一场换来了什么：战果一条条摆出来，比埋在日志里的一张卡片有分量 */}
+        {outcome && data.lines?.length > 0 && (
+          <div className="dc-fx">
+            {data.lines.map((l, i) => (
+              <span key={i} className="dc-line brief">{l}</span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="dc-skip">点击跳过</div>
@@ -184,6 +288,9 @@ export function FxBar({ label, cur, max, cls, flashToken, danger }) {
    * 掉了多少全靠脑补。留一条残影在旧位置上停一下再收，
    * "刚刚被削掉了这么长一截"就变成一个能看见的动作。
    */
+  const shownCur = useCountUp(cur)
+  const shownMax = useCountUp(max, 520)
+
   const [ghost, setGhost] = useState(pct)
   const ghostRef = useRef(pct)
   ghostRef.current = ghost
@@ -206,11 +313,18 @@ export function FxBar({ label, cur, max, cls, flashToken, danger }) {
     <div className={`bar${danger ? ' danger' : ''}`}>
       <div className="bar-head">
         <span>{label}</span>
-        <b>{Math.round(cur).toLocaleString()} / {Math.round(max).toLocaleString()}</b>
+        <b>{Math.round(shownCur).toLocaleString()} / {Math.round(shownMax).toLocaleString()}</b>
       </div>
       <div className="bar-track">
         {drain && <div className="bar-ghost" style={{ width: `${ghost}%` }} />}
-        <div className={`bar-fill ${cls}`} style={{ width: `${pct}%` }} />
+        <div className={`bar-fill ${cls}`} style={{ width: `${pct}%` }}>
+          {/*
+            扫光：满格的血条是一块死色，加上一层慢慢走过的反光之后
+            "这条还活着"就成了不用读数也能看见的事。放在 fill **里面** ——
+            放外面的话它会连空槽一起扫过去，看着像血条自己变长了。
+          */}
+          <span className="bar-sheen" aria-hidden="true" />
+        </div>
         {flashToken ? <span key={flashToken} className="bar-flash" /> : null}
       </div>
     </div>

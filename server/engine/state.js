@@ -1,11 +1,13 @@
 import { hpStatus } from './formula.js'
-import { sukunaAttitude, npcAttitude } from './visibility.js'
+import { sukunaView, playerFingerCorruption, SUKUNA_FINGERS, npcAttitude, enemyProfile } from './visibility.js'
+import { makeRng, rfloat } from './dice.js'
 import { DOMAIN_TIER, GRADES, RANGES, TECH_MULT, gradeIndex, isTier } from './tables.js'
 import { emptyUsage } from '../pricing.js'
 import { DEFAULT_STORYLINE, storylineOf } from './storylines.js'
 import { DEFAULT_PLAY_MODE, playModeOf } from './playmodes.js'
 import { initialNodes, nextMilestone, firstPoint } from './timeline.js'
 import { normalizeDomainType, defaultDomainTypeFor, domainTypeOf, domainKit } from './domains.js'
+import { noteDeath } from './plotdeps.js'
 
 export const GAME_START_DATE = '2018-06-05'
 
@@ -14,6 +16,24 @@ export const TECH_COST_RATIO = 0.05
 export const DOMAIN_COST_RATIO = 0.08
 
 const TRAINING_ITEMS = ['体能训练', '咒力冥想', '术式演练', '反转术式修习', '领域雏形冥想', '体术实战']
+
+/**
+ * 宿傩的起始手指数。
+ *
+ * 只有宿傩篇是从"虎杖刚吞下第一根"开始的。怀玉篇在 2006 年 —— 那时候虎杖还没出生，
+ * 手指全都封着；未来篇是另一套局面。给所有故事线都塞一根，等于让时间线自相矛盾，
+ * 模型照着写就会写出"虎杖刚吞下手指"出现在二〇〇六年。
+ *
+ * 三个数的分工见 sukunaView：
+ *   已收集 —— 到手几根
+ *   已吞下 —— 被容器（虎杖）吞下几根，**这是宿傩复苏的唯一推手**
+ *   玩家自己吞下 —— 换咒力上限，不推进复苏，但侵蚀在累积
+ */
+export function initialFingers(storylineId) {
+  return storylineId === DEFAULT_STORYLINE
+    ? { fingersCollected: 1, fingersEaten: 1, fingersPlayerEaten: 0 }
+    : { fingersCollected: 0, fingersEaten: 0, fingersPlayerEaten: 0 }
+}
 
 export function blankState(rng, storylineId = DEFAULT_STORYLINE, playMode = DEFAULT_PLAY_MODE) {
   const line = storylineOf(storylineId)
@@ -29,11 +49,14 @@ export function blankState(rng, storylineId = DEFAULT_STORYLINE, playMode = DEFA
     chosenIdentitySlot: null,
     player: null,
     relations: {},
-    sukuna: { fingersCollected: 1, fingersEaten: 1, awakening: 5, attitude: '无视' },
+    sukuna: initialFingers(line.id),
     timeline: {
       // 节点表按故事线生成 —— 宿傩篇和怀玉篇的原作节点完全不同
       nodes: initialNodes(line.id),
       changed: [], deaths: [], newEvents: [],
+      // 「已改写」的理由：节点名 → 一句话（谁死了、那天变成了什么样）。
+      // 节点状态只有一个词，说不清"为什么变"，而这恰恰是玩家最想知道的事
+      rewrites: {},
     },
     // point = 当前章节，只给界面看；战斗向"还差几天到下一个节点"走的是
     // storylines.nodeSchedule（见 timeline.nextMilestone）
@@ -44,6 +67,12 @@ export function blankState(rng, storylineId = DEFAULT_STORYLINE, playMode = DEFA
     history: [],   // 喂给模型的对话历史
     chronicle: '', // 更早剧情的压缩摘要
     pendingCombat: null,
+    /*
+     * 战果。每打完一场（无论胜负）落一条 —— 剧情回合触发的遭遇战和轮盘的
+     * 介入战都记。玩家的要求是"每次对战结果加入到之后剧情的影响"，
+     * 所以这份记录同时喂给模型（见 modelStateView）和右侧的战果面板。
+     */
+    battles: [],
     storyLock: null, // 关键剧情节点当天会锁定"跳过修炼"
     turn: 0,
     usage: emptyUsage(), // 本局累计的 token 消耗与费用
@@ -137,15 +166,16 @@ export function applyProposal(state, prop) {
     state.relations[k] = Math.max(-100, Math.min(100, cur + v))
   }
 
-  // 死亡永久入库：模型每回合都会在状态里看到已死亡角色，就很难让人复活
+  // 死亡永久入库：模型每回合都会在状态里看到已死亡角色，就很难让人复活。
+  // 死者如果是撑起某个原作节点的人，那一天同时被标成「已改写」——
+  // 人没了，那场戏就不可能是原来那场戏了（见 plotdeps.js）。
   for (const who of prop.deaths || []) {
     if (!state.timeline.deaths.includes(who)) state.timeline.deaths.push(who)
+    const hit = noteDeath(state, who)
+    if (hit?.line) notes.push(hit.line)
   }
 
-  if (prop.sukunaAwakeningDelta) {
-    state.sukuna.awakening = Math.max(0, Math.min(100, state.sukuna.awakening + prop.sukunaAwakeningDelta))
-    state.sukuna.attitude = sukunaAttitude(state.sukuna.awakening)
-  }
+  applySukunaFingers(state, prop, notes)
 
   for (const f of prop.flags || []) {
     // 约定：进入关键节点的 flag 形如「少年院任务_开始」。
@@ -173,6 +203,58 @@ export function applyProposal(state, prop) {
   if (p.technique.cdLeft > 0) p.technique.cdLeft--
 
   return notes
+}
+
+/**
+ * 手指的进出 —— 宿傩唯一的推进方式。
+ *
+ * 这是**原著里真实发生、而且数得清**的事件：到手几根、被吞下几根，一共二十根。
+ * 从前这里是一个 0~100 的「觉醒度」，模型每回合随手拨几个点就能把宿傩"叫醒"；
+ * 手指不一样，它必须由剧情交付 —— 找到了、抢到了、吞下去了，才能动一格。
+ *
+ * **谁吞的，是两件完全不同的事**（原著里只有虎杖能当容器）：
+ *   · 容器（虎杖）吞下 → 宿傩回来一分：态度、能否对话全看这一份。
+ *   · 玩家自己吞下   → 宿傩**一点都没回来**，换来的是一截咒力上限和一身侵蚀。
+ * 所以两个计数分开存，只有前者进复苏轴。
+ *
+ * 咒力那部分是引擎掷的（第八节：+30%~60%）：数值归引擎，模型只管写那口下去
+ * 是什么滋味。种子跟着回合和已吞根数走，同一局重放结果一致。
+ */
+function applySukunaFingers(state, prop, notes) {
+  const s = state.sukuna
+  s.fingersCollected = Math.max(
+    0,
+    Math.min(SUKUNA_FINGERS, s.fingersCollected + (prop.sukunaFingersCollectedDelta || 0)),
+  )
+
+  // 容器那份：吞下的不会多于到手的 —— 没有的手指吞不下去
+  s.fingersEaten = Math.max(
+    0,
+    Math.min(s.fingersCollected, s.fingersEaten + (prop.sukunaFingersEatenDelta || 0)),
+  )
+
+  // 玩家那份：同样受"还剩几根没被吞"限制 —— 容器吞过的不算自由身
+  const mine = Math.max(
+    0,
+    Math.min(
+      s.fingersCollected - s.fingersEaten - (s.fingersPlayerEaten || 0),
+      SUKUNA_FINGERS - (s.fingersPlayerEaten || 0),
+      prop.sukunaFingersPlayerEatenDelta || 0,
+    ),
+  )
+  if (!mine) return
+  s.fingersPlayerEaten = (s.fingersPlayerEaten || 0) + mine
+
+  const p = state.player
+  const rng = makeRng(state.seed + state.turn * 617 + s.fingersPlayerEaten * 29)
+  for (let i = 0; i < mine; i++) {
+    const gain = rfloat(rng, 0.3, 0.6)
+    p.ce.max = Math.round(p.ce.max * (1 + gain))
+    p.ce.cur = Math.min(p.ce.max, Math.round(p.ce.cur * (1 + gain)))
+  }
+  notes.push(`咒物入喉 —— 这具身体不是容器。咒力上限 → ${p.ce.max.toLocaleString()}`)
+  const corruption = playerFingerCorruption(s.fingersPlayerEaten)
+  if (corruption !== '无') notes.push(`侵蚀：${corruption}（第 ${s.fingersPlayerEaten} 根）`)
 }
 
 /**
@@ -239,6 +321,7 @@ export function modelStateView(state) {
   )
 
   const line = storylineOf(state.storyline)
+  const sukuna = sukunaView(state.sukuna)
 
   // 战斗向多一层"修炼循环"的真值：模型得知道玩家刚练了多久、
   // 不然它会把一个练了三个月的角色写成昨天才起床。
@@ -307,18 +390,34 @@ export function modelStateView(state) {
     },
     关系值: relationsForModel,
     宿傩: {
-      已收集手指: `${state.sukuna.fingersCollected} / 20`,
-      虎杖已吞下: `${state.sukuna.fingersEaten} 根`,
-      觉醒度: `${state.sukuna.awakening}%`,
-      对玩家的态度: state.sukuna.attitude,
-      // 第九节第 9 小节：觉醒度 ≥ 30% 且态度"感兴趣"以上，宿傩才能在意识中对话
-      可在意识中对话:
-        state.sukuna.awakening >= 30 &&
-        ['感兴趣', '警惕', '敌意', '玩物'].includes(state.sukuna.attitude),
+      已收集手指: `${sukuna.fingersCollected} / ${SUKUNA_FINGERS}`,
+      容器吞下: `${sukuna.fingersEaten} 根`,
+      玩家自己吞下: `${sukuna.fingersPlayerEaten} 根`,
+      对玩家的态度: sukuna.attitude,
+      // 原著里他只跟"有点意思"的人讲话 —— 无视你的时候，一个字都没有
+      可在意识中对话: sukuna.canSpeak,
+      精神侵蚀: sukuna.corruption,
     },
     原作节点: state.timeline.nodes,
+    /*
+     * 「已改写」的那些天到底变成了什么样，逐条写清。
+     * 节点表上只有一个词（已改写），模型看不到理由就会照原著写那一天 ——
+     * 而写这条的理由恰恰是"撑起它的人已经不在了"。
+     */
+    节点改写理由: state.timeline.rewrites || {},
     因玩家介入产生的新事件: state.timeline.newEvents,
     已死亡角色: state.timeline.deaths,
+    /*
+     * 战果：玩家打过的仗要能约束后面的剧情 —— 他杀过谁、输给过谁、
+     * 在哪一天动的手，模型都得记着（玩家的要求是"每次对战结果加入到之后剧情的影响"）。
+     * 只给最近 8 场：全量会随局数一直涨，而远期战绩对当下的约束力本来就弱。
+     */
+    战果: (state.battles || []).slice(-8).map((b) => ({
+      时间: `${b.date} · 第 ${b.turn} 回合`,
+      对手: `${b.enemy.name}${b.enemy.grade ? `（${b.enemy.grade}${b.enemy.canon ? ' · 原作' : ''}）` : ''}`,
+      结果: `${b.result}（${b.ground}${b.node ? ` · ${b.node}` : ''}）`,
+      ...(b.rewrite ? { 连带影响: b.rewrite } : {}),
+    })),
     待结算战斗: state.pendingCombat
       ? { 敌方: `${state.pendingCombat.enemy.name}（${state.pendingCombat.enemy.grade}）`, 起因: state.pendingCombat.reason }
       : null,
@@ -355,8 +454,10 @@ export function panelSnapshot(state) {
     physicalDamage: p.physicalDamage,
     efficiency: p.efficiency,
     relations: state.relations,
-    sukuna: state.sukuna,
+    sukuna: sukunaView(state.sukuna),
     timeline: state.timeline,
+    // 战果面板用：最近 30 场（倒序交给前端，引擎只保证顺序是时间先后）
+    battles: state.battles || [],
     time: state.time,
     training: p.training,
     // 战斗相关的现场状态，刷新页面后要靠它恢复
@@ -375,6 +476,8 @@ export function panelSnapshot(state) {
             domainType: state.combat.enemy.domain?.unlocked
               ? domainTypeOf(state.combat.enemy.domain) : null,
             domainActive: !!state.combat.enemy.domain?.active,
+            // 刷新页面后还能点开敌方档案 —— 不然只有实时那一回合能看
+            profile: enemyProfile(state.combat.enemy),
           },
           over: state.combat.over,
         }

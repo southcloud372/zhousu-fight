@@ -7,8 +7,10 @@ import {
 } from './domains.js'
 import { ENEMY_ARCHETYPES } from './rolls.js'
 import { GRADES, gradeIndex } from './tables.js'
+import { enemyProfile } from './visibility.js'
 import { applyGradeUp } from './state.js'
 import { completeIntervention } from './wheel.js'
+import { noteDeath } from './plotdeps.js'
 import { rint } from './dice.js'
 
 /**
@@ -86,7 +88,7 @@ function estimateCe(unit, rng) {
   return Math.max(0, Math.round(v / mag) * mag)
 }
 
-export function initCombat(state, rng, { mode, enemy, reason, intervention = null }) {
+export function initCombat(state, rng, { mode, enemy, reason, intervention = null, lethalIntent = false }) {
   state.player.domain.active = false // 每场战斗重新展开
   // 连击与失衡是"这一场"里的东西，不能跨场带进来
   state.player._combo = 0
@@ -98,6 +100,8 @@ export function initCombat(state, rng, { mode, enemy, reason, intervention = nul
     enemy,
     // 战斗向的介入战：打完之后要把「这一天」记进时间线（见 finishCombat）
     intervention,
+    // 玩家这一手是不是奔着要命去的 —— 赢了才算击杀，否则只是击退
+    lethalIntent: !!lethalIntent,
     playerFirst: unitSpeed(state.player) >= unitSpeed(enemy),
     over: false,
     outcome: null,
@@ -648,6 +652,8 @@ export function buildPanel(state, events, notes = []) {
       ceEstimate: estimateCe(e, Math.random),
       status: hpStatus(e.hp),
       domain: e.domain?.active ? `展开中（${e.domain.name}）` : '未展开',
+      // 点"属性"弹出来的那一份完整档案
+      profile: enemyProfile(e),
     },
     actionText: txt('player'),
     enemyActionText: txt('enemy'),
@@ -828,11 +834,20 @@ export function applyRewards(state, rewards) {
   return ups
 }
 
-/** 战斗结束后的收尾：清空战斗态、按胜负写剧情标记 */
+/** 战斗结束后的收尾：清空战斗态、按胜负写剧情标记、记一条战果 */
 export function finishCombat(state, outcome) {
   const won = outcome?.winner === 'player'
-  const enemyName = state.combat?.enemy?.name || '敌人'
-  const enemyGrade = state.combat?.enemy?.grade || ''
+  const enemy = state.combat?.enemy
+  const enemyName = enemy?.name || '敌人'
+  const enemyGrade = enemy?.grade || ''
+  const canon = !!enemy?.canon
+  /*
+   * 杀意是玩家自己带进来的（他说了"杀了他"这种话，见 guard.js 的 hasLethalIntent）。
+   * 赢了、并且本来就奔着要命去，才算真的杀了这个人 —— 打晕和打死是两件事，
+   * 后者会往后改写剧情，前者不会。
+   */
+  const lethalIntent = !!state.combat?.lethalIntent
+  const killed = won && lethalIntent
   // 介入战要留个记号：战斗态马上就被清空了，之后再想问"这场是不是节点战"就晚了
   const intervention = state.combat?.intervention || null
   state.combat = null
@@ -840,9 +855,10 @@ export function finishCombat(state, outcome) {
   state.player._defending = false
   state.player.technique.cdLeft = 0
 
+  const who = `${enemyGrade ? `${enemyGrade}的` : ''}${enemyName}`
   let summary
   if (won) {
-    summary = `击退了${enemyGrade ? `${enemyGrade}的` : ''}${enemyName}`
+    summary = killed ? `杀死了${who}` : `击退了${who}`
     state.timeline.newEvents.push(summary)
   } else if (outcome?.winner === 'fled') {
     summary = `从${enemyName}手中脱离`
@@ -850,6 +866,23 @@ export function finishCombat(state, outcome) {
     summary = `被${enemyName}击倒`
   } else {
     summary = `与${enemyName}的战斗未分胜负`
+  }
+
+  /*
+   * 杀的是撑起某个原作节点的人 → 那一天被标成「已改写」。
+   * 注意判定用的是**名字**：表里查不到（无名咒灵）就什么都不会发生。
+   * 节点已经走过的话 noteDeath 会返回 line: null —— 人确实没了，
+   * 但那一天早就过去了，改不动了，也不必假装改得动。
+   */
+  let rewrite = null
+  if (killed) {
+    const hit = noteDeath(state, enemyName)
+    if (hit?.line) {
+      rewrite = hit.line
+      summary += `。${hit.line}`
+    } else if (hit?.already) {
+      rewrite = `「${hit.node}」已经过去，这一死改变不了那一天`
+    }
   }
   if (state.timeline.newEvents.length > 40) state.timeline.newEvents.shift()
 
@@ -866,6 +899,31 @@ export function finishCombat(state, outcome) {
   } else if (p.hp.cur / p.hp.max < 0.2) {
     summary += `。玩家重伤，只剩一口气`
   }
+
+  /*
+   * 战果入库。玩家的要求是"每次对战结果加入到之后剧情的影响"，
+   * 所以这份记录一份喂模型（modelStateView 的「战果」段）、一份上右栏面板。
+   * 只留最近 30 场 —— 七十场以前的仗对当下的剧情已经没什么约束力了。
+   */
+  state.battles ||= []
+  state.battles.push({
+    turn: state.turn,
+    date: state.time?.date || '',
+    enemy: { name: enemyName, grade: enemyGrade, canon },
+    // 击杀 / 击退 / 逃脱 / 战败 / 未分胜负 —— 战场上的五种收场
+    result: won ? (killed ? '击杀' : '击退')
+      : outcome?.winner === 'fled' ? '逃脱'
+        : outcome?.winner === 'enemy' ? '战败' : '未分胜负',
+    killed,
+    ground: intervention ? '介入战' : '遭遇战',
+    node: intervention,
+    rewrite,
+    hpLeft: p.hp.cur,
+    hpMax: p.hp.max,
+    note: summary,
+  })
+  if (state.battles.length > 30) state.battles.shift()
+
   return summary
 }
 

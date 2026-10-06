@@ -1,5 +1,6 @@
 import { TRAINING_TABLE, TALENT_BONUS, rollTraining, applyTraining } from './commands.js'
-import { nextMilestone, missedNodes } from './timeline.js'
+import { nextMilestone, missedNodes, TODO, DONE, CHANGED, REWRITTEN } from './timeline.js'
+import { GENERIC_TECHNIQUES } from './canon.js'
 import { advanceTime, promoteGrade } from './state.js'
 import { weightedPick, rint } from './dice.js'
 import { GRADES, RANGES, gradeIndex, isTier } from './tables.js'
@@ -236,7 +237,6 @@ export function progressBars(state) {
 
 /** 介入战的对手：按节点危险度比玩家高一到两级，但要留在"两级以内"的设计红线里 */
 const ENEMY_NAMES = { 咒灵: 3, 咒胎: 1, 诅咒师: 2, 受咒物侵蚀者: 1 }
-const TECH_NAMES = ['构筑术式', '投射咒法', '刍灵咒法', '十划咒法', '无为转变', '赤血操术']
 
 export function interventionGrade(state, danger) {
   const offset = danger >= 5 ? 2 : danger >= 4 ? 1 : 0
@@ -248,7 +248,7 @@ export function planIntervention(state, rng, ms) {
   const grade = interventionGrade(state, ms.danger)
   const enemy = rollEnemy(rng, grade)
   enemy.name = weightedPick(rng, ENEMY_NAMES)
-  enemy.technique.name = TECH_NAMES[rint(rng, 0, TECH_NAMES.length - 1)]
+  enemy.technique.name = GENERIC_TECHNIQUES[rint(rng, 0, GENERIC_TECHNIQUES.length - 1)]
   if (enemy.domain?.unlocked) enemy.domain.name = `${ms.node}的领域`
   return enemy
 }
@@ -273,6 +273,12 @@ export function startIntervention(state, rng) {
     mode: null,
     sinceTurn: state.turn,
     intervention: ms.node,
+    /*
+     * 介入战不是玩家点名要谁的命 —— 他只是点了"这一场我上"。
+     * 所以默认只是打倒，不记击杀。真要杀人得在剧情里说出来
+     * （见 guard.js 的 hasLethalIntent），那时走的是另一条路。
+     */
+    lethalIntent: false,
   }
   return state.pendingCombat
 }
@@ -285,11 +291,18 @@ export function completeIntervention(state, node, outcome) {
 
   const won = outcome?.winner === 'player'
   const fled = outcome?.winner === 'fled'
-  if (!fled && state.timeline.nodes[node] === '未发生') {
+  const before = state.timeline.nodes[node]
+  if (!fled && before === TODO) {
     // 玩家真的插手了：赢了算改写，没赢也是"发生了，只是没改成"
-    state.timeline.nodes[node] = won ? '已改变' : '已发生'
+    state.timeline.nodes[node] = won ? CHANGED : DONE
   }
-  const line = `${won ? '改写了' : fled ? '避开了' : '卷入了'}「${node}」`
+  /*
+   * 已经被改写过的节点（撑起它的那个人提前死了），这一仗打赢也变不回原著。
+   * 所以只能记成"介入了那一天"，不能覆盖掉「已改写」—— 那是更上游的事实。
+   */
+  const line = before === REWRITTEN
+    ? `${won ? '赢下了' : fled ? '避开了' : '卷入了'}已经改写的「${node}」`
+    : `${won ? '改写了' : fled ? '避开了' : '卷入了'}「${node}」`
   state.timeline.newEvents.push(line)
   if (state.timeline.newEvents.length > 40) state.timeline.newEvents.shift()
   return line

@@ -5,14 +5,14 @@ import {
   SuddenArrivalCard,
 } from './components/Cards.jsx'
 import { NarrativeLog, ChoiceList, useTypewriter } from './components/Narrative.jsx'
-import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel, GrowthPanel } from './components/Panels.jsx'
+import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel, GrowthPanel, BattleLogPanel, EditPlayerModal } from './components/Panels.jsx'
 import { ActionBar } from './components/CombatPanel.jsx'
 import { WheelPanel } from './components/WheelPanel.jsx'
 import { SaveModal } from './components/SaveModal.jsx'
 import { CombatSidebar } from './components/CombatSidebar.jsx'
 import { CrossoverScreen, CrossoverResult } from './components/Crossover.jsx'
 import { UsageMeter } from './components/UsageMeter.jsx'
-import { DomainCutin, Toasts, useToasts } from './components/Fx.jsx'
+import { DomainCutin, Impact, Toasts, useToasts } from './components/Fx.jsx'
 
 /**
  * 「突然出现的人」的档案槽位名。
@@ -64,6 +64,9 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [showSaves, setShowSaves] = useState(false)
+  // 改数值的弹层。放在 App 这一层是因为改完要 resync 整份面板 ——
+  // 等级、领域档位、术式消耗都会跟着数字一起变
+  const [editOpen, setEditOpen] = useState(false)
   // 清空数据的二次确认：点一次只是把确认条亮出来，不是真删
   const [wipeAsk, setWipeAsk] = useState(false)
   const [wiping, setWiping] = useState(false)
@@ -99,8 +102,21 @@ export default function App() {
   const [wheelOpen, setWheelOpen] = useState(false)
   // 战斗中的即时演出：伤害飘字、血条闪光、抖动、连击
   const [fx, setFx] = useState(null)
-  // 领域展开的过场（「領域展開」大字）
-  const [cutin, setCutin] = useState(null)
+  // 全屏冲击：命中、挨打、暴击那一下的闪光与震动
+  const [impact, setImpact] = useState(null)
+  /*
+   * 大字过场排队。
+   *
+   * 原来是单个槽位，后到的直接盖掉先到的 —— 跳过模式那一场里，
+   * 「領域展開」和打完的「撃破」是同一段流里前后脚到的，领域那一屏
+   * 会被瞬间顶掉，等于白做。排队之后两屏依次演完。
+   */
+  const [cutins, setCutins] = useState([])
+  const cutinSeq = React.useRef(0)
+  const pushCutin = useCallback((c) => {
+    if (!c) return
+    setCutins((q) => [...q, { ...c, key: ++cutinSeq.current }])
+  }, [])
 
   // 打字机：把成块到达的文字按节奏吐出来，而不是一块块往外蹦
   const tw = useTypewriter()
@@ -115,12 +131,21 @@ export default function App() {
    * 打完一场是整局里情绪最高的一拍，可它原来只落在日志里的一张小卡片上 ——
    * 玩家正在低头看行动栏的时候就错过了。赢了弹个金色的，输了弹个血色的，
    * 让这一拍从正文里跳出来。
+   *
+   * 一颗轻提示接不住整场里最高的一拍，所以同一时刻还压一屏大字过场：
+   * 轻提示留着（战果明细跟着它一条条弹），过场负责那一下心跳。
    */
-  const toastOutcome = useCallback((outcome, summary) => {
+  const toastOutcome = useCallback((outcome, summary, lines = []) => {
     const w = outcome?.winner
     if (w === 'player') toast(summary ? `胜 · ${summary}` : '这一场拿下了', { tone: 'gold', big: true, title: '胜利' })
     else if (w === 'enemy') toast(summary ? `败 · ${summary}` : '这一场没能拿下', { tone: 'blood', big: true, title: '败北' })
-  }, [toast])
+    else return
+    pushCutin({
+      kind: w === 'player' ? 'win' : 'lose',
+      name: summary || (w === 'player' ? '这一场拿下了' : '这一场没能拿下'),
+      lines,
+    })
+  }, [toast, pushCutin])
 
   // 战斗面板要等下一块面板到了才能归档（那时才拿到这一回合的完整演出）
   const livePanelRef = React.useRef(null)
@@ -143,7 +168,8 @@ export default function App() {
     // 读的是另一局了，上一局的"问过没问过"不能带过来
     announcedRef.current = null
     setFx(null)
-    setCutin(null)
+    setImpact(null)
+    setCutins([])
     setWheelOpen(false)
     toaster.clear()
     askCombatEnter(r.combat)
@@ -185,7 +211,8 @@ export default function App() {
     setGrowth(null)
     setFreeActions([])
     setFx(null)
-    setCutin(null)
+    setImpact(null)
+    setCutins([])
     setError(null)
     announcedRef.current = null
     livePanelRef.current = null
@@ -393,14 +420,39 @@ export default function App() {
       selfDomain: cp.domainState?.player,
       enemyDomain: cp.domainState?.enemy,
     })
-    if (cp.domainOpened) setCutin(cp.domainOpened)
+
+    /*
+     * 全屏冲击的强度：这一下占了多少血条。
+     *
+     * 用比例不用绝对值 —— 血条 800 的对手挨 300 和血条 300 的挨 300
+     * 不是一回事，屏幕上该是两种反应。两边取强的那个：
+     * 自己挨了一记狠的，屏幕也该有反应，那一记在观感上和自己打出去的一样重。
+     */
+    const dealtRatio = cp.enemy?.hpMax > 0 ? dealt / cp.enemy.hpMax : 0
+    const takenRatio = cp.player?.hpMax > 0 ? taken / cp.player.hpMax : 0
+    const heavy = Math.max(dealtRatio, takenRatio)
+    const level = heavy >= 0.25 ? 'brutal' : heavy >= 0.1 ? 'heavy' : heavy >= 0.03 ? 'graze' : null
+
+    setImpact(level ? {
+      token: `i${n}`,
+      // 震屏靠它翻面：连着两记重击之间必须换一个 keyframes 名，动画才会重播
+      seq: n,
+      level,
+      // 这一记主要是谁挨的：决定光从哪一侧炸开、以及是不是血色
+      side: dealtRatio >= takenRatio ? 'enemy' : 'self',
+      tone: dealtRatio >= takenRatio
+        ? (cp.sureHit ? 'sure' : cp.crit === 'player' ? 'crit' : 'hit')
+        : 'taken',
+    } : null)
+
+    if (cp.domainOpened) pushCutin(cp.domainOpened)
     if (cp.crit === 'player') toast('暴击！抓住了破绽', { tone: 'blood' })
     else if (cp.staggered === 'enemy') toast('对方被打断，这一手没能还手', { tone: 'blood' })
     // 对面的规则型领域：这是"你的招从下一回合起全都作废"，值得单独喊一声
     else if (cp.domainOpened?.side === 'enemy' && cp.domainOpened.type === '规则型') {
       toast('规则改写完毕：你的术式、反转术式与领域都被封住', { tone: 'blood', title: '领域' })
     }
-  }, [toast])
+  }, [toast, pushCutin])
 
   // ---------------------------------------------------------- 开局
 
@@ -630,6 +682,27 @@ export default function App() {
     }
   }, [sessionId])
 
+  /**
+   * 重新问一遍轮盘和它的闸门。
+   *
+   * 只在该问的时候问：一场仗开打的那一下。轮盘在打架时不再摘掉
+   * （见下面 .side 那段说明），可它那两个按钮得当场变灰 —— "为什么按不动"
+   * 这句话是服务端闸门给的（「战斗还没打完」「有一场遭遇还没处理」），
+   * 本地不自己编一句，免得两边说的不一样。
+   *
+   * 打完之后不用管：收工会顺着 submit 走一次回合，那一份响应里带着新的
+   * 轮盘和闸门。
+   */
+  const refreshWheel = useCallback(async () => {
+    try {
+      const r = await api.getWheel(sessionId)
+      setWheel(r.wheel || null)
+      setWheelGate(r.gate || null)
+    } catch {
+      // 拉不到就维持原样。轮盘是读数，不值得为它弹一条错误横幅
+    }
+  }, [sessionId])
+
   // ---------------------------------------------------------- 回合
 
   const submit = useCallback(async (text, { silent = false } = {}) => {
@@ -660,9 +733,6 @@ export default function App() {
           { kind: 'turn', turn: data.turn, narration: acc, dialogue: data.dialogue, notes: data.notes, recap: data.recap },
         ])
         setChoices(data.choices || [])
-        // 剧情重新把选项递回手里时，顺手把轮盘收起 —— 两个操作台同时摊开，
-        // 玩家会不知道该按哪边；剧情是主线，轮盘是够不着的备用手段
-        if (data.choices?.length) setWheelOpen(false)
         setPanel(data.panel)
         // 这一轮剧情可能把日期往前推了，轮盘上的倒计时要跟着变
         if (data.wheel !== undefined) setWheel(data.wheel || null)
@@ -764,7 +834,7 @@ export default function App() {
       // 整场只给一次"高光回顾"，所以顺带把暴击数报出来 ——
       // 不然这两种模式的战斗读起来就是一大段平铺直叙的文字
       onHighlight: ({ domainOpened, crits, rounds }) => {
-        if (domainOpened) setCutin(domainOpened)
+        if (domainOpened) pushCutin(domainOpened)
         if (crits > 0) toast(`本场打出 ${crits} 次暴击（共 ${rounds} 回合）`, { tone: 'blood', title: '战况' })
       },
       onNarration: (t) => {
@@ -782,6 +852,8 @@ export default function App() {
           applyActions(data.actions)
           setFreeActions(data.freeActions || [])
           if (data.snapshot) setPanel(data.snapshot) // 角色快照，不是战斗回合面板
+          // 这一场开打了：轮盘留着读数，但按钮该灰了
+          refreshWheel()
           setBusy(false)
           return
         }
@@ -793,7 +865,7 @@ export default function App() {
         setLiveCombat(null) // 收工时整块清掉，streaming 标志随之消失
         setFreeActions([])
         // 升级 / 战果这种"打完才结算"的东西，弹一下比埋在日志里更有分量
-        toastOutcome(data.outcome, data.summary)
+        toastOutcome(data.outcome, data.summary, data.ups || [])
         for (const u of data.ups || []) toast(u, { tone: 'blood', big: true, title: '战果' })
         setEntries((prev) => [
           ...prev,
@@ -811,7 +883,7 @@ export default function App() {
         resync() // 弹窗已经关掉了，把待结算的战斗重新捞回来
       },
     })
-  }, [sessionId, submit, archiveLive, resync, applyActions, playPanelFx, toast, toastOutcome, takeUsage, tw])
+  }, [sessionId, submit, archiveLive, resync, applyActions, playPanelFx, toast, toastOutcome, takeUsage, tw, refreshWheel])
 
   /** 尝试脱离遭遇战 */
   const tryEvade = useCallback(async () => {
@@ -889,7 +961,7 @@ export default function App() {
         setLiveCombat(null) // 收工时整块清掉，streaming 标志随之消失
         setFreeActions([])
         // 升级 / 战果这种"打完才结算"的东西，弹一下比埋在日志里更有分量
-        toastOutcome(data.outcome, data.summary)
+        toastOutcome(data.outcome, data.summary, data.ups || [])
         for (const u of data.ups || []) toast(u, { tone: 'blood', big: true, title: '战果' })
         setEntries((prev) => [
           ...prev,
@@ -1232,20 +1304,13 @@ export default function App() {
   }, [phase, busy, error])
 
   /**
-   * 轮盘的收放跟着"现在该干什么"走。
+   * 轮盘收不收，**只由玩家决定**。
    *
-   * 战斗向里有两套操作台：剧情选项和轮盘。两个同时摊开时玩家不知道该按哪边 ——
-   * 所以平时收起轮盘，只有**选项栏空着**的时候（刚转完一天、战斗刚结算完）
-   * 才把它展开顶上：这时它是唯一还能按的东西，藏着反而像卡住了。
-   *
-   * 依赖里故意没有 wheelOpen —— 玩家手动点「进度」之后，
-   * 这个效果不该在下次无关的渲染里把他的选择掰回去。
+   * 早先这里有一套自动收放：选项栏空着就展开、选项回来就收起。那是因为
+   * 两个操作台（剧情选项 / 轮盘）都长在正文下面抢同一块地方，必须替玩家分个先后。
+   * 现在轮盘挪进了右侧状态栏，不跟正文抢位置了，这套自动逻辑就只剩坏处 ——
+   * 它会在玩家没动过手的情况下把他的选择掰回去。点开就开着，点收就收着。
    */
-  useEffect(() => {
-    if (phase !== 'playing' || playMode !== 'combat') return
-    if (liveCombat || pending) return
-    setWheelOpen(choices.length === 0)
-  }, [phase, playMode, choices.length, liveCombat, pending])
 
   /**
    * 特写盖住屏幕的时候，打字机先停一拍。
@@ -1255,9 +1320,9 @@ export default function App() {
    * 按住不丢字，只是把节奏让给演出。
    */
   useEffect(() => {
-    tw.hold(!!cutin)
+    tw.hold(cutins.length > 0)
     return () => tw.hold(false)
-  }, [cutin, tw.hold])
+  }, [cutins.length, tw.hold])
 
   // ---------------------------------------------------------- 渲染
 
@@ -1520,8 +1585,19 @@ export default function App() {
     )
   }
 
+  /*
+   * 震屏挂在整块界面上，不是挂在演出层上 —— 只有背景在闪的话，
+   * 那是"屏幕上蒙了一层东西"，不是"这一下打在这间屋子里"。
+   *
+   * 值里带 seq 的奇偶：连着两记重击时把动画名换成另一条同款的，
+   * 否则类名不变，第二下不会重播。擦到（graze）不震 ——
+   * 每一下都震的话，震本身就不值钱了。
+   */
+  const shake = impact?.level === 'brutal' ? 'hard' : impact?.level === 'heavy' ? 'soft' : null
+  const shakeAttr = shake ? `${shake}-${impact.seq % 2}` : undefined
+
   return (
-    <div className="shell">
+    <div className="shell" data-shake={shakeAttr}>
       <div className="topbar">
         <UsageMeter usage={usage} />
         <span className="brand">回战 <em>·</em> 宿傩篇</span>
@@ -1568,20 +1644,9 @@ export default function App() {
         />
 
         {/*
-          战斗向的日常轮盘：两段剧情之间的空档就在这里一天一天过。
-          只在非战斗时出现 —— 打起来之后操作台是左边那张战斗面板。
+          战斗向的日常轮盘现在长在右侧状态栏里（见下面 .side），
+          不再占正文和选项之间的位置 —— 那一栏要留给最该读的东西。
         */}
-        {playMode === 'combat' && !liveCombat && !pending && wheel && (
-          <WheelPanel
-            wheel={wheel}
-            gate={wheelGate}
-            busy={busy || tw.shown !== null}
-            onSpin={() => doWheel('spin')}
-            onAdvance={() => doWheel('advance')}
-            open={wheelOpen}
-            onToggle={() => setWheelOpen((v) => !v)}
-          />
-        )}
 
         {liveCombat?.mode === 'manual' && liveCombat.actions?.length ? (
           <ActionBar
@@ -1601,10 +1666,34 @@ export default function App() {
       </div>
 
       <div className={`side${showSide ? ' open' : ''}`}>
-        <StatusPanel panel={panel} />
+        {/*
+          日常轮盘（仅战斗向）。放在状态栏最上面是因为它是这一栏里唯一
+          **能按**的东西 —— 下面几张都是读数的。默认收成一条窄条，点开才展开。
+
+          打起来之后也**不摘掉**。原来这里挂着 !liveCombat / !pending，
+          那是它还在正文里时的规矩 —— 那会儿战斗面板要占走那一栏，收走是对的。
+          搬进状态栏之后再收，就只剩"轮盘凭空消失了"：玩家正打着，眼角那
+          一行「距「涩谷事变」还有 12 天」没了，还以为玩法坏了。
+          按不按得动交给闸门说（wheelGate 会给出「战斗还没打完」），
+          但"还有几天到下一个节点"这句读数在打架的时候照样是玩家要看的。
+        */}
+        {playMode === 'combat' && wheel && (
+          <WheelPanel
+            wheel={wheel}
+            gate={wheelGate}
+            busy={busy || tw.shown !== null}
+            onSpin={() => doWheel('spin')}
+            onAdvance={() => doWheel('advance')}
+            open={wheelOpen}
+            onToggle={() => setWheelOpen((v) => !v)}
+          />
+        )}
+        <StatusPanel panel={panel} onEdit={() => setEditOpen(true)} />
         <GrowthPanel rows={growth} training={panel?.training} days={wheel?.days} />
         <RelationPanel relations={panel?.relations} />
         <SukunaPanel sukuna={panel?.sukuna} />
+        {/* 战果压在时间线上面：打完一场先看战果，再看它动了哪一天 */}
+        <BattleLogPanel battles={panel?.battles} />
         <TimelinePanel timeline={panel?.timeline} />
         <button className="top-btn only-narrow" style={{ width: '100%', marginTop: 4 }} onClick={() => setShowSide(false)}>
           收起状态栏
@@ -1630,8 +1719,26 @@ export default function App() {
         <SaveModal sessionId={sessionId} onLoad={onLoadSave} onClose={() => setShowSaves(false)} />
       )}
 
+      {editOpen && panel && (
+        <EditPlayerModal
+          panel={panel}
+          onClose={() => setEditOpen(false)}
+          onSave={async (numbers) => {
+            const r = await api.editPlayer(sessionId, numbers)
+            /*
+             * 改完立刻重同步：面板上差不多每一项都跟着变了
+             * （等级、领域档位、术式消耗都是派生量），
+             * 靠本地改一改拼出新面板只会拼出半份。
+             */
+            await resync()
+            return r
+          }}
+        />
+      )}
+
       {/* 演出层：领域展开过场、数值跳动的轻提示。挂在最外层，覆盖整屏 */}
-      <DomainCutin data={cutin} onDone={() => setCutin(null)} />
+      <Impact data={impact} />
+      <DomainCutin data={cutins[0] || null} onDone={() => setCutins((q) => q.slice(1))} />
       <Toasts items={toaster.items} onClose={toaster.remove} />
       {errBanner}
 
