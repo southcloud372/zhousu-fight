@@ -137,7 +137,6 @@ function decorateAttributeFlavor(r, f, brief) {
           unlocked: true,
           name: f.domain?.name || '未命名领域',
           sureHit: f.domain?.sureHit || '',
-          cost: f.domain?.cost || '',
           tierName: r.domainTierName,
           // 三型之一；模型漏填就按等级名兜（见 domains.js）
           type: normalizeDomainType(f.domain?.type) || defaultDomainTypeFor(r.domainTierName),
@@ -351,7 +350,7 @@ export async function buildCharacterAndOpening(state, attrProfile, identityProfi
 背景：${player.background}
 综合等级：${player.grade}
 生得术式：${player.technique.name}（${player.technique.effect}）
-领域：${player.domain.unlocked ? `${player.domain.name}（${player.domain.tierName}）必中效果：${player.domain.sureHit}　代价：${player.domain.cost}` : '未领悟'}
+领域：${player.domain.unlocked ? `${player.domain.name}（${player.domain.tierName}）必中效果：${player.domain.sureHit}` : '未领悟'}
 反转术式：${player.reverseCursedTechnique.level}
 咒具：${player.tools.map((t) => t.name).join('、') || '无'}
 天赋标签：${player.talents.join('、') || '无'}

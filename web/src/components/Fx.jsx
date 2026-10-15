@@ -316,7 +316,11 @@ export function FxBar({ label, cur, max, cls, flashToken, danger }) {
         <b>{Math.round(shownCur).toLocaleString()} / {Math.round(shownMax).toLocaleString()}</b>
       </div>
       <div className="bar-track">
-        {drain && <div className="bar-ghost" style={{ width: `${ghost}%` }} />}
+        {/*
+          残影的宽度按 scaleX 给，不按 width —— 见 styles.css 里 .bar-ghost
+          那一段：这条过渡正好落在"打中"那几帧上，不能让它带动布局。
+        */}
+        {drain && <div className="bar-ghost" style={{ transform: `scaleX(${ghost / 100})` }} />}
         <div className={`bar-fill ${cls}`} style={{ width: `${pct}%` }}>
           {/*
             扫光：满格的血条是一块死色，加上一层慢慢走过的反光之后

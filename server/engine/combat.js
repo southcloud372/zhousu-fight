@@ -842,12 +842,15 @@ export function finishCombat(state, outcome) {
   const enemyGrade = enemy?.grade || ''
   const canon = !!enemy?.canon
   /*
-   * 杀意是玩家自己带进来的（他说了"杀了他"这种话，见 guard.js 的 hasLethalIntent）。
-   * 赢了、并且本来就奔着要命去，才算真的杀了这个人 —— 打晕和打死是两件事，
-   * 后者会往后改写剧情，前者不会。
+   * 赢下这一场只等于**把人打倒**，不等于杀掉。杀还是放，是收工这一拍
+   * 由玩家自己点的（见下面的 disposeEnemy）。
+   *
+   * 原来是靠玩家有没有在行动里写"杀了他"来判的（guard.js 的 hasLethalIntent）——
+   * 可那句话是随口一说还是认真的，从一行文本里看不出来；而且人往往是
+   * 打完站定了才想清楚要不要下杀手。现在 lethalIntent 只做一件事：
+   * 玩家开打前就说过要杀，弹窗里就把「击杀」默认选上。
    */
   const lethalIntent = !!state.combat?.lethalIntent
-  const killed = won && lethalIntent
   // 介入战要留个记号：战斗态马上就被清空了，之后再想问"这场是不是节点战"就晚了
   const intervention = state.combat?.intervention || null
   state.combat = null
@@ -858,7 +861,9 @@ export function finishCombat(state, outcome) {
   const who = `${enemyGrade ? `${enemyGrade}的` : ''}${enemyName}`
   let summary
   if (won) {
-    summary = killed ? `杀死了${who}` : `击退了${who}`
+    // 措辞停在"打倒"上，不留"杀"字：处置还没定，正文先写成"你杀了他"
+    // 再弹一个"要不要杀"的窗，就没法圆了
+    summary = `击倒了${who}`
     state.timeline.newEvents.push(summary)
   } else if (outcome?.winner === 'fled') {
     summary = `从${enemyName}手中脱离`
@@ -867,27 +872,16 @@ export function finishCombat(state, outcome) {
   } else {
     summary = `与${enemyName}的战斗未分胜负`
   }
-
-  /*
-   * 杀的是撑起某个原作节点的人 → 那一天被标成「已改写」。
-   * 注意判定用的是**名字**：表里查不到（无名咒灵）就什么都不会发生。
-   * 节点已经走过的话 noteDeath 会返回 line: null —— 人确实没了，
-   * 但那一天早就过去了，改不动了，也不必假装改得动。
-   */
-  let rewrite = null
-  if (killed) {
-    const hit = noteDeath(state, enemyName)
-    if (hit?.line) {
-      rewrite = hit.line
-      summary += `。${hit.line}`
-    } else if (hit?.already) {
-      rewrite = `「${hit.node}」已经过去，这一死改变不了那一天`
-    }
-  }
   if (state.timeline.newEvents.length > 40) state.timeline.newEvents.shift()
 
-  // 战斗向的介入战：把「这一天」记进时间线，并清掉修炼疲劳（新的空档重新开始）
-  if (intervention) {
+  /*
+   * 介入战的收尾要等处置定下来再说，顺序不能反：
+   * noteDeath 只在节点还是「未发生」时才改得动，而 completeIntervention
+   * 一上来就把它标成「已改变」—— 那是 isSettled 里的状态，再杀那个人
+   * 就"改不动那一天"了（plotdeps.js 的 noteDeath）。所以打赢了的介入战
+   * 整段挪进 disposeEnemy；没打赢的（脱离 / 战败 / 平手）当场结掉。
+   */
+  if (intervention && !won) {
     summary += `。${completeIntervention(state, intervention, outcome)}`
   }
 
@@ -910,21 +904,108 @@ export function finishCombat(state, outcome) {
     turn: state.turn,
     date: state.time?.date || '',
     enemy: { name: enemyName, grade: enemyGrade, canon },
-    // 击杀 / 击退 / 逃脱 / 战败 / 未分胜负 —— 战场上的五种收场
-    result: won ? (killed ? '击杀' : '击退')
+    // 击倒 / 击杀 / 放走 / 逃脱 / 战败 / 未分胜负 —— 赢下来的那一场
+    // 先记「击倒」，等玩家点完这一下再落成击杀或放走（disposeEnemy）
+    result: won ? '击倒'
       : outcome?.winner === 'fled' ? '逃脱'
         : outcome?.winner === 'enemy' ? '战败' : '未分胜负',
-    killed,
+    killed: false,
     ground: intervention ? '介入战' : '遭遇战',
     node: intervention,
-    rewrite,
+    rewrite: null,
     hpLeft: p.hp.cur,
     hpMax: p.hp.max,
     note: summary,
   })
   if (state.battles.length > 30) state.battles.shift()
 
+  /*
+   * 打倒的这个人怎么处置，摆在那儿等玩家点。它同时是一道闸门：
+   * 没点之前不许推进剧情 —— 否则模型会先写一段"之后的日子"，
+   * 再回头补一句"你把他杀了"，前后就对不上了。
+   */
+  state.pendingDisposition = won
+    ? {
+        name: enemyName,
+        grade: enemyGrade,
+        canon,
+        winner: outcome?.winner,
+        lethalIntent,
+        intervention,
+        battleIndex: state.battles.length - 1,
+      }
+    : null
+
   return summary
+}
+
+/**
+ * 处置倒下的对手：杀，还是放。
+ *
+ * 这是整场战斗里最重的一下 —— 杀了谁，撑起那一天的人就没了，后面
+ * 整条线都得重排。所以它值得玩家亲手点一次，而不是从一行行动文本里猜。
+ *
+ * 也正因为重，它必须在**打完那一刻**问：人刚倒下，手里正好有"要不要
+ * 留他一命"的余裕；等下一回合的正文写完再问，"他已经死了吗"就成了
+ * 一个已经过去的问题。
+ *
+ * 返回 { kill, result, summary, rewrite, already }，调用方原样交给前端。
+ */
+export function disposeEnemy(state, kill) {
+  const d = state.pendingDisposition
+  if (!d) return null
+
+  const who = `${d.grade ? `${d.grade}的` : ''}${d.name}`
+  const base = kill ? `杀死了${who}` : `放走了${who}`
+  state.timeline.newEvents.push(base)
+  if (state.timeline.newEvents.length > 40) state.timeline.newEvents.shift()
+
+  /*
+   * 杀的是撑起某个原作节点的人 → 那一天被标成「已改写」。
+   * 判定用的是**名字**：表里查不到（无名咒灵、路人）就什么都不会发生。
+   * 节点已经走过的话 noteDeath 会给 line: null —— 人确实没了，
+   * 但那天早就过去了，改不动了，也不必假装改得动。
+   */
+  let rewrite = null
+  let already = false
+  let summary = base
+  if (kill) {
+    /*
+     * 人死在引擎手上，就由引擎记下来，不等模型回话。
+     * 之前只有模型回报的 deaths 才会进这份名单 —— 于是"这一下是我点的"
+     * 这件事得绕一圈才落地：万一模型那一拍没写，死掉的人下一回合还能
+     * 站在对面（名字还在 prompt 的可用人物里）。点下去的那一刻就该定死。
+     */
+    state.timeline.deaths ||= []
+    if (!state.timeline.deaths.includes(d.name)) state.timeline.deaths.push(d.name)
+
+    const hit = noteDeath(state, d.name)
+    if (hit?.line) {
+      rewrite = hit.line
+      summary += `。${hit.line}`
+    } else if (hit?.already) {
+      already = true
+      rewrite = `「${hit.node}」已经过去，这一死改变不了那一天`
+    }
+  }
+
+  // 介入战的收尾赶在这一刻做，写的才是准的：上面刚死的那个人
+  // 可能正是撑起这一天的人，那这一天就不是"改写了"，是"照着一个
+  // 陌生的局面打完了"（completeIntervention 认「已改写」这一档）
+  if (d.intervention) {
+    summary += `。${completeIntervention(state, d.intervention, { winner: d.winner })}`
+  }
+
+  const battle = (state.battles || [])[d.battleIndex] || null
+  if (battle) {
+    battle.result = kill ? '击杀' : '放走'
+    battle.killed = !!kill
+    battle.rewrite = rewrite
+    // 接着写，不覆盖：收工那一刻记下的血量与濒死提示还得留着
+    battle.note = `${battle.note}。${summary}`
+  }
+  state.pendingDisposition = null
+  return { kill: !!kill, result: battle?.result || (kill ? '击杀' : '放走'), summary, rewrite, already }
 }
 
 export { MAX_ROUNDS }

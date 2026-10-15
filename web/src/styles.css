@@ -462,14 +462,21 @@ body::before {
  * "这条还活着"就成了不用读数也能看见的事。咒力条尤其需要：
  * 它一格格回，玩家得知道它回来了。
  *
- * 挂在 .bar-track 上而不是 .bar-fill 里：fill 的宽度一直在变，
- * 反光跟着它的宽度走的话，条越短光跑得越快。
+ * 挂在 .bar-fill 里而不是 .bar-track 上：反光的宽窄取的是**血条自己**的宽度，
+ * 所以不管这条血还剩多少，它都在同样的时间里走完同样的比例。
+ * 挂到槽上的话，短血条上那道光会一闪而过 —— 看着像血返得飞快。
+ *
+ * 走的是 transform 不是 left。这是全文件里唯一一条**永不结束**的动画，
+ * 每根条上都有；动 left 意味着每一帧都要重新布局，而右侧面板正被
+ * 震屏那一下（.shell 上的 transform）整体翻搅的时候，这一帧的布局
+ * 还得跟着一起重算 —— 出招时那几帧的卡顿就是这么来的。
+ * translateX 的百分比按自身宽度算：自己宽 55%，所以 -110% ≈ 槽的 -60%。
  */
 .bar-sheen {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -60%;
+  left: 0;
   width: 55%;
   pointer-events: none;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
@@ -478,8 +485,8 @@ body::before {
 }
 .bar-fill.ce .bar-sheen { animation-duration: 2400ms; opacity: 0.5; }
 @keyframes barSheen {
-  0% { left: -60%; }
-  55%, 100% { left: 105%; }
+  0% { transform: translateX(-110%); }
+  55%, 100% { transform: translateX(190%); }
 }
 
 .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 3px 0; }
@@ -550,6 +557,10 @@ body::before {
 }
 .bt-result.kill { background: var(--blood); color: #fff; }
 .bt-result.win { background: #e2f0e7; color: var(--ok); }
+/* 放走：人还活着，这一场不算白打，但也没了结什么 —— 冷色，比"击杀"轻得多 */
+.bt-result.spare { background: #e3eef2; color: #2c687a; }
+/* 击倒：打倒待处置的中间态，弹窗一关就落成上面两种之一 */
+.bt-result.pending { background: var(--track); color: var(--ink-dim); }
 .bt-result.flee { background: var(--track); color: var(--ink-faint); }
 .bt-result.lose { background: #fbe4e1; color: var(--blood); }
 .bt-result.draw { background: var(--track); color: var(--gold); }
@@ -1086,16 +1097,21 @@ body::before {
 
 /* ---------------------------------------------------------- 弹层（存档 / 修炼兜底） */
 
+/*
+ * 原本这里还有一层 backdrop-filter: blur(2px)。那 2px 几乎看不出来，
+ * 但代价是弹层开着的时候，浏览器每一帧都要把背后整页重新糊一次 ——
+ * 而背后那页从来不静止（血条上那条扫光是永不结束的动画）。
+ * 想让下面真的安静下来，靠的是底色加深，不是模糊。
+ */
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(40, 34, 26, 0.42);
+  background: rgba(40, 34, 26, 0.55);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 50;
   padding: 24px;
-  backdrop-filter: blur(2px);
 }
 .modal {
   background: var(--bg-2);
@@ -1116,6 +1132,61 @@ body::before {
   font-weight: 500;
 }
 .modal .hint { font-size: 12.5px; color: var(--ink-faint); margin-bottom: 15px; }
+
+/* ---------------------------------------------------------- 处置倒下的对手 */
+
+/*
+ * 打完那一问：杀，还是放。
+ *
+ * 两个按钮**一样大、一样重**，谁也不许摆在"更该点"的位置上 ——
+ * 这是玩家自己的一念之差，界面替他排轻重就等于替他做决定。
+ * 颜色在说后果（红=不可逆，青=还有回头路），不是在投票。
+ */
+.dispose-modal { max-width: 460px; }
+
+.dispose-who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 8px;
+  font-family: var(--font-narr);
+  font-size: 21px;
+  color: var(--ink);
+}
+.dispose-who em {
+  font-style: normal;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  color: var(--gold);
+}
+
+.dispose-acts { display: flex; flex-direction: column; gap: 9px; }
+.dispose-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 0;
+  padding: 11px 14px;
+  font-size: 15px;
+  line-height: 1.4;
+  text-align: left;
+}
+.dispose-pick span {
+  font-size: 11.5px;
+  letter-spacing: 0;
+  color: var(--ink-faint);
+}
+.dispose-pick.kill { border-color: rgba(168, 35, 27, 0.45); }
+.dispose-pick.kill:hover:not(:disabled) { border-color: var(--blood-bright); background: rgba(168, 35, 27, 0.05); }
+.dispose-pick.spare { border-color: rgba(60, 130, 150, 0.42); }
+.dispose-pick.spare:hover:not(:disabled) { border-color: var(--cursed); background: rgba(60, 130, 150, 0.05); }
+/* 开打前就说过要命的人：把默认答案标出来，但**不禁用另一边** */
+.dispose-pick.kill.armed { box-shadow: inset 3px 0 0 var(--blood-bright); }
+
+.dispose-note { margin-top: 10px; font-size: 11.5px; color: var(--ink-faint); }
 
 /* 改数值的九宫格：标签在左、输入框在右，两列排开。
    一行一项的话，九个字段会拖出一条要滚的竖条 */
@@ -1613,14 +1684,21 @@ body::before {
   height: 30vmin;
   border: 2px solid rgba(255, 236, 214, 0.5);
   border-radius: 50%;
+  /*
+   * 只动 transform 和 opacity。原来这里还夹着一个 border-width: 10px → 1px，
+   * 那是每帧重新布局一次，三个圈就是三次 —— 而这几个圈正好压在大字和
+   * 满屏光晕上面，掉帧最狠的那几帧就是它们贡献的。
+   * 变细这件事其实不用单独做：圈从 30vmin 撑到三倍，同样的 2px 边框
+   * 摊在越来越长的圆周上，看起来自然就细了。
+   */
   animation: dcRing 1500ms cubic-bezier(0.15, 0.8, 0.2, 1) both;
 }
 .dc-rings i:nth-child(2) { animation-delay: 140ms; }
 .dc-rings i:nth-child(3) { animation-delay: 280ms; }
 @keyframes dcRing {
-  from { transform: scale(0.2); opacity: 0; border-width: 10px; }
+  from { transform: scale(0.2); opacity: 0; }
   30% { opacity: 0.9; }
-  to { transform: scale(3.1); opacity: 0; border-width: 1px; }
+  to { transform: scale(3.1); opacity: 0; }
 }
 
 .dc-body { position: relative; padding: 0 20px; text-align: center; color: #f6efe4; }
@@ -1635,11 +1713,17 @@ body::before {
     0 0 26px rgba(255, 90, 60, 0.85),
     0 0 62px rgba(200, 30, 20, 0.6),
     0 4px 0 rgba(0, 0, 0, 0.35);
+  /*
+   * 字是从模糊里凝出来的，但那个模糊**不能**做在动画里：
+   * filter 一变，浏览器就得把这几个一百来像素的大字连同层里那两圈
+   * text-shadow 重新栅格化一遍，逐帧重算。字进来时的"冲劲"改由
+   * 缩放和位移给 —— 从 1.5 倍收回来，比糊着进来更冲。
+   */
   animation: dcKanji 620ms cubic-bezier(0.18, 0.9, 0.25, 1.2) both;
 }
 @keyframes dcKanji {
-  from { opacity: 0; transform: translateY(18px) scale(1.5); filter: blur(14px); }
-  to { opacity: 1; transform: none; filter: blur(0); }
+  from { opacity: 0; transform: translateY(18px) scale(1.5); }
+  to { opacity: 1; transform: none; }
 }
 
 .dc-name {
@@ -1933,14 +2017,22 @@ body::before {
  * 残影：血条先掉，这一条晚 240ms 才追上来。
  * 静止的一条血条看不出"掉了多少"，多这一层就有了"被削掉"的动作。
  */
+/*
+ * 残影走 transform 不走 width。它出现的时机正好是"技能打中、血条开始掉"
+ * 那几帧 —— 屏幕上同时有冲击层、飘字、震屏，是全场最忙的一瞬间。
+ * 再来一条逐帧重新布局的 width 过渡，就正好卡在最不能卡的地方。
+ * 满宽 + scaleX，从左边收，画出来的东西和按宽度画的一模一样。
+ */
 .bar-ghost {
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
+  width: 100%;
+  transform-origin: left center;
   border-radius: 3px;
   background: rgba(168, 35, 27, 0.42);
-  transition: width 420ms cubic-bezier(0.3, 0.9, 0.3, 1);
+  transition: transform 420ms cubic-bezier(0.3, 0.9, 0.3, 1);
 }
 
 /* 血条被打掉时扫过的一道白光 */
@@ -2019,17 +2111,18 @@ body::before {
   letter-spacing: 0.1em;
   opacity: 0.9;
 }
+/* 同 .bar-sheen：领域开着的时候它一直在跑，动 left 就是一直在重新布局 */
 .domain-aura .da-ring {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -40%;
+  left: 0;
   width: 40%;
   background: linear-gradient(90deg, transparent, currentColor, transparent);
   opacity: 0.16;
   animation: daSweep 2400ms linear infinite;
 }
-@keyframes daSweep { from { left: -40%; } to { left: 100%; } }
+@keyframes daSweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 
 /* 命中抖动：被打的那一方抖，打人的那一方冲一下 */
 .shake-hit { animation: shakeHit 380ms cubic-bezier(0.3, 0.8, 0.3, 1) both; }

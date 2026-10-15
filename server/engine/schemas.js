@@ -31,14 +31,13 @@ export const submitAttributeFlavor = {
               properties: {
                 name: { type: 'string' },
                 sureHit: { type: 'string', description: '必中效果' },
-                cost: { type: 'string', description: '代价' },
                 type: {
                   type: 'string',
                   enum: [...DOMAIN_TYPES],
                   description: '领域类型。伤害型＝必中重击并持续追斩；规则型＝封锁对方的术式、反转术式与领域；增益型＝当场回血回咒力并提高暴击。名字与效果要和这一型对得上。',
                 },
               },
-              required: ['name', 'sureHit', 'cost', 'type'],
+              required: ['name', 'sureHit', 'type'],
               description: 'domainUnlocked 为 false 时填 null',
             },
             talents: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 3 },

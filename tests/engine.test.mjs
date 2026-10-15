@@ -20,7 +20,7 @@ import { canTrain, rollTraining, applyTraining, TRAINING_TABLE } from '../server
 import { acceptable, allFilled, IDENTITY_FIELDS, ATTRIBUTE_FIELDS } from '../server/engine/opening.js'
 import { CONTRACT } from '../server/prompts.js'
 import {
-  initCombat, runRound, simulateCombat, computeRewards, applyRewards, finishCombat, unitSpeed,
+  initCombat, runRound, simulateCombat, computeRewards, applyRewards, finishCombat, disposeEnemy, unitSpeed,
   COMBO_CAP,
 } from '../server/engine/combat.js'
 
@@ -757,19 +757,40 @@ test('战斗收尾会清空战斗态并复位冷却', () => {
   assert.equal(s.combat, null)
   assert.equal(s.player.technique.cdLeft, 0)
   assert.equal(s.player.domain.active, false)
-  assert.match(summary, /击退/)
+  // 措辞停在「击倒」：杀还是放还没定，正文不能先替他写死
+  assert.match(summary, /击倒/)
+  assert.ok(s.pendingDisposition, '打赢了就该把处置这一问挂上')
 })
 
-test('说了要命并且打赢：记成击杀，并改写他撑起的那一天', () => {
+test('说了要命并且打赢：先记成击倒，点了「击杀」才改写他撑起的那一天', () => {
   const s = makeTestState(221, 222)
   const rng = makeRng(223)
   const enemy = rollEnemy(rng, '四级')
   enemy.name = '五条悟'
   applyCanon(enemy, enemy.name, { storyline: 'sukuna', date: s.time.date })
   initCombat(s, rng, { mode: 'manual', enemy, reason: 't', lethalIntent: true })
-  const summary = finishCombat(s, { winner: 'player', loser: 'enemy' })
 
-  assert.match(summary, /杀死了/)
+  /*
+   * 开打前说过要命，只值一件事：弹窗里「击杀」默认选上。
+   * 那句话是随口一说还是认真的，从文本里看不出来 —— 所以死活仍然由
+   * 玩家在收工那一拍自己点（见 combat.js 的 disposeEnemy）。
+   */
+  const summary = finishCombat(s, { winner: 'player', loser: 'enemy' })
+  assert.match(summary, /击倒/)
+  assert.equal(s.pendingDisposition.name, '五条悟')
+  assert.equal(s.pendingDisposition.lethalIntent, true)
+  assert.equal(s.battles.at(-1).result, '击倒')
+  assert.equal(s.timeline.nodes['涩谷事变'], '未发生', '还没点，那一天就不能动')
+
+  const r = disposeEnemy(s, true)
+  assert.match(r.summary, /杀死了/)
+  assert.equal(r.kill, true)
+  assert.equal(s.pendingDisposition, null, '处置完这一问就该收掉')
+  /*
+   * 死亡名单由引擎自己写，不等模型回话：这一下是玩家点的，引擎当场就知道。
+   * 落到模型手里的话，万一它那一拍没回报，这个人下一回合还能站在对面。
+   */
+  assert.ok(s.timeline.deaths.includes('五条悟'), '点了击杀，人就该进死亡名单')
   // 人没了 → 他撑起的那一天（涩谷事变）被改写成另一个样子
   assert.equal(s.timeline.nodes['涩谷事变'], REWRITTEN)
 
@@ -785,7 +806,7 @@ test('说了要命并且打赢：记成击杀，并改写他撑起的那一天',
   assert.equal(view.节点改写理由['涩谷事变'].length > 10, true)
 })
 
-test('只是打赢不算杀人 —— 没说要命就是击退', () => {
+test('点了「放走」：人还活着，他撑起的那一天一点都不动', () => {
   const s = makeTestState(231, 232)
   const rng = makeRng(233)
   const enemy = rollEnemy(rng, '四级')
@@ -793,9 +814,26 @@ test('只是打赢不算杀人 —— 没说要命就是击退', () => {
   initCombat(s, rng, { mode: 'manual', enemy, reason: 't' })
   finishCombat(s, { winner: 'player', loser: 'enemy' })
 
-  assert.equal(s.battles.at(-1).result, '击退')
+  const r = disposeEnemy(s, false)
+  assert.equal(r.result, '放走')
+  assert.equal(r.rewrite, null)
+  assert.equal(s.battles.at(-1).result, '放走')
   assert.equal(s.battles.at(-1).killed, false)
-  assert.equal(s.timeline.nodes['涩谷事变'], '未发生', '打晕不等于杀掉，那天还没变')
+  assert.equal(s.timeline.nodes['涩谷事变'], '未发生', '放走不等于杀掉，那天还没变')
+  assert.ok(!s.timeline.deaths.includes('五条悟'), '放走的人不该进死亡名单')
+  assert.equal(s.pendingDisposition, null)
+})
+
+test('处置只在打赢之后才存在：输 / 跑 / 平手都不会挂上那一问', () => {
+  for (const winner of ['enemy', 'fled', 'draw']) {
+    const s = makeTestState(261, 262)
+    const rng = makeRng(263)
+    initCombat(s, rng, { mode: 'manual', enemy: rollEnemy(rng, '四级'), reason: 't', lethalIntent: true })
+    finishCombat(s, { winner })
+    assert.equal(s.pendingDisposition, null, `${winner} 不该问"杀还是放"`)
+    // 没有待处置的对手时点它，什么都不该发生（也不能凭空记一次死）
+    assert.equal(disposeEnemy(s, true), null)
+  }
 })
 
 test('战败与逃脱也记账，五种收场一个不少', () => {

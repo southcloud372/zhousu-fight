@@ -68,6 +68,13 @@ export function blankState(rng, storylineId = DEFAULT_STORYLINE, playMode = DEFA
     chronicle: '', // 更早剧情的压缩摘要
     pendingCombat: null,
     /*
+     * 打倒但还没处置的对手。赢下这一场之后、玩家点「击杀」或「放走」之前，
+     * 它会一直挂着（见 combat.js 的 finishCombat / disposeEnemy）。
+     * 挂着的期间不许推进剧情 —— 这道闸门和 pendingCombat 是同一个道理：
+     * 有一件事还没定，就应该先问完再往下走。
+     */
+    pendingDisposition: null,
+    /*
      * 战果。每打完一场（无论胜负）落一条 —— 剧情回合触发的遭遇战和轮盘的
      * 介入战都记。玩家的要求是"每次对战结果加入到之后剧情的影响"，
      * 所以这份记录同时喂给模型（见 modelStateView）和右侧的战果面板。
@@ -380,7 +387,6 @@ export function modelStateView(state) {
             类型: domainTypeOf(p.domain),
             机制: domainKit(p.domain).brief,
             必中效果: p.domain.sureHit,
-            代价: p.domain.cost,
             是否展开: !!p.domain.active,
           }
         : '未领悟',
@@ -420,6 +426,16 @@ export function modelStateView(state) {
     })),
     待结算战斗: state.pendingCombat
       ? { 敌方: `${state.pendingCombat.enemy.name}（${state.pendingCombat.enemy.grade}）`, 起因: state.pendingCombat.reason }
+      : null,
+    /*
+     * 打倒但还没处置的对手。写"下一步该演什么"时必须知道它：
+     * 这一下没定，玩家下一句要干什么也还没定，模型不该抢先把人写死或写跑。
+     */
+    待处置对手: state.pendingDisposition
+      ? {
+          目标: `${state.pendingDisposition.name}${state.pendingDisposition.grade ? `（${state.pendingDisposition.grade}）` : ''}`,
+          说明: '已被打倒，玩家还没决定杀还是放。这一下没定之前不要往下写。',
+        }
       : null,
     进行中的战斗: state.combat
       ? {
@@ -488,6 +504,21 @@ export function panelSnapshot(state) {
           enemyGrade: state.pendingCombat.enemy.grade,
           enemyTechnique: state.pendingCombat.enemy.technique.name,
           reason: state.pendingCombat.reason,
+        }
+      : null,
+    /*
+     * 打倒待处置的对手。界面靠它把那个"杀还是放"的弹窗摆出来 ——
+     * 也靠它**刷新之后还认得出来**：存在服务端状态里，不是前端一个
+     * 随手弹出的窗口，玩家关掉页面再回来，这一问还在。
+     */
+    disposition: state.pendingDisposition
+      ? {
+          name: state.pendingDisposition.name,
+          grade: state.pendingDisposition.grade,
+          canon: state.pendingDisposition.canon,
+          // 开打前就说过要杀的人，弹窗里默认帮他选上「击杀」
+          lethalIntent: state.pendingDisposition.lethalIntent,
+          intervention: state.pendingDisposition.intervention,
         }
       : null,
     combatLog: state.combat?.log || [],

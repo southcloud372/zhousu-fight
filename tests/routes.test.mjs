@@ -44,6 +44,9 @@ const S = {
   editNone: `rt-${RUN}-editblank`,
   sudden: `rt-${RUN}-sudden`,
   suddenNone: `rt-${RUN}-suddennone`,
+  dispose: `rt-${RUN}-dispose`,
+  kill: `rt-${RUN}-kill`,
+  sloppy: `rt-${RUN}-sloppy`,
 }
 
 const J = { 'content-type': 'application/json' }
@@ -69,7 +72,7 @@ try {
   process.exit(1)
 }
 
-function mkState(id, { mode = 'combat', hpRatio = 1, inCombat = false, reverse = '初步', date = null } = {}) {
+function mkState(id, { mode = 'combat', hpRatio = 1, inCombat = false, reverse = '初步', date = null, disposed = null } = {}) {
   const s = blankState(makeRng(7))
   const a = rollAttributeProfile(makeRng(11), 'A')
   Object.assign(a, { techniqueName: '测试术式', techniqueEffect: 'e', techniqueCooldown: 2, talents: [], playstyle: '', domain: { unlocked: false } })
@@ -90,6 +93,23 @@ function mkState(id, { mode = 'combat', hpRatio = 1, inCombat = false, reverse =
   if (date) s.time.date = date
   if (inCombat) {
     initCombat(s, makeRng(23), { mode: 'manual', enemy: rollEnemy(makeRng(29), s.player.grade), reason: '联调' })
+  }
+  /*
+   * 打倒待处置：不用 initCombat 再打一遍，直接照着 finishCombat 的产物摆一份 ——
+   * 战斗态已经清空、战果先记一条「击倒」、处置那一问挂着。
+   * 名字给的是原作人物，所以杀下去会牵动他撑起的那一天（涩谷事变）。
+   */
+  if (disposed) {
+    s.battles.push({
+      turn: s.turn, date: s.time.date,
+      enemy: { name: disposed, grade: '超特级', canon: true },
+      result: '击倒', killed: false, ground: '遭遇战', node: null, rewrite: null,
+      hpLeft: s.player.hp.cur, hpMax: s.player.hp.max, note: `击倒了超特级的${disposed}`,
+    })
+    s.pendingDisposition = {
+      name: disposed, grade: '超特级', canon: true, winner: 'player',
+      lethalIntent: false, intervention: null, battleIndex: s.battles.length - 1,
+    }
   }
   fs.writeFileSync(path.join(SAVES, `${id}.json`), JSON.stringify(s, null, 2), 'utf8')
   return s
@@ -215,6 +235,62 @@ ok('没练成也留着那一格', nvSlot?.type === 'reverse', JSON.stringify(nv?
 ok('灰着，并写明去哪儿练', nvSlot?.enabled === false && /反转术式修习/.test(nvSlot?.note || ''), nvSlot?.note)
 const nvTry = await post(`/api/session/${S.norev}/combat/free-action`, { action: 'reverse' })
 ok('真按下去会被明确拒绝', nvTry.status === 400, nvTry.j?.error)
+
+/*
+ * 打完那一问：杀还是放。
+ *
+ * 这一条验的是"玩家说了算"这件事在接口上成不成立 —— 处置之前不许推进剧情，
+ * 处置之后战果与时间线立刻落定，而且**没点过就不能凭空记一次死**。
+ */
+console.log('\n──── 处置倒下的对手 ────')
+// 没有待处置的对手时点它：必须被挡住，不能顺手把谁写死
+const noDisp = await post(`/api/session/${S.norev}/combat/dispose`, { kill: true })
+ok('没有待处置的对手时拒绝', noDisp.status === 400, noDisp.j?.error)
+
+mkState(S.dispose, { mode: 'combat', disposed: '五条悟' })
+const ds0 = (await get(`/api/session/${S.dispose}/state`)).j
+ok('/state 带出待处置的对手', ds0?.panel?.disposition?.name === '五条悟', JSON.stringify(ds0?.panel?.disposition))
+ok('原作人物标得出来（杀他分量不一样）', ds0?.panel?.disposition?.canon === true, JSON.stringify(ds0?.panel?.disposition))
+ok('没点之前战果记的是「击倒」', ds0?.panel?.battles?.at(-1)?.result === '击倒', ds0?.panel?.battles?.at(-1)?.result)
+ok('没点之前那一天一点没动', ds0?.panel?.timeline?.nodes?.['涩谷事变'] === '未发生',
+  ds0?.panel?.timeline?.nodes?.['涩谷事变'])
+ok('处置没定就不许推进剧情', (await post(`/api/session/${S.dispose}/turn`, { input: '继续' })).status === 409)
+ok('轮盘也按不动，并写明为什么',
+  (await get(`/api/session/${S.dispose}/wheel`)).j?.gate?.reason === '先决定怎么处置倒下的对手',
+  (await get(`/api/session/${S.dispose}/wheel`)).j?.gate?.reason)
+
+const spare = await post(`/api/session/${S.dispose}/combat/dispose`, { kill: false })
+ok('点「放走」返回 200', spare.status === 200, spare.j?.error)
+ok('放走记成「放走」，不是击杀', spare.j?.result === '放走' && spare.j?.kill === false, JSON.stringify(spare.j?.result))
+ok('放走不动时间线', spare.j?.rewrite === null, String(spare.j?.rewrite))
+ok('处置完那一问收掉', spare.j?.panel?.disposition === null, JSON.stringify(spare.j?.panel?.disposition))
+ok('放走之后剧情能接着推（闸门让开了）', spare.j?.wheelGate?.ok === true, JSON.stringify(spare.j?.wheelGate))
+const afterSpare = (await get(`/api/session/${S.dispose}/state`)).j
+ok('战果落成「放走」', afterSpare?.panel?.battles?.at(-1)?.result === '放走', afterSpare?.panel?.battles?.at(-1)?.result)
+ok('放走的人没被记进死亡名单', !(afterSpare?.panel?.timeline?.deaths || []).includes('五条悟'),
+  JSON.stringify(afterSpare?.panel?.timeline?.deaths))
+// 同一件事不能记两次
+ok('处置过一次就不能再点第二次', (await post(`/api/session/${S.dispose}/combat/dispose`, { kill: true })).status === 400)
+
+mkState(S.kill, { mode: 'combat', disposed: '五条悟' })
+const killed = await post(`/api/session/${S.kill}/combat/dispose`, { kill: true })
+ok('点「击杀」返回 200', killed.status === 200, killed.j?.error)
+ok('击杀写进了战果', killed.j?.result === '击杀', String(killed.j?.result))
+ok('他撑起的那一天被改写了', killed.j?.rewrite && /涩谷事变/.test(killed.j.rewrite), String(killed.j?.rewrite))
+ok('正文里带上了「连带影响」（那就是这一天的新剧本）', /已改写/.test(killed.j?.summary || ''), String(killed.j?.summary).slice(0, 80))
+const afterKill = (await get(`/api/session/${S.kill}/state`)).j
+ok('时间线标成「已改写」', afterKill?.panel?.timeline?.nodes?.['涩谷事变'] === '已改写',
+  afterKill?.panel?.timeline?.nodes?.['涩谷事变'])
+ok('改写理由也留下来了（只写"已改写"玩家不知道变成了什么）',
+  (afterKill?.panel?.timeline?.rewrites?.['涩谷事变'] || '').length > 10,
+  afterKill?.panel?.timeline?.rewrites?.['涩谷事变'])
+ok('人进了死亡名单', (afterKill?.panel?.timeline?.deaths || []).includes('五条悟'),
+  JSON.stringify(afterKill?.panel?.timeline?.deaths))
+
+// kill 必须是真布尔：漏传 / 传字符串时按「放走」算 —— 一个手滑不该把主角写死
+mkState(S.sloppy, { mode: 'combat', disposed: '五条悟' })
+const sloppy = await post(`/api/session/${S.sloppy}/combat/dispose`, { kill: 'yes' })
+ok('布尔值之外的值按「放走」算', sloppy.j?.result === '放走', JSON.stringify(sloppy.j?.result))
 
 // 选项的生命周期：什么时候该交出来、什么时候必须清掉
 console.log('\n──── 剧情选项：过期就得清掉 ────')

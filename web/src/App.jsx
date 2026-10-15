@@ -6,7 +6,7 @@ import {
 } from './components/Cards.jsx'
 import { NarrativeLog, ChoiceList, useTypewriter } from './components/Narrative.jsx'
 import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel, GrowthPanel, BattleLogPanel, EditPlayerModal } from './components/Panels.jsx'
-import { ActionBar } from './components/CombatPanel.jsx'
+import { ActionBar, DisposeModal } from './components/CombatPanel.jsx'
 import { WheelPanel } from './components/WheelPanel.jsx'
 import { SaveModal } from './components/SaveModal.jsx'
 import { CombatSidebar } from './components/CombatSidebar.jsx'
@@ -117,6 +117,13 @@ export default function App() {
     if (!c) return
     setCutins((q) => [...q, { ...c, key: ++cutinSeq.current }])
   }, [])
+
+  /*
+   * 打倒待处置的对手。不另开一份本地状态，直接从面板快照上取 ——
+   * 它存在服务端（state.pendingDisposition），所以关掉页面再回来
+   * 这一问还在，而不是一个"当时弹过一次就没了"的窗口。
+   */
+  const disposition = panel?.disposition || null
 
   // 打字机：把成块到达的文字按节奏吐出来，而不是一块块往外蹦
   const tw = useTypewriter()
@@ -873,6 +880,13 @@ export default function App() {
         ])
         setPanel(data.panel)
         setBusy(false)
+        /*
+         * 打倒了人，杀还是放还没定 —— 这一回合到此为止。
+         * 不能顺手往下推：此刻模型要是接着写，它只能替玩家决定那个人的死活，
+         * 而"这一下由玩家自己点"正是这块弹窗存在的理由。等他在弹窗里点完
+         * 再回来推（见 resolveDispose）。
+         */
+        if (data.panel?.disposition) return
         // 战斗结束了，让主循环接着往下演
         submit('（战斗已结算完毕，继续推进剧情）', { silent: true })
       },
@@ -919,6 +933,48 @@ export default function App() {
       setBusy(false)
     }
   }, [sessionId, takeUsage, submit, askCombatMode])
+
+  /**
+   * 处置倒下的对手：杀，还是放。
+   *
+   * 打赢不等于杀掉 —— 这一下由玩家自己点，引擎只负责把他点的那个结果
+   * 落成事实（战果、时间线、必要的话改写某一天）。所以这里不走模型：
+   * 那一下的正文交给紧随其后的这次剧情回合，杀人的分量本来就在
+   * "接下来会很麻烦"里，一句话是说不开的。
+   *
+   * 打了就不留退路：人已经在弹窗里躺着了，没有"再想想"这个选项。
+   */
+  const resolveDispose = useCallback(async (kill) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await api.combatDispose(sessionId, kill)
+      takeUsage(r.usage)
+      setPanel(r.panel)
+      // 处置完这一问就没了，轮盘当场该能按了 —— 不必等模型把后续写完
+      if (r.wheel !== undefined) setWheel(r.wheel || null)
+      if (r.wheelGate !== undefined) setWheelGate(r.wheelGate || null)
+      /*
+       * 把这一下落进正文。杀的是关键人物时，r.rewrite 就是"这一天的新剧本"，
+       * 它比"你杀了他"四个字重要得多 —— 玩家要知道自己刚才改掉了什么。
+       */
+      setEntries((prev) => [...prev, {
+        kind: 'inquiry',
+        inquiry: {
+          tag: kill ? '击杀' : '放走',
+          title: r.summary,
+          lines: r.rewrite && r.rewrite !== r.summary ? [r.rewrite] : [],
+          tone: kill ? 'danger' : 'calm',
+        },
+      }])
+      // 处置定了，主循环接着往下演
+      submit('（战斗已结算完毕，继续推进剧情）', { silent: true })
+    } catch (e) {
+      setError(e.message)
+      setBusy(false)
+      resync() // 弹窗已经关了，把待处置的对手重新捞回来
+    }
+  }, [sessionId, submit, takeUsage, resync])
 
   const doAction = useCallback(async (type) => {
     setBusy(true)
@@ -969,6 +1025,8 @@ export default function App() {
         ])
         setPanel(data.panel)
         setBusy(false)
+        // 同上（见 startCombat 里那段说明）：人还躺着，先让玩家自己点
+        if (data.panel?.disposition) return
         submit('（战斗已结算完毕，继续推进剧情）', { silent: true })
       },
       onError: (e) => {
@@ -1739,6 +1797,14 @@ export default function App() {
       {/* 演出层：领域展开过场、数值跳动的轻提示。挂在最外层，覆盖整屏 */}
       <Impact data={impact} />
       <DomainCutin data={cutins[0] || null} onDone={() => setCutins((q) => q.slice(1))} />
+      {/*
+        处置倒下的对手。等「撃破」那一屏演完再问 —— 两件事挤在同一秒，
+        玩家会先看见弹窗、过场就成了背景噪音；而打完那一下的心跳正是
+        该被看见的。收场那一屏收干净了，这一问才落得下来。
+      */}
+      {disposition && !cutins.length && (
+        <DisposeModal data={disposition} busy={busy} onPick={resolveDispose} />
+      )}
       <Toasts items={toaster.items} onClose={toaster.remove} />
       {errBanner}
 

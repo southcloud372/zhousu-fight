@@ -107,7 +107,6 @@ export function AttributeCard({ p, onPick, busy }) {
             <span style={{ fontSize: 11, color: 'var(--ink-faint)', marginLeft: 6 }}>{p.domain.tierName}</span>
           </div>
           <div style={{ marginTop: 4 }}>必中：{p.domain.sureHit}</div>
-          <div style={{ color: 'var(--blood-bright)' }}>代价：{p.domain.cost}</div>
         </div>
       ) : (
         <div style={{ fontSize: 12.5, color: 'var(--ink-faint)' }}>领域：未领悟（进度 0%）</div>
@@ -247,7 +246,6 @@ export function CustomCard({
                       <span style={{ fontSize: 11, color: 'var(--ink-faint)', marginLeft: 6 }}>{generated.domain.tierName}</span>
                     </div>
                     <div style={{ marginTop: 3 }}>必中：{generated.domain.sureHit}</div>
-                    <div style={{ color: 'var(--blood)' }}>代价：{generated.domain.cost}</div>
                   </div>
                 )}
 

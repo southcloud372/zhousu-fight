@@ -157,11 +157,19 @@ let hpMaxOverride = null
  */
 let battleFixture = null
 let rewriteFixture = null
+/*
+ * 「打倒之后杀还是放」——这一问挂在一个打赢了、但还没处置对手的存档上。
+ * 和战果一样只在真有其事的时候才该出现，所以默认是空。
+ */
+let dispositionFixture = null
+/** 每点一次「击杀 / 放走」往这里落一条，用来断言真的发出去的是哪个 */
+const disposeCalls = []
 const snapshotFor = () => ({
   ...(wounded ? woundedSnapshot() : CHARACTER_SNAPSHOT),
   ...(wounded || !hpMaxOverride ? {} : { hp: { ...CHARACTER_SNAPSHOT.hp, max: hpMaxOverride } }),
   sukuna: sukunaFixture(),
   battles: battleFixture ? [battleFixture] : [],
+  disposition: dispositionFixture,
   timeline: {
     ...CHARACTER_SNAPSHOT.timeline,
     ...(rewriteFixture
@@ -387,6 +395,33 @@ function makeFetchStub(log) {  return async (url, opts = {}) => {
         }],
       ])
     }
+
+    /*
+     * 处置倒下的对手。杀还是放由玩家点，这一下不调模型 —— 所以它是一条
+     * 独立的普通 POST，不跟着战斗那条 SSE 走：那一场已经结算完了。
+     */
+    if (u.endsWith('/combat/dispose')) {
+      const kill = JSON.parse(opts.body || '{}').kill === true
+      disposeCalls.push(kill)
+      dispositionFixture = null
+      // 处置完，战果那一条就从「击倒」落成击杀或放走 —— 和引擎里同一步
+      battleFixture = {
+        turn: 12, date: '2018-10-31',
+        enemy: { name: '五条悟', grade: '超特级', canon: true },
+        result: kill ? '击杀' : '放走', killed: kill,
+        ground: '遭遇战', node: null,
+        rewrite: kill ? '「涩谷事变」已改写 —— 五条悟死了' : null,
+        hpLeft: 40, hpMax: 100, note: '',
+      }
+      return json({
+        usage: usageFixture,
+        kill,
+        result: kill ? '击杀' : '放走',
+        summary: kill ? '杀死了超特级的五条悟' : '放走了超特级的五条悟',
+        rewrite: kill ? '「涩谷事变」已改写 —— 五条悟死了' : null,
+        panel: snapshotFor(),
+        wheel: null, wheelGate: null,
+      })    }
 
     // ---- 遭遇战前的脱离判定 ----
     if (u.endsWith('/combat/evade')) {
@@ -2739,6 +2774,77 @@ test('没打过仗就不显示战果面板', async () => {
   const panel = [...dom.window.document.querySelectorAll('.panel')]
     .find((p) => p.textContent.includes('战果'))
   assert.ok(!panel, '一场没打却挂着一块空战果')
+})
+
+test('打赢之后：弹出「击杀 / 放走」，点哪一下决定这个人还在不在', async () => {
+  /*
+   * 打赢不等于杀掉。收工那一拍把这一问摆给玩家，是因为它是这条时间线上
+   * 最不可逆的一次点击 —— 杀了的人不会再回来，他撑起的那一天也跟着重排。
+   */
+  dispositionFixture = {
+    name: '五条悟', grade: '超特级', canon: true,
+    lethalIntent: false, intervention: '涩谷事变',
+  }
+  disposeCalls.length = 0
+  try {
+    await enterGame()
+
+    const modal = dom.window.document.querySelector('.dispose-modal')
+    assert.ok(modal, '打赢了却没弹处置窗')
+    const txt = modal.textContent
+    assert.match(txt, /五条悟/, '没写清楚倒下的是谁')
+    assert.match(txt, /超特级/, '没写对手等级')
+    assert.match(txt, /原作/, '原作人物没标出来')
+    // 两条路各自会换来什么，得在点之前就说清楚
+    assert.match(txt, /他不会再出现/, '「击杀」的后果没写')
+    assert.match(txt, /他还活着/, '「放走」的后果没写')
+
+    // 没说过要命，就不该替他默认选上「击杀」
+    const killBtn = modal.querySelector('.dispose-pick.kill')
+    const spareBtn = modal.querySelector('.dispose-pick.spare')
+    assert.ok(killBtn && spareBtn, '两条路没给全')
+    assert.ok(!killBtn.className.includes('armed'), '没表过态却默认选中了击杀')
+
+    click(spareBtn)
+    await waitFor('放走了超特级的五条悟', { timeout: 15000 })
+    assert.deepEqual(disposeCalls, [false], '点「放走」发出去的应该是 false')
+    assert.equal(dom.window.document.querySelector('.dispose-modal'), null, '点完这一问就该收掉')
+    // 结果要进对话流：弹窗一关，正文里得留下刚才那一下
+    assert.match(dom.window.document.querySelector('.log').textContent, /放走了超特级的五条悟/)
+  } finally {
+    dispositionFixture = null
+    battleFixture = null
+  }
+})
+
+test('说过要命时，「击杀」默认选上，但死活仍然是玩家自己点', async () => {
+  /*
+   * 开打前那句"要你的命"只值这一件事：把「击杀」标出来。
+   * 它不替玩家杀人 —— 到底杀不杀，仍然取决于他点哪一下。
+   */
+  dispositionFixture = {
+    name: '五条悟', grade: '超特级', canon: true,
+    lethalIntent: true, intervention: null,
+  }
+  disposeCalls.length = 0
+  try {
+    await enterGame()
+    const modal = dom.window.document.querySelector('.dispose-modal')
+    assert.ok(modal, '打赢了却没弹处置窗')
+    assert.ok(modal.querySelector('.dispose-pick.kill').className.includes('armed'),
+      '开打前说了要命，击杀这一边应该默认标出来')
+    // 只是标出来，还没有替他杀 —— 没点之前一个请求都不该发
+    assert.deepEqual(disposeCalls, [], '还没点就把人写死了')
+
+    click(modal.querySelector('.dispose-pick.kill'))
+    await waitFor('杀死了超特级的五条悟', { timeout: 15000 })
+    assert.deepEqual(disposeCalls, [true], '点「击杀」发出去的应该是 true')
+    // 杀掉关键人物 → 改写理由也要跟着进正文，玩家得知道这一刀换来了什么
+    assert.match(dom.window.document.querySelector('.log').textContent, /涩谷事变/)
+  } finally {
+    dispositionFixture = null
+    battleFixture = null
+  }
 })
 
 test('被改写的那一天：时间线上写清楚它变成了什么样', async () => {

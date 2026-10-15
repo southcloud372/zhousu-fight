@@ -94,7 +94,6 @@ export function StatusPanel({ panel, onEdit }) {
             <div className="dn">领域 · {p.domain.name}</div>
             <div style={{ color: 'var(--ink-dim)' }}>{p.domain.tierName}</div>
             <div style={{ marginTop: 4 }}>必中：{p.domain.sureHit}</div>
-            <div style={{ color: 'var(--blood-bright)' }}>代价：{p.domain.cost}</div>
           </div>
         ) : (
           <div className="kv" style={{ marginTop: 6 }}><span>领域</span><span>未领悟</span></div>
@@ -350,9 +349,15 @@ export function TimelinePanel({ timeline }) {
   )
 }
 
-/** 五种收场各自的颜色 —— 击杀最重，逃脱最轻 */
+/**
+ * 每种收场各自的颜色 —— 击杀最重，放走次之，逃脱最轻。
+ *
+ * 「击倒」是个中间态：人已经打倒，玩家还没点杀还是放。它只在一瞬间
+ * 见得到（弹窗一关就落成击杀或放走），但刷新页面时可能正好撞上，
+ * 所以也得有个样子，不能是空白。
+ */
 const RESULT_CLS = {
-  击杀: 'kill', 击退: 'win', 逃脱: 'flee', 战败: 'lose', 未分胜负: 'draw',
+  击杀: 'kill', 放走: 'spare', 击倒: 'pending', 逃脱: 'flee', 战败: 'lose', 未分胜负: 'draw',
 }
 
 /**

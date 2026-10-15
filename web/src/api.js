@@ -140,3 +140,8 @@ export const combatStart = (id, mode, h) => streamPost(`/api/session/${id}/comba
 export const combatAction = (id, action, h) => streamPost(`/api/session/${id}/combat/action`, { action }, h)
 
 export const combatEvade = (id) => req(`/api/session/${id}/combat/evade`, { method: 'POST' })
+
+// 处置倒下的对手：杀还是放。不走模型 —— 它只改引擎里的事实，
+// 那一下的正文由紧随其后的那次剧情回合来写
+export const combatDispose = (id, kill) =>
+  req(`/api/session/${id}/combat/dispose`, { method: 'POST', headers: J, body: JSON.stringify({ kill: !!kill }) })

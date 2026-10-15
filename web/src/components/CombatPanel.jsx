@@ -62,6 +62,63 @@ export function ActionBar({ actions, freeActions, onAct, disabled }) {
   )
 }
 
+/**
+ * 处置倒下的对手：杀，还是放。
+ *
+ * 打赢一场之后必然要过的一问。原来它藏在玩家的行动文本里 —— 打了"杀了他"
+ * 三个字才算击杀，没说就当放走。可"杀"是这条线上最不可逆的一件事：
+ * 杀错了人，他撑起的那一天就没了，后面整条线都要重排。这种事不该由
+ * 一行文本的措辞决定，也不该被顺手一带而过。
+ *
+ * 摆在打完那一刻，因为那是玩家手里最有余裕的一刻：人刚倒下，
+ * "要不要留他一命"还是个问题；等下一段正文写完，它就成了过去式。
+ *
+ * lethalIntent 只做一件事：开打前就说过要命的人，「击杀」默认带一道高亮 ——
+ * 那个答案他早就说出口了，别让他再点一次。真正按下哪一边仍然由他定。
+ */
+export function DisposeModal({ data, busy, onPick }) {
+  if (!data) return null
+  const who = `${data.grade ? `${data.grade}的` : ''}${data.name}`
+  return (
+    <div className="overlay">
+      <div className="modal dispose-modal">
+        <h2>怎么处置他</h2>
+
+        <div className="dispose-who">
+          {data.grade && <GradeTag grade={data.grade} />}
+          <b>{data.name}</b>
+          {/* 原作人物值得单独标一下：杀他的分量和杀一个无名咒灵不是一回事 */}
+          {data.canon && <em title="按原作表校正过的人物">原作</em>}
+        </div>
+
+        <div className="hint">
+          {who}已经倒下，站不起来了。
+          {data.intervention ? `今天是「${data.intervention}」—— 这一下会决定这一天变成什么样。` : ''}
+        </div>
+
+        <div className="dispose-acts">
+          <button
+            className={`choice dispose-pick kill${data.lethalIntent ? ' armed' : ''}`}
+            disabled={busy}
+            onClick={() => onPick(true)}
+          >
+            击杀
+            <span>他不会再出现。撑起的那一天会被改写。</span>
+          </button>
+          <button className="choice dispose-pick spare" disabled={busy} onClick={() => onPick(false)}>
+            放走
+            <span>他还活着，后面还会找上你。</span>
+          </button>
+        </div>
+
+        {data.lethalIntent && (
+          <div className="dispose-note">开打前你就说过要他的命 —— 已经替你把「击杀」标上。</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /** 战斗结算卡 */
 export function CombatResult({ outcome, summary, rewards, ups }) {
   const label = {

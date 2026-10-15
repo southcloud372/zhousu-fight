@@ -31,7 +31,7 @@ import {
 } from './engine/crossover.js'
 import {
   COMBAT_MODES, MODE_LABELS, initCombat, runRound, simulateCombat,
-  summarizeRounds, computeRewards, applyRewards, finishCombat,
+  summarizeRounds, computeRewards, applyRewards, finishCombat, disposeEnemy,
   buildPanel, renderPanelText, unitSpeed, freeReverse, reversePreview, FREE_REVERSE_PER_ROUND,
 } from './engine/combat.js'
 import {
@@ -503,6 +503,13 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
   if (state.combat && !state.combat.over) {
     return res.status(409).json({ error: '战斗尚未结算，请先打完这一场' })
   }
+  /*
+   * 打倒了人却还没处置，同样不能往下写。此刻模型要是接着演，
+   * 它只能自己替玩家决定那个人的死活 —— 而那正是这一版要还给玩家的东西。
+   */
+  if (state.pendingDisposition) {
+    return res.status(409).json({ error: '倒下的对手还没处置，先决定杀还是放' })
+  }
   const input = String(req.body?.input || '').trim()
   if (!input) return res.status(400).json({ error: '输入为空' })
 
@@ -836,6 +843,14 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
   if (!state.pendingCombat && !state.combat) {
     return res.status(400).json({ error: '当前没有待结算的战斗' })
   }
+  /*
+   * 上一场打倒了人还没处置，这一场就开不了。上面的兜底分支接不住它 ——
+   * finishCombat 确实已经把 state.combat 清空了，但"清空了"不等于
+   * "这一场收工了"：那个人还躺在地上等你决定杀还是放。
+   */
+  if (state.pendingDisposition) {
+    return res.status(400).json({ error: '倒下的对手还没处置，先决定杀还是放' })
+  }
   // 复用尚未打完的这场战斗的敌人，不要重新掷骰换一个对手
   if (!state.pendingCombat && state.combat) {
     state.pendingCombat = {
@@ -1159,6 +1174,45 @@ app.post('/api/session/:id/combat/evade', asyncRoute(async (req, res) => {
   }))
 }))
 
+// ---------------------------------------------------------------- 处置倒下的对手
+
+/**
+ * 杀，还是放。
+ *
+ * 打赢不等于杀掉 —— 这一下由玩家自己点（见 combat.js 的 disposeEnemy）。
+ * 原来是从玩家那句行动里猜的（guard.js 的 hasLethalIntent）：打了字算杀，
+ * 没说就算放。可"杀"是这条线上最不可逆的一件事，不该由一行文本的措辞决定。
+ *
+ * 这里**不走模型**：它只改引擎里的事实（战果、时间线、节点改写）。
+ * 那一下的正文交给紧随其后的那次剧情回合 —— 杀人的分量本来就在
+ * "接下来会很麻烦"里（其余角色的反应、关系崩塌、原作时间线的崩坏），
+ * 而那句话要说开，需要的不止一屏过场。
+ *
+ * 幂等：没有待处置的对手就 400，不会把同一个人记死两次。
+ */
+app.post('/api/session/:id/combat/dispose', asyncRoute(async (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  if (!state.pendingDisposition) return res.status(400).json({ error: '当前没有要处置的对手' })
+  /*
+   * 必须是真的布尔值：漏传 / 传了字符串时按「放走」算。
+   * 一个手滑的 truthy 值不该把原作主角写死 —— 这两个方向的代价差得太远，
+   * 拿不准的时候选那个还能挽回的。
+   */
+  const kill = req.body?.kill === true
+
+  const r = disposeEnemy(state, kill)
+  persist(state)
+
+  res.json(withUsage(state, {
+    ...r,
+    panel: panelSnapshot(state),
+    // 顺手把闸门也带走：处置完轮盘立刻该能按了，不必等模型把后续剧情写完
+    wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
+    wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
+  }))
+}))
+
 // ---------------------------------------------------------------- 跨篇衔接
 
 /**
@@ -1415,6 +1469,9 @@ function wheelGate(state) {
   if (state.phase !== 'playing') return no('游戏还没开始')
   if (state.playMode !== 'combat') return no('日常轮盘只在战斗向里跑')
   if (state.combat && !state.combat.over) return no('战斗还没打完')
+  // 人已经打倒了，只是还没决定杀还是放 —— 这一问就摆在正文上方，
+  // 点了它轮盘立刻能动，所以理由要写成"去点那一下"，不是"等着"
+  if (state.pendingDisposition) return no('先决定怎么处置倒下的对手')
   if (state.pendingCombat) return no('有一场遭遇还没处理 —— 先决定打还是走')
 
   const ms = nextMilestone(state)
