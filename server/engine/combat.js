@@ -8,10 +8,12 @@ import {
 import { ENEMY_ARCHETYPES } from './rolls.js'
 import { GRADES, gradeIndex } from './tables.js'
 import { enemyProfile } from './visibility.js'
-import { applyGradeUp } from './state.js'
+import { applyGradeUp, checkPlayerDeath } from './state.js'
+import { checkAchievements } from './achievements.js'
 import { completeIntervention } from './wheel.js'
 import { noteDeath } from './plotdeps.js'
-import { rint } from './dice.js'
+import { rint, makeRng } from './dice.js'
+import { charactersFor } from './timeline.js'
 
 /**
  * 战斗引擎（第六节）。
@@ -55,10 +57,43 @@ const DOMAIN_DURATION = { 弱特级: 5, 标特级: 6, 超特级: 7, 龙级: 8 }
  */
 /** 暴击倍率 */
 export const CRIT_MUL = 1.8
+
+/*
+ * 敌方溃逃：血线见底时，狡诈与死守的敌人会跑 —— 活下去才是它们的打法。
+ * 战斗从此多了一种结局：玩家占尽上风，但没留下尸体（无缴获、无处置）。
+ * 狂攻型不逃 —— 那类东西分不清撤退和死亡。
+ */
+export const ENEMY_FLEE_RATIO = 0.15
+export const ENEMY_FLEE_CHANCE = 0.35
+const FLEE_ARCHETYPES = ['狡诈', '死守']
 /** 暴击率 = 基础 + 咒力效率 × 这个系数（效率越高越容易打出破绽） */
 const CRIT_BASE = 0.06
 const CRIT_EFF_COEF = 0.08
 const CRIT_CAP = 0.28
+
+/*
+ * 黑闪（原著设定）：咒力在命中的亿万分之一秒内与打击完全同步，
+ * 威力按几何级爆发。这里做成**暴击深处**的那一档 —— 同一次判定里
+ * 落得更深的一小段，不打乱既有随机数序列，是刻意的：
+ *
+ *   1. 门槛是连击 ≥2（打顺了才闪）。第一拳就闪既不符合原著手感，
+ *      也会让 seeded 测试里的单回合判定全体漂移；
+ *   2. 概率是暴击率的一个比例（基础 30%），打出过黑闪的身体会记住
+ *      那种感觉（原著设定），每多打出一颗，比例上浮，封顶 60%；
+ *   3. 只在体术上发生 —— 原著里黑闪是"带着咒力的拳头"，术式不闪。
+ */
+export const BLACK_FLASH_MUL = 2.6
+const BLACK_FLASH_BASE = 0.3
+const BLACK_FLASH_STEP = 0.1
+const BLACK_FLASH_STACKS = 3
+const BLACK_FLASH_COMBO_GATE = 2
+
+/** 黑闪概率（占暴击率的比例）—— 单独给出来是为了让测试能对表 */
+export function blackFlashOdds(actor) {
+  // 用整数算式再除回十，避开 0.3 + 0.1×3 = 0.7000…4 这类浮点毛刺
+  const stacks = Math.min(actor?._blackFlash || 0, BLACK_FLASH_STACKS)
+  return (BLACK_FLASH_BASE * 10 + BLACK_FLASH_STEP * 10 * stacks) / 10
+}
 /** 每层连击的加成，以及最多叠几层 */
 export const COMBO_STEP = 0.05
 export const COMBO_CAP = 6
@@ -78,7 +113,9 @@ export const COMBO_CAP = 6
 export const FREE_REVERSE_PER_ROUND = 1
 
 export function unitSpeed(u) {
-  return u.physicalDamage.value * 0.5 + u.efficiency.value * 100
+  const s = u.physicalDamage.value * 0.5 + u.efficiency.value * 100
+  // 迅捷词缀：身法快人一等 —— 先手判定与脱离成功率都吃这一条
+  return u.affixes?.includes('迅捷') ? s * 1.4 : s
 }
 
 /** 玩家看到的敌方咒力只是估算值，不是真值（第二节） */
@@ -93,6 +130,11 @@ export function initCombat(state, rng, { mode, enemy, reason, intervention = nul
   // 连击与失衡是"这一场"里的东西，不能跨场带进来
   state.player._combo = 0
   state.player._stagger = 0
+
+  // 援护：关系够好的本线角色可能赶到场内 —— 先手必占，敌方第一手被压回去。
+  // 判定走独立随机源，不动调用方的 rng 序列（skip/narrative 共用那颗骰子跑完整场）
+  const backup = rollBackup(state, makeRng((state.seed || 1) + state.turn * 101 + 555))
+
   state.combat = {
     mode,
     reason,
@@ -102,22 +144,46 @@ export function initCombat(state, rng, { mode, enemy, reason, intervention = nul
     intervention,
     // 玩家这一手是不是奔着要命去的 —— 赢了才算击杀，否则只是击退
     lethalIntent: !!lethalIntent,
-    playerFirst: unitSpeed(state.player) >= unitSpeed(enemy),
+    playerFirst: backup ? true : unitSpeed(state.player) >= unitSpeed(enemy),
+    // 援护者：panel 呈现 + 战果记录（battle.backup）
+    backup,
     over: false,
     outcome: null,
     freeUsed: 0, // 本回合已用的不占回合行动（反转术式）
     freeLog: [],
     log: [],
+    // 援护的那句话挂在首回合面板上（runRound 组 notes 时取走）
+    pendingNotes: backup ? [`「${backup}」赶到了你身前 —— 先手这一波，替你抢了下来`] : [],
     stats: {
       usedTechnique: false,
       usedMelee: false,
       usedReverse: false,
       usedDomain: false,
       lowestHpRatio: 1,
+      damageTaken: 0, // 本场承伤累计：完胜（零承伤取胜）的数据源
     },
   }
+  if (backup) enemy._stagger = 1 // 敌方第一手递不出来
   state.pendingCombat = null
   return state.combat
+}
+
+/** 援护判定：关系 ≥ 阈值的本线登场角色为池子，概率出手 */
+export const BACKUP_CHANCE = 0.35
+export const BACKUP_THRESHOLD = 40
+// 挚友（≥60）加码：处出来的人不只来，还来得更勤
+export const BACKUP_FRIEND_THRESHOLD = 60
+export const BACKUP_FRIEND_BONUS = 0.15
+
+export function rollBackup(state, rng) {
+  const roster = charactersFor(state.storyline)
+  const allies = Object.entries(state.relations || {})
+    .filter(([name, v]) => v >= BACKUP_THRESHOLD && roster.includes(name))
+    .map(([name]) => name)
+  if (!allies.length) return null
+  const closeFriend = allies.some((name) => (state.relations[name] ?? 0) >= BACKUP_FRIEND_THRESHOLD)
+  if (rng() >= BACKUP_CHANCE + (closeFriend ? BACKUP_FRIEND_BONUS : 0)) return null
+  return allies[Math.floor(rng() * allies.length) % allies.length]
 }
 
 // ---------------------------------------------------------------- 行动执行
@@ -211,6 +277,9 @@ function comboMul(unit) {
 function dealDamage(attacker, target, raw) {
   const seal = sealOf(attacker, target)
   let dmg = Math.round(raw * comboMul(attacker) * (seal?.damageMul ?? 1))
+  // 精英词缀的乘区：狂暴打得更疼，坚壳挨得更轻（系数表在 elite.js）
+  if (attacker.affixes?.includes('狂暴')) dmg = Math.round(dmg * 1.25)
+  if (target.affixes?.includes('坚壳')) dmg = Math.round(dmg * 0.75)
   if (target._defending) dmg = Math.round(dmg * (1 - DEFEND_REDUCTION))
   target.hp.cur = Math.max(0, target.hp.cur - dmg)
   attacker._combo = (attacker._combo || 0) + 1
@@ -228,7 +297,14 @@ function critRoll(actor, rng) {
   const eff = actor.efficiency?.value ?? 0.7
   const bonus = actor.domain?.active ? (domainKit(actor.domain).critBonus || 0) : 0
   const cap = CRIT_CAP + bonus
-  return rng() < Math.min(cap, CRIT_BASE + eff * CRIT_EFF_COEF + bonus)
+  const chance = Math.min(cap, CRIT_BASE + eff * CRIT_EFF_COEF + bonus)
+  const r = rng()
+  const crit = r < chance
+  // 黑闪是"暴击里更深的那一段"：同一次抽签，落点更靠里才算 —— 序列零扰动
+  const black = crit
+    && (actor._combo || 0) >= BLACK_FLASH_COMBO_GATE
+    && r < chance * blackFlashOdds(actor)
+  return { crit, black }
 }
 
 /**
@@ -243,6 +319,33 @@ function markCrit(actor, target, ev) {
   ev.lines.push('—— 抓住破绽，这一击是暴击')
   target._stagger = 1
   ev.lines.push('对方被打得踉跄，下一手递不出来')
+}
+
+/**
+ * 黑闪的后果：威力按几何级炸开，架势整个被打散。
+ * 它同时算一次暴击（打断照旧），但面板和演出层拿得到 blackFlash 这个更强的标记。
+ * 打出过的颗数记在单位身上 —— 玩家的那一份跟着存档走，越打越容易再闪。
+ */
+function markBlackFlash(actor, target, ev) {
+  ev.crit = true
+  ev.blackFlash = true
+  actor._blackFlash = (actor._blackFlash || 0) + 1
+  target._stagger = 1
+  ev.lines.push('—— 黑闪！咒力在命中的亿万分之一秒内同步，威力呈几何级炸开')
+  ev.lines.push('对方的架势被这一击整个打散，下一手递不出来')
+}
+
+/**
+ * 嗜血词缀：攻击命中后按伤害的三成回血。
+ * 放在 act 的两条攻击分支里调用（dealDamage 没有 events 可写台词）。
+ */
+function applySustain(actor, dmg, ev) {
+  if (dmg <= 0 || !actor.affixes?.includes('嗜血')) return
+  const healed = Math.min(actor.hp.max - actor.hp.cur, Math.round(dmg * 0.3))
+  if (healed <= 0) return
+  actor.hp.cur += healed
+  ev.healed = (ev.healed || 0) + healed
+  ev.lines.push(`嗜血——伤口在对方身上开出了回路的口子，回复 ${healed} 点`)
 }
 
 function act(actor, target, action, rng) {
@@ -267,12 +370,21 @@ function act(actor, target, action, rng) {
       actor.technique.cdLeft = actor.technique.cooldown
 
       const r = techniqueDamage(actor, target, { rng })
-      const crit = critRoll(actor, rng)
-      const dmg = dealDamage(actor, target, crit ? Math.round(r.damage * CRIT_MUL) : r.damage)
+      const { crit } = critRoll(actor, rng)
+      // 御咒词缀：术式打在它身上要打折（体术照旧 —— 这是『御咒』不是『御体』）
+      const curseWard = target.affixes?.includes('御咒') ? 0.75 : 1
+      // 无下限屏障：非领域必中的术式打不穿 —— 原著里五条悟的规则
+      if (target.barrier === '无下限') {
+        ev.lines.push('「無下限」——术式在触及之前被无限阻隔，未能造成伤害')
+        if (crit) target._stagger = 0
+        break
+      }
+      const dmg = dealDamage(actor, target, Math.round((crit ? Math.round(r.damage * CRIT_MUL) : r.damage) * curseWard))
       ev.damage = dmg
       ev.breakdown = r.breakdown
       ev.nullified = r.nullified
       ev.lines.push(`${actor.technique.name}轰出，造成 ${dmg} 点伤害`)
+      applySustain(actor, dmg, ev)
       if (crit) markCrit(actor, target, ev)
       if (r.nullified) ev.lines.push('等级差距过大，术式被部分无效化')
       if (overdraft > 0) ev.lines.push(`咒力见底仍强行施术，反噬 ${overdraft} 点生命`)
@@ -281,12 +393,23 @@ function act(actor, target, action, rng) {
 
     case 'physical': {
       const r = physicalStrike(actor, target, { rng })
-      const crit = critRoll(actor, rng)
-      const dmg = dealDamage(actor, target, crit ? Math.round(r.damage * CRIT_MUL) : r.damage)
+      const { crit, black } = critRoll(actor, rng)
+      // 无下限屏障：体术同样触及不到 —— 再快的拳也要先穿过无限
+      if (target.barrier === '无下限') {
+        ev.lines.push('拳在触及之前慢了下来——「無下限」，体术未能造成伤害')
+        break
+      }
+      // 咒具加成：每把 +TOOL_BONUS，最多两把同时生效（敌人没有 tools，恒为 1）
+      const toolMul = 1 + TOOL_BONUS * Math.min(TOOL_EFFECTIVE_CAP, actor.tools?.length || 0)
+      const dmg = dealDamage(actor, target, Math.round(r.damage * toolMul * (black ? BLACK_FLASH_MUL : crit ? CRIT_MUL : 1)))
       ev.damage = dmg
       ev.breakdown = r.breakdown
-      ev.lines.push(`欺身而入，体术命中，造成 ${dmg} 点伤害`)
-      if (crit) markCrit(actor, target, ev)
+      ev.lines.push(black
+        ? `欺身而入——黑闪！咒力与拳头完全同步，造成 ${dmg} 点伤害`
+        : `欺身而入，体术命中，造成 ${dmg} 点伤害`)
+      applySustain(actor, dmg, ev)
+      if (black) markBlackFlash(actor, target, ev)
+      else if (crit) markCrit(actor, target, ev)
       break
     }
 
@@ -385,6 +508,9 @@ export function chooseEnemyAction(state, rng) {
   // "对方又试了一次被封住的术式"，看起来像 AI 坏了
   const seal = sealOf(e, state.player) || {}
 
+  if (hpRatio <= ENEMY_FLEE_RATIO && FLEE_ARCHETYPES.includes(e.archetype) && rng() < ENEMY_FLEE_CHANCE) {
+    return { type: 'flee' }
+  }
   if (!seal.reverse && hpRatio < 0.35 && e.reverseCursedTechnique?.level !== '未掌握' && e.ce.cur > e.ce.max * 0.3) {
     return { type: 'reverse' }
   }
@@ -458,6 +584,12 @@ function endOfRound(unit) {
   const regen = Math.round(unit.ce.max * BASE_CE_REGEN_RATIO * unit.efficiency.value)
   unit.ce.cur = Math.min(unit.ce.max, unit.ce.cur + regen)
   if (unit.technique.cdLeft > 0) unit.technique.cdLeft--
+
+  // 再生词缀：每一回合结束缓慢回血 —— 磨血流的天敌，得在回复量追上来之前打出爆发
+  if (unit.affixes?.includes('再生') && unit.hp.cur > 0) {
+    const healed = Math.min(unit.hp.max - unit.hp.cur, Math.max(1, Math.round(unit.hp.max * 0.02)))
+    if (healed > 0) unit.hp.cur += healed
+  }
 
   if (unit.domain?.active) {
     unit.domain.turnsLeft = (unit.domain.turnsLeft ?? 0) - 1
@@ -539,14 +671,24 @@ export function runRound(state, rng, playerAction, { autoPlayer = false } = {}) 
   // 领域是"环境"，在双方都动完之后落下（见 applyDomainTicks）
   if (!events.some((x) => x.fled)) applyDomainTicks(state, events)
 
-  const notes = [endOfRound(p), endOfRound(e)].filter(Boolean)
+  // 援护的那句话只挂在首回合面板上（initCombat 塞进 pendingNotes）
+  const pendingNotes = c.pendingNotes || []
+  c.pendingNotes = null
+  const notes = [...pendingNotes, endOfRound(p), endOfRound(e)].filter(Boolean)
+
+  // 承伤累计：敌方事件上的 damage 都是玩家挨的（含领域追斩）
+  c.stats.damageTaken += events
+    .filter((x) => x.side === 'enemy')
+    .reduce((sum, x) => sum + (x.damage || 0), 0)
   p.status = hpStatus(p.hp)
 
   c.stats.lowestHpRatio = Math.min(c.stats.lowestHpRatio, p.hp.cur / p.hp.max)
 
   if (events.some((x) => x.fled)) {
     c.over = true
-    c.outcome = { winner: 'fled', loser: null }
+    // 逃的是谁：玩家逃是「脱离」，敌人逃是「玩家胜但没留下尸体」—— 两种结局
+    const enemyFled = events.some((x) => x.fled && x.side === 'enemy')
+    c.outcome = enemyFled ? { winner: 'player', loser: 'enemy', fledEnemy: true } : { winner: 'fled', loser: null }
   } else {
     const over = checkOver(state)
     if (over) { c.over = true; c.outcome = over }
@@ -609,6 +751,7 @@ function beatOf(events, side) {
     healed: sum(direct, 'healed'),
     recovered: sum(direct, 'recovered') || sum(direct, 'recoveredCe'),
     crit: evs.some((x) => x.crit),
+    blackFlash: evs.some((x) => x.blackFlash),
     staggered: evs.some((x) => x.staggered),
     // 这一手什么都没发生：被封住、冷却中、咒力见底
     fizzled: !direct.some((x) => x.damage || x.healed || x.recovered),
@@ -623,8 +766,9 @@ export function buildPanel(state, events, notes = []) {
 
   const txt = (side) => events.filter((x) => x.side === side).flatMap((x) => x.lines).join('；') || '——'
   const dmgEvent = events.find((x) => x.side === 'player' && x.damage)
-  // 这一回合的"高光"：谁暴击了、谁被打断了、谁开了领域。界面拿它做演出
+  // 这一回合的"高光"：谁暴击了、谁黑闪了、谁被打断了、谁开了领域。界面拿它做演出
   const critEvent = events.find((x) => x.crit)
+  const bfEvent = events.find((x) => x.blackFlash)
   const staggerEvent = events.find((x) => x.staggered)
   const domEvent = events.find((x) => x.domainOpened)
   // 本回合里玩家按过的"不占回合"行动（反转术式）
@@ -664,6 +808,8 @@ export function buildPanel(state, events, notes = []) {
     // ---- 演出用（界面拿它决定闪什么、震什么；不影响任何数值）----
     crit: critEvent ? critEvent.side : null,
     critTarget: critEvent ? (critEvent.side === 'player' ? 'enemy' : 'player') : null,
+    // 黑闪是比暴击更高的一档高光 —— 界面拿它放「黒閃」大字特写
+    blackFlash: bfEvent ? bfEvent.side : null,
     staggered: staggerEvent ? staggerEvent.side : null,
     // 连击层数：玩家一侧是"我压着它打"，敌方一侧是压迫感
     combo: Math.max(0, (p._combo || 0) - 1),
@@ -739,7 +885,8 @@ export function renderPanelText(panel) {
     `敌方行动：${panel.enemyActionText}`,
     `伤害计算：${formula}`,
     panel.domainOpened ? `领域：${panel.domainOpened.side === 'player' ? '我方' : '敌方'}展开「${panel.domainOpened.name}」` : null,
-    panel.crit ? `本回合高光：${panel.crit === 'player' ? '我方' : '敌方'}打出暴击` : null,
+    panel.blackFlash ? `本回合高光：${panel.blackFlash === 'player' ? '我方' : '敌方'}打出了黑闪` : null,
+    panel.crit && !panel.blackFlash ? `本回合高光：${panel.crit === 'player' ? '我方' : '敌方'}打出暴击` : null,
     panel.combo > 0 ? `我方连击 ${panel.combo} 层` : null,
     panel.notes.length ? `战后更新：${panel.notes.join('；')}` : null,
   ].filter(Boolean).join('\n')
@@ -779,12 +926,25 @@ export function summarizeRounds(rounds) {
 
 // ---------------------------------------------------------------- 战果
 
-/** 实战磨砺（第八节第 3 小节） */
+/**
+ * 实战磨砺（第八节第 3 小节）。
+ *
+ * 战利品：赢家的实质回报。仓满不掉 —— 咒具不是收集品，是用得上的东西
+ * （每把体术伤害 +TOOL_BONUS，最多两把同时生效，见 act 的 physical 分支）。
+ * 咒具池全是泛用名：敌人不掉原作咒具，那是有主的东西。
+ */
+export const LOOT_POOL = ['退魔短刀', '缚骨锁', '破魔矢', '封咒铃', '斩魔太刀', '咒胎指虎', '结界钉']
+export const LOOT_CHANCE = 0.25
+export const TOOL_CAP = 3
+export const TOOL_BONUS = 0.08
+export const TOOL_EFFECTIVE_CAP = 2
+
 export function computeRewards(state, rng, { won, crossLevel }) {
   const s = state.combat.stats
   const gains = {}
   const notes = []
   const rnd = (lo, hi) => Math.round((lo + rng() * (hi - lo)) * 10) / 10
+  let loot = null
 
   if (won) {
     if (s.usedTechnique) { gains.术式演练 = rnd(3, 10); notes.push('术式实战运用') }
@@ -800,6 +960,19 @@ export function computeRewards(state, rng, { won, crossLevel }) {
       for (const k of Object.keys(gains)) gains[k] = Math.round((gains[k] + rnd(8, 20)) * 10) / 10
       notes.push('跨级击杀')
     }
+
+    const fledEnemy = !!state.combat?.outcome?.fledEnemy
+    // 乘胜追击：连胜每场 +5% 掉率（封顶 +15%），连败清零 —— 赢家通吃一点，不多
+    const streak = state.winStreak || 0
+    // 词缀精英是行走的宝箱：击杀掉率翻倍 —— 硬仗的回报要配得上风险
+    const isElite = !!state.combat?.enemy?.affixes?.length
+    const chance = Math.min(0.8, (LOOT_CHANCE + Math.min(0.15, streak * 0.05)) * (isElite ? 2 : 1))
+    // 同名去重：包里已有的咒具不再掉第二把（掉率让给池子里没见过的）
+    const owned = new Set((state.player.tools || []).map((t) => t.name))
+    const pool = LOOT_POOL.filter((name) => !owned.has(name))
+    if (!fledEnemy && pool.length && (state.player.tools?.length ?? 0) < TOOL_CAP && rng() < chance) {
+      loot = pool[Math.floor(rng() * pool.length) % pool.length]
+    }
   } else {
     gains.体术实战 = rnd(2, 5)
     notes.push('败战中的经验')
@@ -808,12 +981,12 @@ export function computeRewards(state, rng, { won, crossLevel }) {
   // 跨级击杀有概率直接升一级。等级没有"必须靠专属突破剧情"的上限，
   // 一路打到龙级也可以 —— 只是越往上越难触发。
   let gradeUp = null
-  if (won && crossLevel && rng() < 0.25) {
+  if (won && crossLevel && !state.combat?.outcome?.fledEnemy && rng() < 0.25) {
     const gi = gradeIndex(state.player.grade)
     if (gi >= 0 && gi < GRADES.length - 1) gradeUp = GRADES[gi + 1]
   }
 
-  return { gains, notes, gradeUp }
+  return { gains, notes, gradeUp, loot }
 }
 
 /** 把战果写进角色数值 */
@@ -831,14 +1004,28 @@ export function applyRewards(state, rewards) {
     ups.push(`综合等级提升至 ${applyGradeUp(p, rewards.gradeUp)}`)
   }
 
+  if (rewards.loot) {
+    // 来源注记：这把刀是从谁身上剥下来的，战果面板点了名
+    const from = state.combat?.enemy?.name
+    p.tools = [...(p.tools || []), { name: rewards.loot, note: from ? `缴获自${from}` : '战利品' }]
+    ups.push(`缴获咒具：${rewards.loot}（体术伤害小幅提升）`)
+  }
+
   return ups
 }
 
 /** 战斗结束后的收尾：清空战斗态、按胜负写剧情标记、记一条战果 */
 export function finishCombat(state, outcome) {
   const won = outcome?.winner === 'player'
+  const enemyFled = !!outcome?.fledEnemy
+  // 乘胜追击的账本：胜（含击退）续连击，败/平/脱离清零 —— 掉率跟着连胜走
+  state.winStreak = won ? (state.winStreak || 0) + 1 : 0
   const enemy = state.combat?.enemy
+  // 承伤累计要在 combat 清空前捕获（battles.push 时 state.combat 已是 null）
+  const damageTaken = state.combat?.stats?.damageTaken ?? 0
   const enemyName = enemy?.name || '敌人'
+  // 援护者要在 combat 清空之前捕获 —— battles.push 时 state.combat 已经是 null
+  const backup = state.combat?.backup || null
   const enemyGrade = enemy?.grade || ''
   const canon = !!enemy?.canon
   /*
@@ -860,7 +1047,11 @@ export function finishCombat(state, outcome) {
 
   const who = `${enemyGrade ? `${enemyGrade}的` : ''}${enemyName}`
   let summary
-  if (won) {
+  if (won && enemyFled) {
+    // 溃逃局：赢了场面，但没有尸体 —— 无缴获、无处置（见 computeRewards 与下方 disposition）
+    summary = `${enemyName}遁走了 —— 你占尽了场面，但它没留下东西`
+    state.timeline.newEvents.push(`${enemyName}遁走`)
+  } else if (won) {
     // 措辞停在"打倒"上，不留"杀"字：处置还没定，正文先写成"你杀了他"
     // 再弹一个"要不要杀"的窗，就没法圆了
     summary = `击倒了${who}`
@@ -880,16 +1071,18 @@ export function finishCombat(state, outcome) {
    * 一上来就把它标成「已改变」—— 那是 isSettled 里的状态，再杀那个人
    * 就"改不动那一天"了（plotdeps.js 的 noteDeath）。所以打赢了的介入战
    * 整段挪进 disposeEnemy；没打赢的（脱离 / 战败 / 平手）当场结掉。
+   * 溃逃局是个例外：没有处置环节，当场按"卷入"结掉。
    */
-  if (intervention && !won) {
+  if (intervention && (!won || enemyFled)) {
     summary += `。${completeIntervention(state, intervention, outcome)}`
   }
 
-  // 濒死必须显式告诉模型，否则它会照着"无事发生"往下写。
-  // 设定：血条归零为濒死，未及时治疗则死亡（第一节）。
+  // 血条归零 = 死亡结算（不是濒死叙事）。战败是「败北」，
+  // 赢了但换到零是「同归于尽」—— 治疗机制的意义在于别让自己走到归零。
   const p = state.player
   if (p.hp.cur <= 0) {
-    summary += `。玩家血条归零，处于濒死状态——若不立刻得到反转术式治疗或家入硝子的救治，就会死亡`
+    const dead = checkPlayerDeath(state, outcome?.winner === 'enemy' ? 'combat-loss' : 'combat-aftermath')
+    if (dead) summary += `。${dead.summary}——这一局到这里结束了`
   } else if (p.hp.cur / p.hp.max < 0.2) {
     summary += `。玩家重伤，只剩一口气`
   }
@@ -904,11 +1097,18 @@ export function finishCombat(state, outcome) {
     turn: state.turn,
     date: state.time?.date || '',
     enemy: { name: enemyName, grade: enemyGrade, canon },
-    // 击倒 / 击杀 / 放走 / 逃脱 / 战败 / 未分胜负 —— 赢下来的那一场
+    // 援护者：这一场是谁替玩家抢下了先手
+    backup,
+    // 完胜：一伤未受地赢下（承伤累计在 runRound 里记账）—— 成就与战果面板都用它
+    perfect: !!(won && !enemyFled && damageTaken === 0),
+    // 词缀精英标记：成就「讨伐精英」的数据源
+    elite: !!enemy?.affixes?.length,
+    // 击倒 / 击杀 / 放走 / 击退 / 逃脱 / 战败 / 未分胜负 —— 赢下来的那一场
     // 先记「击倒」，等玩家点完这一下再落成击杀或放走（disposeEnemy）
-    result: won ? '击倒'
-      : outcome?.winner === 'fled' ? '逃脱'
-        : outcome?.winner === 'enemy' ? '战败' : '未分胜负',
+    result: won && !enemyFled ? '击倒'
+      : enemyFled ? '击退'
+        : outcome?.winner === 'fled' ? '逃脱'
+          : outcome?.winner === 'enemy' ? '战败' : '未分胜负',
     killed: false,
     ground: intervention ? '介入战' : '遭遇战',
     node: intervention,
@@ -924,7 +1124,8 @@ export function finishCombat(state, outcome) {
    * 没点之前不许推进剧情 —— 否则模型会先写一段"之后的日子"，
    * 再回头补一句"你把他杀了"，前后就对不上了。
    */
-  state.pendingDisposition = won
+  // 溃逃局没有尸体可处置 —— 战斗直接收尾
+  state.pendingDisposition = won && !enemyFled
     ? {
         name: enemyName,
         grade: enemyGrade,
@@ -935,6 +1136,9 @@ export function finishCombat(state, outcome) {
         battleIndex: state.battles.length - 1,
       }
     : null
+
+  // 战斗收尾是成就的主判定点（初阵/百战/黒闪/讨伐精英都在这里成形）
+  checkAchievements(state)
 
   return summary
 }
@@ -1005,6 +1209,8 @@ export function disposeEnemy(state, kill) {
     battle.note = `${battle.note}。${summary}`
   }
   state.pendingDisposition = null
+  // 击杀/放走定下的那一刻，「初次杀戮」「讨伐精英」才算真的成立
+  checkAchievements(state)
   return { kill: !!kill, result: battle?.result || (kill ? '击杀' : '放走'), summary, rewrite, already }
 }
 

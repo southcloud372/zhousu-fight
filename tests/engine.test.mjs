@@ -724,7 +724,7 @@ function initWith(s, enemy, rng) {
   initCombat(s, rng, { mode: 'manual', enemy, reason: 't' })
 }
 
-test('败北且血条归零时，战报明确点出濒死', () => {
+test('败北且血条归零 = 死亡结算，不再是濒死叙事', () => {
   const s = makeTestState(201, 202)
   const rng = makeRng(203)
   const enemy = rollEnemy(rng, '四级')
@@ -732,8 +732,10 @@ test('败北且血条归零时，战报明确点出濒死', () => {
   s.player.hp.cur = 0
   s.player.status = '濒死'
   const summary = finishCombat(s, { winner: 'enemy', loser: 'player' })
-  assert.match(summary, /濒死/)
-  assert.match(summary, /死亡/)
+  assert.match(summary, /血条归零/)
+  assert.match(summary, /结束/)
+  assert.equal(s.over?.dead, true, '死亡必须登记进 state.over')
+  assert.equal(s.over.cause, 'combat-loss')
 })
 
 test('低血量取胜时战报点出只剩一口气', () => {

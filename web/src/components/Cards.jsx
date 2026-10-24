@@ -607,3 +607,64 @@ export function IdentityCard({ p, onPick, busy }) {
     </div>
   )
 }
+
+/**
+ * 本地模式的预设卡：一套卡 = 一段写死的剧情 + 一份设计好的角色。
+ *
+ * 和 token 模式那张属性卡的区别：这里的数值不是掷出来的，是**印在卡上的** ——
+ * 所以全部摊开：等级、四维、落点、难度。玩家选的不是"底子"，是"这一局"。
+ * 领域只有特级的预设才有（等级不够，领域那一栏就压根不出现）。
+ */
+export function PresetCard({ p, onPick, busy }) {
+  return (
+    <div className="pcard preset">
+      <h2>{p.name}</h2>
+      <div className="tech">{p.tag}</div>
+      <div className="tech-eff">{p.bg}</div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+        <GradeTag grade={p.grade} />
+        <span className="tag">{p.lineName}</span>
+        <span className="tag">{p.kind}</span>
+        <span className="tag" style={{ borderColor: 'rgba(168,35,27,.3)', color: 'var(--blood)' }} title={`难度 ${p.diff} / 5`}>
+          {'●'.repeat(p.diff)}{'○'.repeat(5 - p.diff)}
+        </span>
+      </div>
+
+      <div className="divider" />
+
+      <Row label="生得术式" value={p.techName} />
+      <div className="tech-eff" style={{ marginTop: -4 }}>{p.techEffect}</div>
+      <Row label="穿越落点" value={p.atLabel} />
+      <Row label="咒力总量" value={p.stats.ce} />
+      <Row label="血条总量" value={p.stats.hp} />
+      <Row label="咒术伤害" value={p.stats.cd} />
+      <Row label="体术伤害" value={p.stats.pd} />
+      <Row label="咒力效率" value={p.stats.eff} />
+      <Row label="反转术式" value={p.reverse} />
+
+      {p.domainName && (
+        <div className="domain-box" style={{ marginTop: 8 }}>
+          <div className="dn" style={{ fontSize: 13 }}>领域 · {p.domainName}</div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 8 }}>
+        {(p.talents || []).map((t) => <span key={t} className="tag">{t}</span>)}
+      </div>
+
+      {p.style && (
+        <div style={{ fontSize: 12.5, color: 'var(--ink-dim)', marginTop: 8 }}>打法：{p.style}</div>
+      )}
+
+      <div className="domain-box" style={{ marginTop: 10, borderColor: 'rgba(168,35,27,.25)', background: 'rgba(168,35,27,.04)' }}>
+        <div className="dn" style={{ color: 'var(--blood)', fontSize: 13 }}>钩子</div>
+        <div>{p.hook}</div>
+      </div>
+
+      <button className="pick-btn" style={{ marginTop: 14 }} onClick={() => onPick(p.id)} disabled={busy}>
+        以「{p.name}」开局
+      </button>
+    </div>
+  )
+}

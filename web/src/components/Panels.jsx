@@ -77,6 +77,18 @@ export function StatusPanel({ panel, onEdit }) {
         <div className="kv"><span>咒术伤害</span><span>{p.cursedDamage.value.toLocaleString()}（{p.cursedDamage.grade}）</span></div>
         <div className="kv"><span>体术伤害</span><span>{p.physicalDamage.value.toLocaleString()}（{p.physicalDamage.grade}）</span></div>
         <div className="kv"><span>咒力效率</span><span>{Math.round(p.efficiency.value * 100)}%（{p.efficiency.grade}）</span></div>
+        {/*
+          黒闪累计：打出过的身体会记住那种感觉（原著设定，机制上真的会涨概率）。
+          攒出来的东西必须看得见 —— 这是「下一颗更容易」的承诺，也是继续出拳的理由。
+        */}
+        {typeof p.blackFlash === 'number' && p.blackFlash > 0 && (
+          <div className="kv">
+            <span>黒闪累计</span>
+            <span className="bf-tally" title="打出过黑闪的身体会记住那种感觉 —— 累计越多，越容易再闪">
+              {'●'.repeat(Math.min(p.blackFlash, 8))} {p.blackFlash} 颗
+            </span>
+          </div>
+        )}
 
         <div className="divider" style={{ height: 1, background: 'var(--line-soft)', margin: '10px 0' }} />
 
@@ -111,7 +123,11 @@ export function StatusPanel({ panel, onEdit }) {
         )}
         {p.tools?.length > 0 && (
           <div style={{ marginTop: 6 }}>
-            {p.tools.map((t) => <span key={t.name} className="tag">{t.name}</span>)}
+            {p.tools.map((t) => <span key={t.name} className="tag" title={t.note || ''}>{t.name}{t.note ? <em style={{ color: 'var(--ink-faint)', marginLeft: 4, fontStyle: 'normal' }}>{t.note}</em> : null}</span>)}
+            {/* 咒具不是收藏品：把加成说出来，玩家才知道为什么体术变疼了 */}
+            <div style={{ fontSize: 11, color: 'var(--gold)', marginTop: 4 }}>
+              体术伤害 +{Math.min(2, p.tools.length) * 8}%（每把 +8%，两把封顶）
+            </div>
           </div>
         )}
       </div>
@@ -357,7 +373,7 @@ export function TimelinePanel({ timeline }) {
  * 所以也得有个样子，不能是空白。
  */
 const RESULT_CLS = {
-  击杀: 'kill', 放走: 'spare', 击倒: 'pending', 逃脱: 'flee', 战败: 'lose', 未分胜负: 'draw',
+  击杀: 'kill', 放走: 'spare', 击倒: 'pending', 击退: 'pending', 逃脱: 'flee', 战败: 'lose', 未分胜负: 'draw',
 }
 
 /**
@@ -397,9 +413,68 @@ export function BattleLogPanel({ battles }) {
                 {b.date} · {b.ground}
                 {b.node ? ` · ${b.node}` : ''}
                 {b.hpMax ? ` · 剩血 ${Math.max(0, Math.round((b.hpLeft / b.hpMax) * 100))}%` : ''}
+                {/* 精英词缀与援护都是这一场的故事，战果里要点名 */}
+                {b.elite ? ' · 精英' : ''}
+                {b.backup ? ` · ${b.backup}援护` : ''}
               </span>
               {b.rewrite && <span className="bt-why">{b.rewrite}</span>}
             </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 本局战绩：元进度的一层。
+ *
+ * 战果面板记的是"每一场"，这里记的是"这一局"—— 回合数、场次、击杀、
+ * 介入过的正日子、黒闪颗数、改写的节点。全部由服务端从既有事实现算，
+ * 前端只负责摆出来：玩家打出去的每一拳，都该有个地方留总账。
+ */
+export function CareerPanel({ career }) {
+  if (!career) return null
+  const rows = [
+    ['回合', career.turns],
+    ['交战', `${career.battles} 场`],
+    ['击杀', career.kills ? `${career.kills} 人` : '—'],
+    ['连胜', career.winStreak ? `${career.winStreak} 场（掉率加成中）` : '—'],
+    ['介入正日子', career.interventions ? `${career.interventions} 天` : '—'],
+    ['黒闪', career.blackFlash ? `${career.blackFlash} 颗` : '—'],
+    ['改写节点', career.changedNodes ? `${career.changedNodes} 个` : '—'],
+  ]
+  return (
+    <div className="panel career">
+      <h3>本局战绩</h3>
+      <div className="card">
+        {rows.map(([k, v]) => (
+          <div className="kv" key={k}><span>{k}</span><span>{v}</span></div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 成就面板：本局里程碑的总览。
+ *
+ * 达成的亮着，没达成的灰着但**看得见目标** —— 灰条上写着达成条件，
+ * 「还想再打一局」的念头一半来自这里。数据由服务端从既有事实现算
+ * （见 achievements.js），这里只管摆出来。
+ */
+export function AchievementsPanel({ achievements }) {
+  if (!achievements?.length) return null
+  const done = achievements.filter((a) => a.done).length
+  return (
+    <div className="panel ach">
+      <h3>成就 <span className="ach-count">{done} / {achievements.length}</span></h3>
+      <div className="card">
+        {achievements.map((a) => (
+          <div key={a.id} className={`ach-row${a.done ? ' done' : ''}`} title={a.desc}>
+            <span className="ach-mark">{a.done ? '★' : '☆'}</span>
+            <span className="ach-name">{a.name}</span>
+            <span className="ach-desc">{a.desc}</span>
           </div>
         ))}
       </div>

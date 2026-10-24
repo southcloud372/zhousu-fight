@@ -1,8 +1,9 @@
 import { TRAINING_TABLE, TALENT_BONUS, rollTraining, applyTraining } from './commands.js'
 import { nextMilestone, missedNodes, TODO, DONE, CHANGED, REWRITTEN } from './timeline.js'
 import { GENERIC_TECHNIQUES } from './canon.js'
+import { maybeElite } from './elite.js'
 import { advanceTime, promoteGrade } from './state.js'
-import { weightedPick, rint } from './dice.js'
+import { weightedPick, rint, makeRng } from './dice.js'
 import { GRADES, RANGES, gradeIndex, isTier } from './tables.js'
 import { rollEnemy } from './rolls.js'
 import { hpStatus } from './formula.js'
@@ -37,8 +38,10 @@ export const DAY_SCALE = 1.6
 export const FATIGUE_STEP = 0.012
 export const FATIGUE_FLOOR = 0.45
 export const REST_HEAL_RATIO = 0.18
-/** 一次"推进到节点"最多走这么多天，防止极端情况下卡死 */
+/** 一次「推进到节点」最多走这么多天，防止极端情况下卡死 */
 export const MAX_DAYS_PER_CALL = 200
+/** 顿悟日概率：轮盘不该只是一台匀速的跑步机 —— 稀有但真实的惊喜 */
+export const INSIGHT_CHANCE = 0.06
 
 /** 轮盘上的六个方向 —— 就是"跳过当天·修炼"那六项，换成一天一转 */
 export const WHEEL_SECTORS = [
@@ -94,13 +97,18 @@ function restDay(state) {
   const before = p.hp.cur
   p.hp.cur = Math.min(p.hp.max, p.hp.cur + Math.round(p.hp.max * REST_HEAL_RATIO))
   const healed = p.hp.cur - before
+  // 与疗伤的静养同一条口径：血靠治，咒力靠歇
+  const ceBefore = p.ce.cur
+  p.ce.cur = Math.min(p.ce.max, p.ce.cur + Math.round(p.ce.max * 0.4))
   const w = ensureWheel(state)
   w.fatigue = 1 // 歇过来了
   advanceTime(state, '1d')
   p.status = hpStatus(p.hp)
   return {
     day: state.time.day, date: state.time.date, kind: 'rest',
-    sector: null, progress: 0, healed, ups: [], notes: ['伤势压着，这一天只能躺着'],
+    sector: null, progress: 0, healed,
+    ce: p.ce.cur - ceBefore,
+    ups: [], notes: ['伤势压着，这一天只能躺着'],
     hpDelta: 0, gradeUp: null,
   }
 }
@@ -142,6 +150,25 @@ export function spinWheel(state, rng) {
   rolled.progress = Number((rolled.progress * DAY_SCALE * fatigue).toFixed(4))
   const ups = applyTraining(state, rolled)
 
+  /*
+   * 顿悟日：身体先于意识明白了。
+   *
+   * 两个刻意的决定：
+   *   1. 判定走**独立的随机源**（种子带天数），不占主 rng 的序列 ——
+   *      主序列的每一天都被 seeded 手感测试盯着，多抽一次全体漂移；
+   *   2. 翻倍那一份再走一遍 applyTraining 的正路（该触发的数值跳变
+   *      照样触发），但它产生的 ups 并进 notes 而不是 ups ——
+   *      「一天之内跳变 ≤1 次」是 wheel.test 盯着的红线，顿悟是惊喜，
+   *      不是通胀。
+   */
+  const insight = makeRng((state.seed || 1) + w.days * 7919 + 17)() < INSIGHT_CHANCE
+  if (insight) {
+    // 第二份清零 hpDelta（顿悟翻倍的是收获，不是体术实战的受伤风险），
+    // 并用 noTime 跳过 applyTraining 自带的「过一天」—— 顿悟是同一天的第二份收获
+    const extra = applyTraining(state, { ...rolled, hpDelta: 0 }, { noTime: true })
+    rolled.notes.push(`顿悟——身体先于意识明白了，今日收获翻倍${extra.length ? `（${extra.join('、')}）` : ''}`)
+  }
+
   w.days += 1
   w.fatigue = Math.max(FATIGUE_FLOOR, w.fatigue - FATIGUE_STEP)
   w.sectors[id] = (w.sectors[id] || 0) + 1
@@ -160,6 +187,7 @@ export function spinWheel(state, rng) {
     date: state.time.date,
     kind: 'train',
     sector: { id: sector.id, short: sector.short, effect: sector.effect },
+    insight,
     progress: Number((rolled.progress * 100).toFixed(1)),
     // 这个方向的进度条现在到哪儿了（0~100）。日志要显示"38% → 44%"：
     // 只说"进度 +6%"的话，玩家会去右边找那条属性，找不到就以为没生效
@@ -250,6 +278,8 @@ export function planIntervention(state, rng, ms) {
   enemy.name = weightedPick(rng, ENEMY_NAMES)
   enemy.technique.name = GENERIC_TECHNIQUES[rint(rng, 0, GENERIC_TECHNIQUES.length - 1)]
   if (enemy.domain?.unlocked) enemy.domain.name = `${ms.node}的领域`
+  // 介入战也可能是精英：正日子挡路的会更难缠一点
+  maybeElite(rng, enemy)
   return enemy
 }
 

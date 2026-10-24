@@ -27,6 +27,7 @@ export const REVERSE_HEAL = Object.fromEntries(
 )
 
 const REST_HEAL = 0.18
+const REST_CE_REGEN = 0.4 // 静养一日的咒力自然回充：血靠治，咒力靠歇
 
 /** 反转术式一次要烧多少咒力 —— 面板上要显示，所以单独给出来 */
 export function reverseCeCost(player) {
@@ -82,8 +83,18 @@ export const RECOVERY_ACTIONS = [
       const p = state.player
       const before = p.hp.cur
       p.hp.cur = Math.min(p.hp.max, p.hp.cur + Math.round(p.hp.max * REST_HEAL))
+      // 睡一天咒力也自己长回来 —— 资源循环的另一头：血靠治，咒力靠歇
+      const ceBefore = p.ce.cur
+      p.ce.cur = Math.min(p.ce.max, p.ce.cur + Math.round(p.ce.max * REST_CE_REGEN))
       advanceTime(state, '1d')
-      return { healed: p.hp.cur - before, cost: 0, days: 1, notes: ['睡了一整天，伤口收了口'] }
+      const ceGain = p.ce.cur - ceBefore
+      return {
+        healed: p.hp.cur - before,
+        cost: 0,
+        days: 1,
+        ce: ceGain,
+        notes: ['睡了一整天，伤口收了口', ...(ceGain > 0 ? [`咒力自行回充 ${ceGain}`] : [])],
+      }
     },
   },
 
@@ -104,6 +115,7 @@ export const RECOVERY_ACTIONS = [
       const p = state.player
       const before = p.hp.cur
       p.hp.cur = p.hp.max
+      p.ce.cur = p.ce.max
       advanceTime(state, '1d')
       const cur = state.relations['家入硝子'] ?? 0
       state.relations['家入硝子'] = Math.max(-100, Math.min(100, cur - 2)) // 让她欠着人情，态度降一点

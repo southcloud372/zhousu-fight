@@ -5,9 +5,9 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
-import { streamTool, streamText, models } from './llm.js'
+import { streamTool, streamText, models, cachedSystem } from './llm.js'
 import { makeRng } from './engine/dice.js'
-import { blankState, applyProposal, panelSnapshot, modelStateView } from './engine/state.js'
+import { blankState, applyProposal, panelSnapshot, modelStateView, pushLog } from './engine/state.js'
 import { scrubTurn, clampProposal, noteNarrationLeak, hasLethalIntent } from './engine/guard.js'
 import { applyCanon } from './engine/canon.js'
 import {
@@ -22,8 +22,12 @@ import { NARRATION_MIN, visibleLength, overflowBy, clampNarration } from './engi
 import { rollEnemy, tuneAttributeProfile, suddenArrivalIdentity } from './engine/rolls.js'
 import { tunePlayer } from './engine/editor.js'
 import { byId, pointsFor, initialNodes, nextMilestone } from './engine/timeline.js'
-import { DEFAULT_STORYLINE, STORYLINES, storylineBriefs, storylineOf } from './engine/storylines.js'
+import { DEFAULT_STORYLINE, STORYLINES, storylineBriefs, storylineOf, nodeDescOf } from './engine/storylines.js'
+import { canonFlavorFor } from './engine/canon.js'
 import { wipeLocalData, WIPE_CONFIRM } from './engine/wipe.js'
+import { buildEnding, endingReady } from './engine/ending.js'
+import { maybeElite } from './engine/elite.js'
+import { checkAchievements, takeAchievements } from './engine/achievements.js'
 import { PLAY_MODES, playModeOf, playModeBriefs, DEFAULT_PLAY_MODE } from './engine/playmodes.js'
 import { canTrain, rollTraining, applyTraining, TRAINING_TABLE } from './engine/commands.js'
 import {
@@ -40,6 +44,16 @@ import {
 } from './engine/wheel.js'
 import { recoveryOptions, applyRecovery, needsRecovery } from './engine/recovery.js'
 import { normalizeDomainType, sealOf } from './engine/domains.js'
+import {
+  presetBriefs, presetOf, PRESETS,
+} from './engine/localpresets.js'
+import {
+  startPresetSession, localTurn, localCombatNarration, localRoundNarration, localTrainingFlavor,
+} from './engine/localstory.js'
+
+/** 本局用哪套叙事引擎：ai = 模型（token 模式），local = 预设+模板（不调模型）。
+ *  老存档没有这个字段 —— undefined 按 'ai' 算，行为与从前完全一致。 */
+const isLocal = (state) => state?.engine === 'local'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -57,9 +71,68 @@ function savePath(id) {
   return path.join(SAVE_DIR, `${id}.json`)
 }
 
+/*
+ * persist 写紧凑 JSON（无缩进）：每回合都在落盘，缩进让 stringify 耗时与
+ * 文件体积近乎翻倍 —— 这是最便宜的一笔性能账。存档是人类可读性换性能。
+ */
 function persist(state) {
   fs.mkdirSync(SAVE_DIR, { recursive: true })
-  fs.writeFileSync(savePath(state.id), JSON.stringify(state, null, 2), 'utf8')
+  fs.writeFileSync(savePath(state.id), JSON.stringify(state), 'utf8')
+}
+
+// ---------------------------------------------------------------- 检查点
+
+const CKPT_DIR = path.join(SAVE_DIR, 'checkpoints')
+
+/**
+ * 战前检查点：每一仗开打前，局面原样落一份。
+ *
+ * 死亡是真的（血条归零即终局），但「从这一场开打前重来」也是真的 ——
+ * 惩罚是重打，不是丢档。每个会话一个槽位（覆盖写）：恢复的永远是
+ * 最近一场的开打前，可预期、不膨胀。
+ *
+ * 快照里**保留待结算的遭遇**（pendingCombat）—— 恢复后玩家重新面对
+ * 「要不要打」，可以选择脱离，而不是被摁着头重打同一场。
+ */
+function writeCheckpoint(state) {
+  fs.mkdirSync(CKPT_DIR, { recursive: true })
+  const snap = { ...state, combat: null, checkpointAt: new Date().toISOString() }
+  fs.writeFileSync(path.join(CKPT_DIR, `${state.id}.json`), JSON.stringify(snap), 'utf8')
+  state.hasCheckpoint = true
+}
+
+/*
+ * 会话缓存的容量上限：Map 只增不减的话，长挂的服务跑几百局内存就爆了。
+ * 超限淘汰最早进入的条目（近似 LRU：load 命中不刷新位次，但磁盘有完整
+ * 存档，被淘汰的会话下次访问按需重读，只是多一次文件 IO）。
+ */
+const SESSION_CAP = 80
+
+function rememberSession(state) {
+  sessions.set(state.id, state)
+  if (sessions.size > SESSION_CAP) {
+    const oldest = sessions.keys().next().value
+    if (oldest && oldest !== state.id) sessions.delete(oldest)
+  }
+}
+
+/**
+ * 自动存档：战斗结算 / 跨篇 / 终章这些「里程碑」时刻自动落一个槽位。
+ *
+ * 检查点只有一场（重试用），自动档是**节点级**的进度快照 —— 死了之后
+ * 除了回到上一场开打前，还能回到上一个里程碑。同一会话覆盖写，不膨胀；
+ * 槽名带「自动」，存档面板里与手动档一眼区分。
+ */
+function writeAutoSave(state) {
+  if (!state.player) return
+  ensureDirs()
+  const snap = {
+    ...state,
+    combat: null,
+    autoSavedAt: new Date().toISOString(),
+    slotName: `自动 · ${state.player.name} · 第${state.turn}回合`,
+  }
+  fs.writeFileSync(slotPath(`auto-${state.id}`), JSON.stringify(snap), 'utf8')
 }
 
 function load(id) {
@@ -67,7 +140,7 @@ function load(id) {
   const f = savePath(id)
   if (!fs.existsSync(f)) return null
   const state = JSON.parse(fs.readFileSync(f, 'utf8'))
-  sessions.set(id, state)
+  rememberSession(state)
   return state
 }
 
@@ -85,7 +158,23 @@ function meter(state, model) {
 }
 
 /** 所有返回给前端的响应都带上当前累计用量 */
-const withUsage = (state, payload) => ({ ...payload, usage: usageSnapshot(state.usage) })
+const withUsage = (state, payload) => ({ ...payload, achievements: takeAchievements(state), usage: usageSnapshot(state.usage) })
+
+/**
+ * 死亡闸门：血条归零的局，一切推进性操作一律 409。
+ *
+ * 挂在 /api/session/:id 的 POST 上（GET 保持开放 —— 刷新页面后死亡谢幕层
+ * 就是靠 /state 恢复的）。各路由不必自查：中间件统一拦，错误文案统一，
+ * 前端的死亡层盖住一切可点的东西，这里是不信任前端的最后一道。
+ */
+app.use('/api/session/:id', (req, res, next) => {
+  if (req.method === 'GET') return next()
+  const state = load(req.params.id)
+  if (state?.over?.dead) {
+    return res.status(409).json({ error: '这一局已经结束 —— 血条归零，人是真的没了' })
+  }
+  next()
+})
 
 // ---------------------------------------------------------------- 开局
 
@@ -98,16 +187,66 @@ app.get('/api/storylines', (req, res) => {
   res.json({ storylines: storylineBriefs() })
 })
 
+/**
+ * 开一局。body 里可带 { engine: 'ai' | 'local' }：
+ *   ai（默认）→ 走既有的「选线 → 掷属性 → …」流程
+ *   local     → 直接进预设选择屏（几十套写死的剧情与角色，全程不调模型）
+ */
 app.post('/api/session', (req, res) => {
   const rng = makeRng()
   // 默认开宿傩篇；故事线由第一屏选定后可以用 choose-storyline 改
   const state = blankState(rng, DEFAULT_STORYLINE)
   state.id = crypto.randomUUID().slice(0, 8)
   state.rngSeed = state.seed
-  state.phase = 'storyline'
-  sessions.set(state.id, state)
+  if (req.body?.engine === 'local') {
+    state.engine = 'local'
+    state.phase = 'preset'
+  } else {
+    state.engine = 'ai'
+    state.phase = 'storyline'
+  }
+  rememberSession(state)
   persist(state)
-  res.json({ sessionId: state.id, phase: state.phase, storyline: state.storyline })
+  res.json({ sessionId: state.id, phase: state.phase, storyline: state.storyline, engine: state.engine })
+})
+
+/** 本地模式可选的预设列表（开局第一屏用） */
+app.get('/api/presets', (req, res) => {
+  res.json({ presets: presetBriefs(), count: PRESETS.length })
+})
+
+/**
+ * 本地模式的开局：选定一套预设 → 引擎直接组装整局（故事线、角色、
+ * 关系、时间线进度全部来自预设）→ 第一拍正文走 postProcess。
+ * 返回值与 choose-time 同形状，前端两条路汇进同一张入场券。
+ */
+app.post('/api/session/:id/choose-preset', (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  if (state.phase === 'playing') return res.status(409).json({ error: '本局已经开始，换预设请重新开一局' })
+  const presetId = String(req.body?.presetId || '')
+  const preset = presetOf(presetId)
+  if (!preset) return res.status(400).json({ error: '未知的预设' })
+  const mode = String(req.body?.playMode || '')
+  if (mode && !PLAY_MODES[mode]) return res.status(400).json({ error: '未知的游玩模式' })
+
+  state.engine = 'local'
+  const opening = startPresetSession(state, presetId, mode)
+  if (!opening) return res.status(400).json({ error: '预设无法启动' })
+
+  const cleaned = postProcess(state, opening, { isOpening: true })
+  persist(state)
+
+  res.json(withUsage(state, {
+    ...cleaned,
+    recap: cleaned.recap,
+    choices: state.choices,
+    panel: panelSnapshot(state),
+    wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
+    wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
+    growth: state.playMode === 'combat' ? GROWTH_ROWS : null,
+    combat: pendingCombatView(state.pendingCombat),
+  }))
 })
 
 /**
@@ -314,6 +453,30 @@ app.post('/api/session/:id/time/custom', asyncRoute(async (req, res) => {
 }))
 
 /** 随时切换游玩模式 */
+/**
+ * 谢幕：给打完整条排期的局一个正式的句点。
+ * 文案从这一局的战绩里长出来（见 engine/ending.js）。谢幕不锁局 ——
+ * 演完之后世界照常可玩，只是这一局有了「打完」的记忆。
+ */
+app.post('/api/session/:id/finish', (req, res) => {
+  const state = load(req.params.id)
+  if (!state) return res.status(404).json({ error: '会话不存在' })
+  if (!state.player || state.phase !== 'playing') return res.status(400).json({ error: '还没有可收束的故事' })
+  // 幂等：谢过幕的局再点，把同一份谢幕原样奉上（刷新后想再看一眼是合理需求）
+  if (state.ended && state.ending) {
+    return res.json(withUsage(state, { ending: state.ending, panel: panelSnapshot(state) }))
+  }
+  if (!endingReady(state)) return res.status(400).json({ error: '这条线上还有排到日子的大事件 —— 先把它们走完' })
+
+  const ending = buildEnding(state)
+  state.ended = true
+  state.ending = ending
+  checkAchievements(state) // 終劇成就
+  persist(state)
+  writeAutoSave(state) // 终章自动档：这一局的最后一步
+  res.json(withUsage(state, { ending, panel: panelSnapshot(state) }))
+})
+
 app.post('/api/session/:id/play-mode', (req, res) => {
   const state = load(req.params.id)
   if (!state) return res.status(404).json({ error: '会话不存在' })
@@ -355,7 +518,7 @@ app.post('/api/session/:id/choose-time', asyncRoute(async (req, res) => {
     wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
     // 成长面板的六行标题。轮盘一转就得出进度条，不能等玩家刷新页面才认得这几行
     growth: state.playMode === 'combat' ? GROWTH_ROWS : null,
-    combat: state.pendingCombat,
+    combat: pendingCombatView(state.pendingCombat),
   }))
 }))
 
@@ -387,7 +550,7 @@ function postProcess(state, raw, { isOpening = false, playerInput = '' } = {}) {
     proposal: prop,
   }
 
-  state.log.push({ type: isOpening ? 'opening' : 'turn', ...entry })
+  pushLog(state, { type: isOpening ? 'opening' : 'turn', ...entry })
   state.history.push({ role: 'assistant', content: compactForHistory(entry) })
   if (state.history.length > 40) state.history = state.history.slice(-40)
 
@@ -409,6 +572,8 @@ function postProcess(state, raw, { isOpening = false, playerInput = '' } = {}) {
      * 表外的人（无名咒灵、路人诅咒师）不受影响，照旧由模型自由发挥。
      */
     const canon = applyCanon(enemy, enemy.name, { storyline: state.storyline, date: state.time.date })
+    // 精英词缀：只落在无名敌人身上（canon 敌人内部跳过），独立种子不扰动主序列
+    maybeElite(makeRng(state.seed + state.turn * 7 + 999), enemy)
     if (canon) {
       enemy.name = canon.name
       entry.notes.push(`已按原作校正「${canon.name}」${canon.notes.length ? `：${canon.notes.join('、')}` : ''}`)
@@ -441,8 +606,9 @@ function postProcess(state, raw, { isOpening = false, playerInput = '' } = {}) {
       // 这一手是不是奔着要命去的 —— 战后结算「击杀」还是「击退」看它（见 combat.js）
       lethalIntent: hasLethalIntent(playerInput),
       // 介入战的节点名由轮盘那条路给（wheel.js 的 startIntervention）；
-      // 剧情回合触发的只是遭遇战，打完不改写时间线
-      intervention: null,
+      // 本地模式的节点战走 combatRequest.intervention 带进来 ——
+      // 打完同样由 finishCombat/completeIntervention 把那一天记进时间线
+      intervention: raw.combatRequest.intervention || null,
     }
   }
   // 待结算的遭遇不在这里清 —— 它是"玩家还没决定打不打"，
@@ -452,6 +618,9 @@ function postProcess(state, raw, { isOpening = false, playerInput = '' } = {}) {
   // 关键剧情节点当天锁定"跳过修炼"
   const NODE_LOCK = ['少年院任务', '涩谷事变', '死灭回游', '宿傩夺舍']
   state.storyLock = NODE_LOCK.find((n) => entry.proposal.flags.includes(`${n}_开始`)) || null
+
+  // 成就判定：剧情回合也会达成成就（等级提升、改写节点）
+  checkAchievements(state)
 
   // 当前这一批选项跟着状态一起存。
   //
@@ -524,6 +693,42 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
   const rng = makeRng(state.seed + state.turn * 13)
   state.turn += 1
   state.history.push({ role: 'user', content: input })
+
+  /*
+   * 本地模式：raw 由叙事引擎产出，不经模型。SSE 事件保持同一形状 ——
+   * 前端的打字机、日志归档、用量表全部原样工作，只是不再有等待和重试。
+   * 后续处理（夹紧、落地、日志、遭遇挂起）与模型输出走完全相同的管线。
+   */
+  if (isLocal(state)) {
+    try {
+      send('status', { text: '推演中…' })
+      const raw = localTurn(state, input, rng)
+      send('narration', { text: raw.narration })
+      const entry = postProcess(state, raw, { playerInput: input })
+      persist(state)
+      send('done', {
+        turn: state.turn,
+        dialogue: entry.dialogue,
+        recap: entry.recap,
+        choices: state.choices,
+        notes: entry.notes,
+        panel: panelSnapshot(state),
+        combat: pendingCombatView(state.pendingCombat),
+        wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
+        wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
+        freeActions: freeActions(state),
+        nodeToday: nodeToday(state),
+        achievements: takeAchievements(state),
+        chronicleReady: false,
+        usage: usageSnapshot(state.usage),
+      })
+    } catch (e) {
+      send('error', { message: e.message })
+    } finally {
+      res.end()
+    }
+    return
+  }
 
   try {
     send('status', { text: '推演中…' })
@@ -649,11 +854,13 @@ app.post('/api/session/:id/turn', asyncRoute(async (req, res) => {
       choices: state.choices,
       notes: entry.notes,
       panel: panelSnapshot(state),
-      combat: state.pendingCombat,
+      combat: pendingCombatView(state.pendingCombat),
       // 战斗向：这一轮剧情可能推进了日期，轮盘上"还差几天"要跟着变
       wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
       wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
       freeActions: freeActions(state),
+      nodeToday: nodeToday(state),
+      achievements: takeAchievements(state),
       chronicleReady: state.history.length > HISTORY_LIMIT,
       usage: usageSnapshot(state.usage),
     })
@@ -757,21 +964,77 @@ function gatingLabel(gate) {
  */
 const suddenBlock = (state) => suddenArrivalRulesFor(state.player)
 
+/**
+ * 待结算遭遇的前端视图。
+ *
+ * 服务端内部的 pendingCombat 是 { enemy, reason, ... } —— enemy 是完整对象；
+ * 前端 askCombatEnter 的契约是扁平字段（enemyName / enemyGrade / ...）。
+ * 早期 UI 测试用扁平 stub 把契约定了下来，真实链路却一直发着 raw 形状 ——
+ * 询问块的标题在真实游玩里是 undefined。这里统一翻译，两边的账都对上。
+ */
+function pendingCombatView(pc) {
+  if (!pc) return null
+  return {
+    enemyName: pc.enemy?.name ?? pc.enemyName,
+    enemyGrade: pc.enemy?.grade ?? pc.enemyGrade,
+    enemyTechnique: pc.enemy?.technique?.name ?? pc.enemyTechnique,
+    reason: pc.reason,
+    sinceTurn: pc.sinceTurn,
+    intervention: pc.intervention || null,
+    // 完整 enemy 随行：预估与词缀的前端展示不用再回捞
+    enemy: pc.enemy || null,
+  }
+}
+
+/** 节点当天：下发给前端放大字过场。只认「还没走完」的节点 —— 已改写的不算今天 */
+function nodeToday(state) {
+  const ms = nextMilestone(state)
+  if (!ms || ms.daysLeft > 0) return null
+  return { node: ms.node, dangerLabel: ms.dangerLabel, desc: nodeDescOf(state.storyline, ms.node) }
+}
+
 function turnSystem(state) {
   // 游玩模式放在契约之后 —— 越靠后的内容对模型的约束越强，
-  // 而战斗向的配比是要盖过设定原文那套默认比例的
-  const parts = [CORE_RULES, CONTRACT, playModeOf(state.playMode).rules, turnStatePrompt(modelStateView(state))]
+  // 而战斗向的配比是要盖过设定原文那套默认比例的。
+  // 稳定段（设定原文 + 契约 + 模式）整局不变、却是输入 token 的大头 ——
+  // 单独切出来打缓存断点，按缓存命中计费（约一折）；回合动态的部分全部排在其后
+  const stable = [CORE_RULES, CONTRACT, playModeOf(state.playMode).rules].filter(Boolean).join('\n\n---\n\n')
+  // 状态视图一回合只算一次：对象构建与 JSON 序列化都不便宜，函数里有两处要用
+  const view = modelStateView(state)
+  const parts = [turnStatePrompt(view)]
+  /*
+   * 原作节点当天：把原著那一天的场面直接喂给模型。
+   * 状态视图里只有「涩谷事变：未发生」四个字 —— 模型只知道名字，
+   * 不知道帷幕、广播、该出现的人。这一天是玩家等了几十天的正日子，
+   * 值得把场景完整地摆进它的眼前。
+   */
+  const ms = nextMilestone(state)
+  if (ms && ms.daysLeft <= 0) {
+    const desc = nodeDescOf(state.storyline, ms.node)
+    parts.push(
+      `## 今天就是原作节点「${ms.node}」（${ms.dangerLabel}）\n${desc}\n`
+      + '这一天正在玩家眼前发生：他可以介入、改写或旁观，但原著的场面必须真的演出来 —— 该有的细节一个都别省。',
+    )
+  }
+  // 终局：排期走完、还没谢幕 —— 把故事推向收束，并告诉玩家顶栏有「终章」
+  if (!ms && !state.ended) {
+    parts.push(
+      '## 终局\n这条线的排期已经走完 —— 从本回合起，把故事推向收束：给玩家一个了结的舞台'
+      + '（与旧敌的最后一面、欠的账的清算、或一个安静的句点）。世界仍可自由行动，'
+      + '但「就这样一直过下去」不再是默认答案。顶栏的「终章」按钮可以随时正式谢幕。',
+    )
+  }
   if (state.chronicle) parts.push(`## 前情提要\n${state.chronicle}`)
   if (state.pendingCombat) {
     parts.push(
       `## 当前存在未结算的战斗\n${JSON.stringify(state.pendingCombat, null, 2)}\n玩家尚未选择战斗模式，本回合优先处理战斗。`,
     )
   }
-  if (!modelStateView(state).宿傩.可在意识中对话) {
+  if (!view.宿傩.可在意识中对话) {
     parts.push('## 注意\n宿傩目前**不会**在玩家意识中对话（手指吞得还太少，他还没把玩家当回事）。不要让宿傩说话。')
   }
   parts.push(suddenBlock(state))
-  return parts.filter(Boolean).join('\n\n---\n\n')
+  return cachedSystem(stable, parts.filter(Boolean).join('\n\n---\n\n'))
 }
 
 /**
@@ -799,20 +1062,39 @@ function retryMessages(why, cap) {
 
 // ---------------------------------------------------------------- 战斗
 
-function combatSystem(state, extra) {
+/**
+ * 原作对手的声线卡：模型写五条悟，就该是五条悟的腔。
+ * 数值与术式已经按原作表校正过了；这里补的是"他怎么开口"——
+ * 声线不对，数值再准也只是同名路人。
+ */
+function canonPersona(state, unit) {
+  if (!unit?.canon) return null
+  const f = canonFlavorFor(unit.name, state.storyline)
+  if (!f) return null
   return [
-    CORE_RULES,
-    CONTRACT,
-    playModeOf(state.playMode).rules,
+    `## 对手是原作人物：${f.name}`,
+    `- 说话风格：${f.voice}`,
+    '- 台词语感参考（按当前场合化用，不要逐字照抄，也不要硬塞进每一回合）：',
+    ...f.lines.map((l) => `  ${l}`),
+    `- 他的术式是「${f.technique?.name}」${f.domain ? `，领域是「${f.domain.name}」` : ''} —— 演出一律用真名。`,
+  ].join('\n')
+}
+
+function combatSystem(state, extra) {
+  // 与 turnSystem 同一套缓存策略：设定原文 + 契约 + 模式是稳定段
+  const stable = [CORE_RULES, CONTRACT, playModeOf(state.playMode).rules].filter(Boolean).join('\n\n---\n\n')
+  return cachedSystem(stable, [
     turnStatePrompt(modelStateView(state)),
+    canonPersona(state, state.combat?.enemy),
     `## 战斗叙事规则
 - 面板已经显示了所有数值。**你在叙事里绝对不要重复任何数字**（不要写"造成 340 点伤害"）。
 - 写动作、术式碰撞、咒力流动、伤口、表情。分镜感优先于心理描写。
 - NPC 台词只说"特级"，不准说细分刻度。
+- 战报里标出**黑闪**时，那是全场最高的一拍：短句、顿住、写足分量。
 - 不要改写战斗结果 —— 胜负、伤害、生死都由引擎算定了，你只负责把它写好看。`,
     suddenBlock(state),
     extra,
-  ].filter(Boolean).join('\n\n---\n\n')
+  ].filter(Boolean).join('\n\n---\n\n'))
 }
 
 function combatMessages(state, prompt) {
@@ -874,6 +1156,8 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
 
   const rng = makeRng(state.seed + state.turn * 101)
   const { enemy, reason, intervention, lethalIntent } = state.pendingCombat
+  // 战前检查点：模式已选定、还没动任何真值 —— 就是"这一场开打前"的那个瞬间
+  writeCheckpoint(state)
   initCombat(state, rng, { mode, enemy, reason, intervention, lethalIntent })
   state.lastEnemyName = enemy.name
   // 打起来了，场上那批剧情选项作废（两边本来就不该同时出现）
@@ -900,6 +1184,8 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
         actions: availableActions(state),
         freeActions: freeActions(state),
         text: renderPanelText(roundPanel),
+        achievements: takeAchievements(state),
+        achievements: takeAchievements(state),
         usage: usageSnapshot(state.usage),
       })
       return
@@ -912,15 +1198,20 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
     const crossLevel = gradeIndexOf(enemy.grade) > gradeIndexOf(state.player.grade)
     const rewards = computeRewards(state, rng, { won, crossLevel })
     const ups = applyRewards(state, rewards)
-    const summary = finishCombat(state, outcome)
+    let summary = finishCombat(state, outcome)
+    // 战利品与援护写进战斗摘要 —— 主循环下一轮的模型靠这条 history 知道发生了什么
+    if (rewards.loot) summary += `。缴获咒具「${rewards.loot}」`
+    if (state.battles.at(-1)?.backup) summary += `。「${state.battles.at(-1).backup}」在这场里援护了你`
     pushCombatHistory(state, summary, outcome, mode)
     persist(state)
+    writeAutoSave(state) // 里程碑自动档：这一仗打完的世界
 
     const brief = {
       敌方: `${enemy.name}（${enemy.grade}）`,
-      结果: { player: '玩家胜', enemy: '玩家败', fled: '玩家脱离', draw: '未分胜负' }[outcome.winner],
+      结果: outcome.fledEnemy ? '敌方遁走' : { player: '玩家胜', enemy: '玩家败', fled: '玩家脱离', draw: '未分胜负' }[outcome.winner],
       回合数: rounds.length,
       玩家剩余HP占比: `${Math.round((state.player.hp.cur / state.player.hp.max) * 100)}%`,
+      援护: state.battles.at(-1)?.backup || null,
       关键节点: summarizeRounds(rounds),
     }
 
@@ -939,13 +1230,21 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
     // 战斗向整场也只给一屏：一仗的正文按同样的预算来，别写成中篇小说
     const capText = cap ? `**全文不超过 ${cap} 字。**描写只围绕交锋本身：谁出了什么招、` +
       '打中了哪里、伤成什么样、局势怎么变。环境、天气、回忆、心理活动一律不写。' : ''
+    // 全场出现过黑闪：那是这一仗最高的一拍，提示模型把分量写足
+    const bfHint = rounds.some((r) => r.blackFlash)
+      ? '\n本场出现过黑闪 —— 那是最高的一拍：短句、顿住、写足分量，别用一句带过。\n'
+      : ''
     const prompt = mode === 'skip'
-      ? `以下是引擎结算出的战斗过程与结果，请用一两段话写出战斗经过与结局。不要重复数字，不要改写结果。${capText}\n\n${JSON.stringify(brief, null, 2)}`
-      : `以下是引擎结算出的战斗全过程。请用分镜演出这场战斗，参考原作战斗分镜的节奏：关键回合放慢、普通回合一笔带过。不要重复数字，不要改写结果。${capText}\n\n${JSON.stringify(brief, null, 2)}`
+      ? `以下是引擎结算出的战斗过程与结果，请用一两段话写出战斗经过与结局。不要重复数字，不要改写结果。${capText}${bfHint}\n\n${JSON.stringify(brief, null, 2)}`
+      : `以下是引擎结算出的战斗全过程。请用分镜演出这场战斗，参考原作战斗分镜的节奏：关键回合放慢、普通回合一笔带过。不要重复数字，不要改写结果。${capText}${bfHint}\n\n${JSON.stringify(brief, null, 2)}`
 
     // 演出失败不能吃掉结算结果 —— 数值早已落盘，done 必须照发
     let narration = ''
-    try {
+    if (isLocal(state)) {
+      // 本地模式：战报改写由模板完成（引擎手里已经有全部事实）
+      narration = localCombatNarration(state, brief, mode)
+      send('narration', { text: narration })
+    } else try {
       for await (const chunk of streamText({
         system: combatSystem(state, null),
         messages: combatMessages(state, prompt),
@@ -982,6 +1281,7 @@ app.post('/api/session/:id/combat/start', asyncRoute(async (req, res) => {
       ups,
       panel: panelSnapshot(state),
       combat: null,
+      achievements: takeAchievements(state),
       usage: usageSnapshot(state.usage),
     })
   } catch (e) {
@@ -1019,10 +1319,15 @@ app.post('/api/session/:id/combat/action', asyncRoute(async (req, res) => {
     // 模型只写这一回合的演出
     const prompt = `第 ${panel.turn} 回合刚结算完。请用 2~4 句写出这一回合的交锋，分镜感要强。不要重复数字。
 ${panel.freeActionText ? `\n（这一回合玩家还先用了反转术式，且没有占用出手机会：${panel.freeActionText}）\n` : ''}
+${panel.blackFlash ? `\n（这一回合${panel.blackFlash === 'player' ? '玩家' : '对方'}打出了黑闪 —— 咒力在命中的亿万分之一秒内完全同步，威力按几何级炸开。这是全场最高的一拍：短句、顿住、写足分量。）\n` : ''}
 ${renderPanelText(panel)}`
 
     let narration = ''
-    try {
+    if (isLocal(state)) {
+      // 本地模式：回合演出由面板事实驱动（谁出招、暴击、被打断都在 panel 里）
+      narration = localRoundNarration(state, panel)
+      send('narration', { text: narration })
+    } else try {
       for await (const chunk of streamText({
         system: combatSystem(state, null),
         messages: combatMessages(state, prompt),
@@ -1054,13 +1359,18 @@ ${renderPanelText(panel)}`
       const crossLevel = gradeIndexOf(enemyGradeBefore) > gradeIndexOf(state.player.grade)
       const rewards = computeRewards(state, rng, { won, crossLevel })
       const ups = applyRewards(state, rewards)
-      const summary = finishCombat(state, outcome)
+      let summary = finishCombat(state, outcome)
+      // 同 skip/narrative：战利品与援护要让主循环的模型知道
+      if (rewards.loot) summary += `。缴获咒具「${rewards.loot}」`
+      if (state.battles.at(-1)?.backup) summary += `。「${state.battles.at(-1).backup}」在这场里援护了你`
       pushCombatHistory(state, summary, outcome, 'manual')
       persist(state)
+      writeAutoSave(state)
       send('done', {
         over: true, outcome, summary,
         rewards: { gains: rewards.gains, notes: rewards.notes },
         ups, panel: panelSnapshot(state), combat: null,
+        achievements: takeAchievements(state),
         usage: usageSnapshot(state.usage),
       })
     } else {
@@ -1072,6 +1382,7 @@ ${renderPanelText(panel)}`
         combat: state.combat,
         actions: availableActions(state),
         freeActions: freeActions(state),
+        achievements: takeAchievements(state),
         usage: usageSnapshot(state.usage),
       })
     }
@@ -1169,7 +1480,7 @@ app.post('/api/session/:id/combat/evade', asyncRoute(async (req, res) => {
     note,
     chance: Number(chance.toFixed(3)),
     // 失败时战斗仍在，前端直接进入模式选择
-    combat: success ? null : state.pendingCombat,
+    combat: success ? null : pendingCombatView(state.pendingCombat),
     panel: panelSnapshot(state),
   }))
 }))
@@ -1393,7 +1704,9 @@ app.post('/api/session/:id/train', asyncRoute(async (req, res) => {
 
   // 一两句话的过程描写，按设定不展开
   let flavor = ''
-  try {
+  if (isLocal(state)) {
+    flavor = localTrainingFlavor(state, item, rng)
+  } else try {
     for await (const chunk of streamText({
       system: '你是《咒术回战》世界观文字游戏的叙事模块。只输出一到两句话的修炼过程描写，不要对话，不要数值，不要心理独白。风格干脆利落。',
       messages: [{ role: 'user', content: `角色（${state.player.grade}）进行「${item}」修炼。用一到两句话描写过程。` }],
@@ -1414,7 +1727,7 @@ app.post('/api/session/:id/train', asyncRoute(async (req, res) => {
     hpDelta: result.hpDelta,
     flavor: flavor.trim(),
   }
-  state.log.push(entry)
+  pushLog(state, entry)
   persist(state)
 
   res.json(withUsage(state, { ...entry, panel: panelSnapshot(state) }))
@@ -1449,7 +1762,7 @@ app.post('/api/session/:id/recovery', asyncRoute(async (req, res) => {
   state.turn += 1
   clearChoices(state)
   const entry = { type: 'recovery', ...r }
-  state.log.push(entry)
+  pushLog(state, entry)
   persist(state)
   res.json(withUsage(state, { ...entry, panel: panelSnapshot(state) }))
 }))
@@ -1510,7 +1823,7 @@ app.post('/api/session/:id/wheel/spin', asyncRoute(async (req, res) => {
   const rng = makeRng(state.seed + state.turn * 977 + (state.wheel?.days || 0) * 13)
   const report = spinWheel(state, rng)
   state.turn += 1
-  state.log.push({ type: 'wheel', ...report })
+  pushLog(state, { type: 'wheel', ...report })
   clearChoices(state)
 
   // 正好落在剧情当天就把仗挂上，前端会弹"要不要打"的询问
@@ -1518,7 +1831,7 @@ app.post('/api/session/:id/wheel/spin', asyncRoute(async (req, res) => {
   persist(state)
 
   res.json(withUsage(state, {
-    report, wheel: wheelSnapshot(state), combat, panel: panelSnapshot(state),
+    report, wheel: wheelSnapshot(state), combat: pendingCombatView(combat), panel: panelSnapshot(state),
     growth: GROWTH_ROWS,
     // 闸门要跟着回来：转完这一天可能就到节点当天了，
     // 前端不刷新它的话，轮盘会继续摆着可点的"转一天"
@@ -1537,14 +1850,14 @@ app.post('/api/session/:id/wheel/advance', asyncRoute(async (req, res) => {
   const summary = advanceToMilestone(state, rng)
   if (summary.days > 0) {
     state.turn += 1
-    state.log.push({ type: 'wheel', ...summary })
+    pushLog(state, { type: 'wheel', ...summary })
   }
   clearChoices(state)
   const combat = startIntervention(state, rng)
   persist(state)
 
   res.json(withUsage(state, {
-    summary, wheel: wheelSnapshot(state), combat, panel: panelSnapshot(state), limit: MAX_DAYS_PER_CALL,
+    summary, wheel: wheelSnapshot(state), combat: pendingCombatView(combat), panel: panelSnapshot(state), limit: MAX_DAYS_PER_CALL,
     growth: GROWTH_ROWS,
     gate: wheelGate(state),
   }))
@@ -1591,6 +1904,7 @@ app.get('/api/session/:id/state', (req, res) => {
 
   res.json(withUsage(state, {
     phase: state.phase,
+    engine: state.engine || 'ai',
     attributeProfiles: state.attributeProfiles,
     identityProfiles: state.identityProfiles,
     timeProfiles: state.timeProfiles || [],
@@ -1607,7 +1921,7 @@ app.get('/api/session/:id/state', (req, res) => {
     // 成长面板的六行标题。进度条本身在 panel.training 里（0~100），
     // 少了这张表，界面就不知道该拿这几个数字去对应哪条属性
     growth: GROWTH_ROWS,
-    combat: state.pendingCombat,
+    combat: pendingCombatView(state.pendingCombat),
     inCombat: state.combat && !state.combat.over
       ? {
           mode: state.combat.mode,
@@ -1677,8 +1991,51 @@ app.post('/api/session/:id/save', (req, res) => {
   const snapshot = { ...state, slotName: name, savedAt: new Date().toISOString() }
   // 存档里不保留进行中的战斗现场，避免读档后卡在半个回合里
   snapshot.combat = null
-  fs.writeFileSync(slotPath(sid), JSON.stringify(snapshot, null, 2), 'utf8')
+  fs.writeFileSync(slotPath(sid), JSON.stringify(snapshot), 'utf8')
   res.json({ id: sid, name })
+})
+
+/**
+ * 从检查点重来：恢复到「最近一场战斗开打前」。
+ *
+ * 和读档同一条路 —— 复制成**新会话**（死亡的那局原地封存，战绩还在）。
+ * over 清空：重来是重来的开始，不是装作没死过；快照里保留的待结算遭遇
+ * 会让前端重新问一遍「要不要打」。
+ */
+app.post('/api/saves/checkpoint/load', (req, res) => {
+  const sid = String(req.body?.sessionId || '').trim()
+  if (!/^[a-z0-9-]+$/i.test(sid)) return res.status(400).json({ error: '非法的会话标识' })
+  const f = path.join(CKPT_DIR, `${sid}.json`)
+  if (!fs.existsSync(f)) return res.status(404).json({ error: '这一局没有检查点' })
+  const saved = JSON.parse(fs.readFileSync(f, 'utf8'))
+
+  const newId = crypto.randomUUID().slice(0, 8)
+  const state = { ...saved, id: newId, combat: null, over: null }
+  rememberSession(state)
+  persist(state)
+
+  // 检查点跟着会话走：把快照复制到新 id 名下 —— 从检查点重来的这一场
+  // 若再死一次，「从上一场开打前重来」依然可用（重试同一场是检查点的本意）
+  try {
+    fs.copyFileSync(f, path.join(CKPT_DIR, `${newId}.json`))
+    state.hasCheckpoint = true
+  } catch { /* 复制失败就当没有检查点，死亡层会隐藏该按钮 */ }
+  persist(state)
+
+  res.json(withUsage(state, {
+    sessionId: newId,
+    phase: state.phase,
+    engine: state.engine || 'ai',
+    playMode: state.playMode,
+    log: state.log,
+    choices: liveChoices(state),
+    recap: [...(state.log || [])].reverse().find((e) => e.recap)?.recap || '',
+    panel: panelSnapshot(state),
+    wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
+    wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
+    growth: GROWTH_ROWS,
+    combat: pendingCombatView(state.pendingCombat),
+  }))
 })
 
 app.post('/api/saves/:sid/load', (req, res) => {
@@ -1689,12 +2046,13 @@ app.post('/api/saves/:sid/load', (req, res) => {
   // 读档 = 复制成一份新会话，原会话不受影响
   const newId = crypto.randomUUID().slice(0, 8)
   const state = { ...saved, id: newId, combat: null }
-  sessions.set(newId, state)
+  rememberSession(state)
   persist(state)
 
   res.json(withUsage(state, {
     sessionId: newId,
     phase: state.phase,
+    engine: state.engine || 'ai',
     playMode: state.playMode,
     log: state.log,
     // 读档后要能把最后一批选项还原出来，否则玩家只能靠自由输入继续
@@ -1704,7 +2062,7 @@ app.post('/api/saves/:sid/load', (req, res) => {
     wheel: state.playMode === 'combat' ? wheelSnapshot(state) : null,
     wheelGate: state.playMode === 'combat' ? wheelGate(state) : null,
     growth: GROWTH_ROWS,
-    combat: state.pendingCombat,
+    combat: pendingCombatView(state.pendingCombat),
   }))
 })
 

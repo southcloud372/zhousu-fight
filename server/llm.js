@@ -10,6 +10,49 @@ export const models = { fast: MODEL, pro: MODEL_PRO }
 /** 该供应商的思考模式与强制 tool_choice 互斥，结构化调用必须关掉 thinking。 */
 const NO_THINKING = { type: 'disabled' }
 
+/*
+ * 提示词缓存。每回合的 system 都含整份设定原文（CORE_RULES）与契约 ——
+ * 那部分整局不变，却是输入 token 的大头。把稳定前缀打上 cache_control 断点，
+ * 供应商就能按缓存命中计费（通常是输入价的 ~10%）。
+ *
+ * 兼容性兜底：不是每个「Anthropic 兼容」端点都认 cache_control —— 请求被 400
+ * 拒掉时自动降级为纯文本 system 重发一次；也支持 LLM_PROMPT_CACHE=0 直接关。
+ */
+const CACHE_ON = () => process.env.LLM_PROMPT_CACHE !== '0'
+
+/** 组装带缓存断点的 system：稳定段在前（打标记），动态段跟后 */
+export function cachedSystem(stable, dynamic) {
+  if (!CACHE_ON() || !stable) {
+    return [stable, dynamic].filter(Boolean).join('\n\n---\n\n')
+  }
+  const blocks = [{ type: 'text', text: stable, cache_control: { type: 'ephemeral' } }]
+  if (dynamic) blocks.push({ type: 'text', text: dynamic })
+  return blocks
+}
+
+/** 降级用：块数组 → 等价的纯文本 system */
+export function plainSystem(sys) {
+  if (!Array.isArray(sys)) return sys
+  return sys.map((b) => (typeof b === 'string' ? b : b.text)).join('\n\n---\n\n')
+}
+
+/**
+ * 发请求 + 缓存标记的 4xx 降级。
+ * 供应商拒绝 cache_control 的姿势不止 400 一种（也见过 422），一律降级为
+ * 纯文本 system 重发一次 —— 缓存是省钱优化，不该有能力把回合变成错误。
+ * 429/5xx 交给 withRetry；降级后仍失败就把新错误抛回去。
+ */
+async function postWithFallback(body) {
+  try {
+    return await post(body)
+  } catch (e) {
+    if (e.status >= 400 && e.status < 500 && e.status !== 429 && Array.isArray(body.system)) {
+      return post({ ...body, system: plainSystem(body.system) })
+    }
+    throw e
+  }
+}
+
 function headers() {
   return {
     'content-type': 'application/json',
@@ -66,7 +109,7 @@ export async function callTool({ system, messages, tool, maxTokens = 4000, model
     tools: [tool],
     tool_choice: { type: 'tool', name: tool.name },
   }
-  const data = await withRetry(async () => (await post(body)).json())
+  const data = await withRetry(async () => (await postWithFallback(body)).json())
   const block = (data.content || []).find((b) => b.type === 'tool_use')
   if (!block) throw new Error(`模型未返回 tool_use：${JSON.stringify(data).slice(0, 400)}`)
   return { input: block.input, usage: data.usage }
@@ -137,7 +180,7 @@ export async function* streamTool({ system, messages, tool, maxTokens = 4000, mo
     tools: [tool],
     tool_choice: { type: 'tool', name: tool.name },
   }
-  const res = await withRetry(async () => post(body))
+  const res = await withRetry(async () => postWithFallback(body))
 
   let jsonBuf = ''
   let sent = 0
@@ -285,7 +328,7 @@ export async function* streamText({ system, messages, maxTokens = 4000, model = 
     messages,
     ...(thinking ? {} : { thinking: NO_THINKING }),
   }
-  const res = await withRetry(async () => post(body))
+  const res = await withRetry(async () => postWithFallback(body))
   const decoder = new TextDecoder()
   let carry = ''
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }

@@ -35,6 +35,8 @@ function EnemyDossier({ profile, onClose }) {
           超特级的五条悟是引擎随手掷出来的
         */}
         {profile.canon && <div className="canon-tag">{profile.canonNote || `${profile.name}（原作）`}</div>}
+        {/* 精英词缀：名字前缀之外，把规则明说 —— 玩家得知道「狂暴」意味着什么 */}
+        {profile.affixDesc && <div className="canon-tag affix">{profile.affixDesc}</div>}
 
         <div className="card">
           <FxBar label="血条" cur={profile.hp?.cur ?? 0} max={profile.hp?.max ?? 0} cls="hp" />
@@ -262,6 +264,12 @@ export function CombatSidebar({ panel, liveCombat, busy, open, fx }) {
               {st?.mode && <span className="mode">{{
                 manual: '手动', skip: '跳过', narrative: '剧情',
               }[st.mode] || st.mode}</span>}
+              {/* 援护者：这一场是谁替玩家抢下了先手 —— 有名有姓，不是一句模糊的「有人帮忙」 */}
+              {st?.backup && (
+                <span className="mode backup-chip" title="关系够好的角色赶到了场内：先手必占，敌方第一手被压制">
+                  援护 · {st.backup}
+                </span>
+              )}
             </div>
 
             <EnemyCard enemy={enemy} fx={live ? fx : null} onOpen={() => setDossier(true)} />

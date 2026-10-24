@@ -82,18 +82,27 @@ async function callWithRetry({ system, messages, tool, model, maxTokens, attempt
   return last // 重试都用光了就先用着，至少别把玩家卡死
 }
 
-/** 第一步：引擎掷三份属性 → 模型补创意字段 */
+/**
+ * 第一步：引擎掷五份属性 → 模型补创意字段。
+ *
+ * 五档全覆盖（二级 / 一级 / 弱特 / 标特 / 超特）：玩家开局就有真正的强度选择，
+ * 而不是全凭一次随机分布。「龙级与准一级不在其中」—— 龙级是终点，准一级是
+ * 练出来的过渡带，都不是起手牌（见 tables.js 的注释）。
+ */
 export async function generateAttributeProfiles(rng, { onUsage } = {}) {
-  const rolled = ['A', 'B', 'C'].map((s) => rollAttributeProfile(rng, s))
+  const GRADE_SLOTS = [
+    ['A', '二级'], ['B', '一级'], ['C', '弱特级'], ['D', '标特级'], ['E', '超特级'],
+  ]
+  const rolled = GRADE_SLOTS.map(([slot, grade]) => rollAttributeProfile(rng, slot, grade))
   const input = await callWithRetry({
     system: baseSystem(),
     messages: [{ role: 'user', content: attributeFlavorPrompt(rolled) }],
     tool: submitAttributeFlavor,
     model: models.pro,
-    maxTokens: 3500,
+    maxTokens: 4500,
     onUsage,
     validate: (x) => allFilled((x?.profiles || []).filter((p) => rolled.some((r) => r.slot === p.slot)), ATTRIBUTE_FIELDS),
-    hint: '上一次提交的三份属性档案不完整：slot / techniqueName / techniqueEffect / playstyle 都必须填，且文字不能太短。请重新提交完整的三份。',
+    hint: '上一次提交的五份属性档案不完整：slot / techniqueName / techniqueEffect / playstyle 都必须填，且文字不能太短。请重新提交完整的五份。',
   })
   const bySlot = Object.fromEntries((input.profiles || []).map((p) => [p.slot, p]))
   return rolled.map((r) => decorateAttributeFlavor(r, bySlot[r.slot] || {}))

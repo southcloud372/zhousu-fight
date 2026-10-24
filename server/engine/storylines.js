@@ -43,17 +43,47 @@ const SUKUNA = {
    * 节点，日期一定要早于那个时间点。constants.test.mjs 有一条专门守这个。
    */
   nodeSchedule: [
-    { node: '虎杖吞手指', date: '2018-06-08', danger: 1, dangerLabel: '序章' },
-    { node: '死刑缓期', date: '2018-06-12', danger: 2, dangerLabel: '险局' },
-    { node: '高专入学', date: '2018-06-15', danger: 2, dangerLabel: '险局' },
-    { node: '少年院任务', date: '2018-06-24', danger: 3, dangerLabel: '暗流' },
+    {
+      node: '虎杖吞手指', date: '2018-06-08', danger: 1, dangerLabel: '序章',
+      desc: '社团仓库里那根缠着咒纸的断指进了少年的胃——诅咒之王回来了万分之一，整座城市的咒灵同时抬起了头',
+    },
+    {
+      node: '死刑缓期', date: '2018-06-12', danger: 2, dangerLabel: '险局',
+      desc: '高专地下的审讯室里，五条悟拍板：容器先吊着命，吞一根手指换一纸缓期',
+    },
+    {
+      node: '高专入学', date: '2018-06-15', danger: 2, dangerLabel: '险局',
+      desc: '死刑犯成了学生。夜蛾正道的教室里，傀儡咒法开讲，新生们各怀心思',
+    },
+    {
+      node: '少年院任务', date: '2018-06-24', danger: 3, dangerLabel: '暗流',
+      desc: '少年院收容所的地下，特级咒胎九相图等着换身体——一年级的第一次实战就是地狱',
+    },
     // 宿傩夺舍就在少年院那一晚 —— 同一天连着两场，轮盘打完第一场会立刻指着第二场
-    { node: '宿傩夺舍', date: '2018-06-24', danger: 4, dangerLabel: '地狱' },
-    { node: '京都姊妹校交流', date: '2018-07-12', danger: 3, dangerLabel: '暗流' },
-    { node: '涩谷事变前夜', date: '2018-08-20', danger: 3, dangerLabel: '暗流' },
-    { node: '涩谷事变', date: '2018-10-31', danger: 4, dangerLabel: '地狱' },
-    { node: '死灭回游', date: '2018-11-20', danger: 5, dangerLabel: '绝境' },
-    { node: '最终决战', date: '2019-03-10', danger: 5, dangerLabel: '终局' },
+    {
+      node: '宿傩夺舍', date: '2018-06-24', danger: 4, dangerLabel: '地狱',
+      desc: '少年院上空，宿傩借虎杖之身第一次亮相，一道斩击劈开整条走廊，逼迫咒灵交出手指',
+    },
+    {
+      node: '京都姊妹校交流', date: '2018-07-12', danger: 3, dangerLabel: '暗流',
+      desc: '两校对抗赛表面热闹，那个笑容满面的咒灵第一次把伸进赛场，相中了宿傩的容器',
+    },
+    {
+      node: '涩谷事变前夜', date: '2018-08-20', danger: 3, dangerLabel: '暗流',
+      desc: '诅咒师与咒灵的收网悄然完成：封印五条悟的咒具、人造咒胎、百鬼夜行——只等万圣节的钟声',
+    },
+    {
+      node: '涩谷事变', date: '2018-10-31', danger: 4, dangerLabel: '地狱',
+      desc: '帷幕落下，广播报出条件，百鬼夜行在站台展开——五条悟被封印进狱门疆的那一夜，咒术界的天平翻了',
+    },
+    {
+      node: '死灭回游', date: '2018-11-20', danger: 5, dangerLabel: '绝境',
+      desc: '结界分割国土，泳者按咒灵写下的规则互相猎杀——没有裁判，只有分数',
+    },
+    {
+      node: '最终决战', date: '2019-03-10', danger: 5, dangerLabel: '终局',
+      desc: '该倒的都倒了。残存的术师们凑出最后的阵，对上完全复活的诅咒之王',
+    },
   ],
 
   /** 登场角色：关系网的初始名单，也是模型该用的人 */
@@ -146,15 +176,39 @@ const KAIGYOKU = {
 
   /** 原作节点排期 —— 见宿傩篇同名注释 */
   nodeSchedule: [
-    { node: '天内理子护卫', date: '2006-06-05', danger: 1, dangerLabel: '序章' },
-    { node: '冲绳之行', date: '2006-07-10', danger: 2, dangerLabel: '险局' },
-    { node: '盘星教袭击', date: '2006-08-05', danger: 4, dangerLabel: '地狱' },
-    { node: '理子之死', date: '2006-08-15', danger: 5, dangerLabel: '绝境' },
+    {
+      node: '天内理子护卫', date: '2006-06-05', danger: 1, dangerLabel: '序章',
+      desc: '星浆体同化的期限敲定，五条与夏油进驻校园当护卫——追猎的悬赏同时挂了出去',
+    },
+    {
+      node: '冲绳之行', date: '2006-07-10', danger: 2, dangerLabel: '险局',
+      desc: '海、阳光、冰淇淋——理子最后的假期。追杀的人已经泡在海里，只等船靠岸',
+    },
+    {
+      node: '盘星教袭击', date: '2006-08-05', danger: 4, dangerLabel: '地狱',
+      desc: '教团的收网时刻：仪式、绞索、和那个接了委托的裹刀男人，同时落下',
+    },
+    {
+      node: '理子之死', date: '2006-08-15', danger: 5, dangerLabel: '绝境',
+      desc: '她跑向天元的那几步，是整个时代的转折点——枪响之后，一切都开始坏掉',
+    },
     // 甚尔之战与五条觉醒是同一个晚上 —— 原作里他刚咽气就睁眼了
-    { node: '甚尔之战', date: '2006-08-20', danger: 5, dangerLabel: '绝境' },
-    { node: '五条觉醒', date: '2006-08-20', danger: 4, dangerLabel: '地狱' },
-    { node: '夏油叛逃', date: '2007-06-15', danger: 4, dangerLabel: '地狱' },
-    { node: '玉折', date: '2007-09-01', danger: 5, dangerLabel: '终局' },
+    {
+      node: '甚尔之战', date: '2006-08-20', danger: 5, dangerLabel: '绝境',
+      desc: '天与咒缚的男人单方面屠杀「最强」——没有咒力的刀，快过一切术式',
+    },
+    {
+      node: '五条觉醒', date: '2006-08-20', danger: 4, dangerLabel: '地狱',
+      desc: '血泊里的少年站了起来：反转术式自己学会了自己，六眼全开——「最强」从这一夜开始名副其实',
+    },
+    {
+      node: '夏油叛逃', date: '2007-06-15', danger: 4, dangerLabel: '地狱',
+      desc: '屠村、夺咒、出走。那一句「猿猴」从此有了重量，昔日挚友站到了世界两侧',
+    },
+    {
+      node: '玉折', date: '2007-09-01', danger: 5, dangerLabel: '终局',
+      desc: '高专时代的落幕之战——师徒之间、挚友之间，最后一轮没有留手的对话',
+    },
   ],
 
   characters: [
@@ -233,12 +287,30 @@ const FUTURE = {
 
   /** 原作节点排期 —— 见宿傩篇同名注释。本线是原创推演，日期没有原作依据 */
   nodeSchedule: [
-    { node: '咒术界重组', date: '2029-04-05', danger: 2, dangerLabel: '险局' },
-    { node: '残秽扩散', date: '2029-08-15', danger: 3, dangerLabel: '暗流' },
-    { node: '新容器现身', date: '2030-02-01', danger: 4, dangerLabel: '地狱' },
-    { node: '第二座涩谷', date: '2030-10-31', danger: 5, dangerLabel: '绝境' },
-    { node: '因果清算', date: '2031-06-01', danger: 5, dangerLabel: '终局' },
-    { node: '终局', date: '2031-09-01', danger: 5, dangerLabel: '终局' },
+    {
+      node: '咒术界重组', date: '2029-04-05', danger: 2, dangerLabel: '险局',
+      desc: '新总监部挂牌，旧势力抢椅子——人手只剩十年前的一半，祓除委托堆成了山',
+    },
+    {
+      node: '残秽扩散', date: '2029-08-15', danger: 3, dangerLabel: '暗流',
+      desc: '旧战场的不化之物开始聚形：它们不攻击人，只是站在原地——像在等什么',
+    },
+    {
+      node: '新容器现身', date: '2030-02-01', danger: 4, dangerLabel: '地狱',
+      desc: '又一个能吃下不该吃的东西的孩子。上一次做这个决定的人，用了十年后悔',
+    },
+    {
+      node: '第二座涩谷', date: '2030-10-31', danger: 5, dangerLabel: '绝境',
+      desc: '同一天、同一套手法、另一座城市——广播的女声和十年前一模一样。有人在照着抄',
+    },
+    {
+      node: '因果清算', date: '2031-06-01', danger: 5, dangerLabel: '终局',
+      desc: '十年前改过的每一个选择开始挨个收账——救下的、放走的、杀掉的，全都回来了',
+    },
+    {
+      node: '终局', date: '2031-09-01', danger: 5, dangerLabel: '终局',
+      desc: '所有线收拢成最后一个结。这一次没有原作兜底——改出来的世界，由改它的人收尾',
+    },
   ],
 
   characters: [
@@ -299,6 +371,19 @@ export const DEFAULT_STORYLINE = 'sukuna'
 for (const line of STORYLINE_LIST) line.nodes = line.nodeSchedule.map((n) => n.node)
 
 export const storylineOf = (id) => STORYLINES[id] || STORYLINES[DEFAULT_STORYLINE]
+
+/**
+ * 某个原作节点「那一天」的场景描述。
+ *
+ * 节点表上原来只有名字和危险度 —— 轮盘和提示词说「涩谷事变就是今天」，
+ * 玩家知道的却只是四个字。这段描述喂给两边：AI 模式的提示词拿它还原
+ * 原著那一天的场景，本地模式把它写进节点当天的正文。没有描述的节点
+ * 返回空串，调用方自己兜底。
+ */
+export function nodeDescOf(storylineId, node) {
+  const row = storylineOf(storylineId).nodeSchedule.find((s) => s.node === node)
+  return row?.desc || ''
+}
 
 /** 供前端选线用的精简信息 */
 export function storylineBriefs() {

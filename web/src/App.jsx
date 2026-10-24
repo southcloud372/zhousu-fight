@@ -2,10 +2,11 @@ import React, { useCallback, useEffect, useState } from 'react'
 import * as api from './api.js'
 import {
   AttributeCard, IdentityCard, CustomCard, TimeCard, CustomTimeCard, StorylineCard, PlayModePicker,
-  SuddenArrivalCard,
+  SuddenArrivalCard, PresetCard,
 } from './components/Cards.jsx'
 import { NarrativeLog, ChoiceList, useTypewriter } from './components/Narrative.jsx'
-import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel, GrowthPanel, BattleLogPanel, EditPlayerModal } from './components/Panels.jsx'
+import * as sfx from './lib/sfx.js'
+import { StatusPanel, RelationPanel, SukunaPanel, TimelinePanel, GrowthPanel, BattleLogPanel, EditPlayerModal, CareerPanel, AchievementsPanel } from './components/Panels.jsx'
 import { ActionBar, DisposeModal } from './components/CombatPanel.jsx'
 import { WheelPanel } from './components/WheelPanel.jsx'
 import { SaveModal } from './components/SaveModal.jsx'
@@ -57,6 +58,12 @@ export default function App() {
   const [attrProfiles, setAttrProfiles] = useState([])
   const [identProfiles, setIdentProfiles] = useState([])
   const [entries, setEntries] = useState([])
+  /*
+   * 客户端日志的上限：服务端 log 封顶 200 条，但**本地 append 不封顶** ——
+   * 一次连续玩上几百回合，DOM 和内存都会跟着膨胀。超限裁最老的一段，
+   * 折叠线插在日志顶部（完整记录在服务端存档里，刷新即恢复裁后视图）。
+   */
+  const ENTRIES_CAP = 320
   const [choices, setChoices] = useState([])
   const [panel, setPanel] = useState(null)
   const [pending, setPending] = useState(null)   // 待处理的遭遇战（引擎侧仍叫 pendingCombat）
@@ -85,6 +92,18 @@ export default function App() {
   const [storylines, setStorylines] = useState([])
   const [playModes, setPlayModes] = useState([])
   const [playMode, setMode] = useState('story')
+  // 本地模式：预设列表 + 选择屏的故事线筛选（all = 全部）
+  const [presets, setPresets] = useState([])
+  const [presetLine, setPresetLine] = useState('all')
+  // 本局是哪套引擎（ai / local）—— 用量表和几个 UI 分支要看它
+  const [engine, setEngine] = useState('ai')
+  // 音效开关（合成音、总闸压得很低）。默认开，关掉的选择存本地
+  const [sound, setSound] = useState(sfx.isEnabled())
+  // 手动战斗的「自动出招」：一场仗几十回合，每回合都点一下是体力活。
+  // 开着就按「领域 > 术式 > 防御回气 > 体术」的策略自动递招，随时可关
+  const [autoAct, setAutoAct] = useState(false)
+  // 谢幕：打完整条排期后的正式句点。overlay 打开时游戏照常在底下，只是这一刻属于总结
+  const [ending, setEnding] = useState(null)
   const [recap, setRecap] = useState('') // 选项上方那句局面提要
   const [xo, setXo] = useState(null)        // 跨篇数据（有值就说明可以跨）
   const [xoStep, setXoStep] = useState(0)   // 当前第几段历练
@@ -142,13 +161,30 @@ export default function App() {
    * 一颗轻提示接不住整场里最高的一拍，所以同一时刻还压一屏大字过场：
    * 轻提示留着（战果明细跟着它一条条弹），过场负责那一下心跳。
    */
+  /**
+   * 新达成的成就：弹提示 + 专用音。
+   * 响应层（withUsage / 各 SSE done）会把 pending 里的一次性下发，
+   * 这里只管「看见了」。
+   */
+  const takeAch = useCallback((list) => {
+    for (const a of list || []) {
+      sfx.play('gradeUp')
+      toast(`成就达成 · ${a.name} —— ${a.desc}`, { tone: 'gold', title: '成就' })
+    }
+  }, [toast])
+
   const toastOutcome = useCallback((outcome, summary, lines = []) => {
     const w = outcome?.winner
-    if (w === 'player') toast(summary ? `胜 · ${summary}` : '这一场拿下了', { tone: 'gold', big: true, title: '胜利' })
-    else if (w === 'enemy') toast(summary ? `败 · ${summary}` : '这一场没能拿下', { tone: 'blood', big: true, title: '败北' })
-    else return
+    if (w === 'player') {
+      sfx.play('win')
+      toast(summary ? `胜 · ${summary}` : '这一场拿下了', { tone: 'gold', big: true, title: '胜利' })
+    } else if (w === 'enemy') {
+      sfx.play('lose')
+      toast(summary ? `败 · ${summary}` : '这一场没能拿下', { tone: 'blood', big: true, title: '败北' })
+    } else return
     pushCutin({
-      kind: w === 'player' ? 'win' : 'lose',
+      // 溃逃是胜果的一种 —— 但大字是「撃退」，不是「撃破」
+      kind: w === 'player' ? (outcome?.fledEnemy ? 'retreat' : 'win') : 'lose',
       name: summary || (w === 'player' ? '这一场拿下了' : '这一场没能拿下'),
       lines,
     })
@@ -163,6 +199,7 @@ export default function App() {
   const onLoadSave = useCallback((r) => {
     try { localStorage.setItem('sunuo:session', r.sessionId) } catch {}
     setSessionId(r.sessionId)
+    setEngine(r.engine || 'ai')
     setEntries(entriesFromLog(r.log))
     setRecap(r.recap || '')
     setChoices(r.choices || [])
@@ -286,6 +323,7 @@ export default function App() {
         if (cancelled) return
         setSessionId(id)
         setPanel(r.panel)
+        setEngine(r.engine || 'ai')
         takeUsage(r.usage) // 刷新后用量表要立刻恢复，不能等下一次调用
         // 模式列表和当前模式也要恢复 —— 否则顶栏那个徽章找不到名字，
         // 会一直显示默认的"剧情向"，切了也看不出来
@@ -314,6 +352,13 @@ export default function App() {
           if (cancelled) return
           setStorylines(lines || [])
           setPhase('storyline')
+        } else if (r.phase === 'preset') {
+          // 本地模式开到一半（选预设那一屏）：把预设列表拉回来接着选
+          const { presets: list } = await api.listPresets()
+          if (cancelled) return
+          setPresets(list || [])
+          setPresetLine('all')
+          setPhase('presets')
         } else if (r.phase === 'attributes') {
           setAttrProfiles(r.attributeProfiles || [])
           setPhase('attributes')
@@ -357,32 +402,47 @@ export default function App() {
       return
     }
 
+    // 脱离成功率摆在按钮上：跑不跑得掉，玩家在决定之前就该有数
+    const evadeLabel = pc.evadeChance != null
+      ? `尝试脱离（成功率 ${Math.round(pc.evadeChance * 100)}%）`
+      : '尝试脱离（按速度判定，可能失败）'
+
     const key = `${pc.sinceTurn ?? '?'}|${pc.enemyName}|${pc.intervention || ''}`
     if (announcedRef.current === key) {
       // 问过了：只把选项摆回去，不再插一块询问
       setChoices([
         { id: 'fight', label: '迎战', kind: 'combat-enter' },
-        { id: 'evade', label: '尝试脱离（按速度判定，可能失败）', kind: 'combat-evade' },
+        { id: 'evade', label: evadeLabel, kind: 'combat-evade' },
       ])
       return
     }
     announcedRef.current = key
+
+    // 介入战 = 原作的正日子到了：放一屏节点大字过场。玩家等了几十天的一站，
+    // 值得和领域展开同级的排面
+    if (pc.intervention) pushCutin({ kind: 'node', side: 'enemy', name: pc.intervention })
+
+    // 战力预估摆在第一行：打还是跑，决定之前先看方向
+    const fc = pc.forecast
+    const forecastLine = fc
+      ? `战力预估：${fc.verdict}${fc.levelDiff !== 0 ? `（等级差 ${fc.levelDiff > 0 ? '+' : ''}${fc.levelDiff}）` : ''}`
+      : ''
 
     setEntries((prev) => [...prev, {
       kind: 'inquiry',
       inquiry: {
         tag: '遭遇',
         title: pc.enemyGrade ? `${pc.enemyName}（${pc.enemyGrade}）` : pc.enemyName,
-        lines: [pc.reason || '', pc.enemyTechnique ? `对方术式：${pc.enemyTechnique}` : ''].filter(Boolean),
+        lines: [forecastLine, pc.reason || '', pc.enemyTechnique ? `对方术式：${pc.enemyTechnique}` : ''].filter(Boolean),
         hint: '可以打，也可以试着甩掉它 —— 脱离不一定成功。',
         tone: 'danger',
       },
     }])
     setChoices([
       { id: 'fight', label: '迎战', kind: 'combat-enter' },
-      { id: 'evade', label: '尝试脱离（按速度判定，可能失败）', kind: 'combat-evade' },
+      { id: 'evade', label: evadeLabel, kind: 'combat-evade' },
     ])
-  }, [])
+  }, [pushCutin])
 
   /**
    * 把一块战斗回合面板翻译成演出。
@@ -412,7 +472,7 @@ export default function App() {
     setFx({
       dmgToken: dealt ? `d${n}` : null,
       dmgValue: dealt,
-      dmgKind: cp.sureHit ? 'sure' : cp.crit === 'player' ? 'crit' : 'hit',
+      dmgKind: cp.blackFlash === 'player' ? 'bf' : cp.sureHit ? 'sure' : cp.crit === 'player' ? 'crit' : 'hit',
       selfDmgToken: selfNet ? `sd${n}` : null,
       selfDmgValue: Math.abs(selfNet),
       selfDmgKind: selfNet > 0 ? 'heal' : 'hit',
@@ -437,8 +497,16 @@ export default function App() {
      */
     const dealtRatio = cp.enemy?.hpMax > 0 ? dealt / cp.enemy.hpMax : 0
     const takenRatio = cp.player?.hpMax > 0 ? taken / cp.player.hpMax : 0
-    const heavy = Math.max(dealtRatio, takenRatio)
+    // 黑闪不管占了多少血条，一律按最重的一档震 —— 它是全场最高的一拍
+    const heavy = cp.blackFlash ? 1 : Math.max(dealtRatio, takenRatio)
     const level = heavy >= 0.25 ? 'brutal' : heavy >= 0.1 ? 'heavy' : heavy >= 0.03 ? 'graze' : null
+
+    // 声音按高光等级取 cue：黑闪和领域优先，普通命中按轻重分档，治疗单独一记
+    if (cp.domainOpened) sfx.play('domainOpen')
+    if (cp.blackFlash === 'player') sfx.play('blackFlash')
+    else if (cp.crit === 'player') sfx.play('crit')
+    else if (dealt > 0) sfx.play(level ? 'heavy' : 'hit')
+    if (healed > 0 && !cp.domainOpened) sfx.play('heal')
 
     setImpact(level ? {
       token: `i${n}`,
@@ -453,8 +521,26 @@ export default function App() {
     } : null)
 
     if (cp.domainOpened) pushCutin(cp.domainOpened)
-    if (cp.crit === 'player') toast('暴击！抓住了破绽', { tone: 'blood' })
+    // 黒閃：原著里最痛的一击，配和领域同级的排面 —— 但更短、更硬
+    if (cp.blackFlash) {
+      pushCutin({
+        kind: 'bf',
+        side: cp.blackFlash,
+        name: cp.blackFlash === 'player'
+          ? '咒力在命中前一瞬完全同步'
+          : '对方的咒力与打击完全同步',
+        sureHit: '威力按几何级炸开',
+      })
+      toast('咒力与打击完全同步 —— 威力按几何级炸开', {
+        tone: 'blood', big: true, title: '黒閃',
+      })
+    } else if (cp.crit === 'player') toast('暴击！抓住了破绽', { tone: 'blood' })
     else if (cp.staggered === 'enemy') toast('对方被打断，这一手没能还手', { tone: 'blood' })
+    // 连击里程碑：压着打的爽感需要被点名 —— 只在 3 层和满层喊，避免每回合刷屏
+    if (cp.combo === 3 || cp.combo === 6) toast(`连击 ×${cp.combo} —— 压着打`, { tone: 'blood', title: '连击' })
+    // 回合上限预警：引擎 30 回合判平。玩家该在还有机会翻盘时知道时钟在走，
+    // 而不是平局结算落地才第一次听说有上限
+    if (cp.turn === 26) toast('回合上限 30 —— 四回合内分不出胜负将判平', { tone: 'blood', title: '判定将至' })
     // 对面的规则型领域：这是"你的招从下一回合起全都作废"，值得单独喊一声
     else if (cp.domainOpened?.side === 'enemy' && cp.domainOpened.type === '规则型') {
       toast('规则改写完毕：你的术式、反转术式与领域都被封住', { tone: 'blood', title: '领域' })
@@ -468,6 +554,7 @@ export default function App() {
     setBusy(true)
     setError(null)
     try {
+      setEngine('ai')
       const { sessionId: id } = await api.newSession()
       setSessionId(id)
       const [{ storylines: lines }, modeRes] = await Promise.all([
@@ -478,6 +565,33 @@ export default function App() {
       setPlayModes(modeRes.modes || [])
       setMode(modeRes.default || 'story')
       setPhase('storyline')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  /**
+   * 本地模式开局：开一个 local 会话 → 拉预设列表 → 进选择屏。
+   * 全程不碰模型 —— 数值在引擎里、剧情写在预设里，点哪个立刻能玩。
+   */
+  const bootLocal = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      setEngine('local')
+      const { sessionId: id } = await api.newSession('local')
+      setSessionId(id)
+      const [{ presets: list }, modeRes] = await Promise.all([
+        api.listPresets(),
+        api.listPlayModes(),
+      ])
+      setPresets(list || [])
+      setPlayModes(modeRes.modes || [])
+      setMode(modeRes.default || 'story')
+      setPresetLine('all')
+      setPhase('presets')
     } catch (e) {
       setError(e.message)
     } finally {
@@ -646,6 +760,32 @@ export default function App() {
   }, [sessionId, takeUsage, askCombatEnter])
 
   /**
+   * 本地模式的「开局」：选一套预设，服务端把整局组装好并给出第一拍。
+   * 返回的形状和 pickTime 完全一致 —— 两条开局路在这里汇进同一张入场券。
+   */
+  const pickPreset = useCallback(async (presetId) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await api.choosePreset(sessionId, presetId, playMode)
+      takeUsage(res.usage)
+      setEntries([{ kind: 'turn', turn: 1, narration: res.narration, dialogue: res.dialogue, notes: res.notes, recap: res.recap }])
+      setRecap(res.recap || '')
+      setChoices(res.choices || [])
+      setPanel(res.panel)
+      setWheel(res.wheel || null)
+      setWheelGate(res.wheelGate || null)
+      if (res.growth) setGrowth(res.growth)
+      askCombatEnter(res.combat)
+      setPhase('playing')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [sessionId, playMode, takeUsage, askCombatEnter])
+
+  /**
    * 走「自主定义」时档案已经存在服务端了，直接按 slot 选。
    * 必须定义在 pickAttribute / pickIdentity 之后 —— 提前引用会触发 TDZ。
    */
@@ -734,6 +874,7 @@ export default function App() {
       onDone: (data) => {
         tw.flush() // 把缓冲里剩下的字立刻吐完，避免和下面的条目之间出现跳变
         takeUsage(data.usage)
+        takeAch(data.achievements)
         setRecap(data.recap || '')
         setEntries((prev) => [
           ...prev,
@@ -745,6 +886,16 @@ export default function App() {
         if (data.wheel !== undefined) setWheel(data.wheel || null)
         if (data.wheelGate !== undefined) setWheelGate(data.wheelGate || null)
         if (data.freeActions !== undefined) setFreeActions(data.freeActions || [])
+        // 原作节点当天（剧情向）：放一屏节点大字过场。带着遭遇的场次由
+        // askCombatEnter 那边放（介入战都带节点名），这里只管没打起来的
+        if (data.nodeToday && !data.combat) {
+          pushCutin({
+            kind: 'node', side: 'enemy',
+            name: data.nodeToday.node,
+            type: data.nodeToday.dangerLabel,
+            sureHit: data.nodeToday.desc,
+          })
+        }
         askCombatEnter(data.combat)
         setBusy(false)
       },
@@ -755,7 +906,7 @@ export default function App() {
         resync() // choices 已经被清空了，捞回服务端的最后一批选项
       },
     })
-  }, [sessionId, resync, takeUsage, tw])
+  }, [sessionId, resync, takeUsage, tw, pushCutin])
 
 
   const doTraining = useCallback(async (item) => {
@@ -854,6 +1005,7 @@ export default function App() {
       onDone: (data) => {
         tw.flush()
         takeUsage(data.usage)
+        takeAch(data.achievements)
         if (!data.over) {
           // 只在服务端确实给了行动列表时才覆盖，否则会把行动栏清空
           applyActions(data.actions)
@@ -873,6 +1025,7 @@ export default function App() {
         setFreeActions([])
         // 升级 / 战果这种"打完才结算"的东西，弹一下比埋在日志里更有分量
         toastOutcome(data.outcome, data.summary, data.ups || [])
+        if ((data.ups || []).some((u) => u.includes('等级提升至'))) sfx.play('gradeUp')
         for (const u of data.ups || []) toast(u, { tone: 'blood', big: true, title: '战果' })
         setEntries((prev) => [
           ...prev,
@@ -886,6 +1039,8 @@ export default function App() {
          * 而"这一下由玩家自己点"正是这块弹窗存在的理由。等他在弹窗里点完
          * 再回来推（见 resolveDispose）。
          */
+        // 血条归零：死亡谢幕层已经盖上来，这一局不再推进任何东西
+        if (data.panel?.over?.dead) return
         if (data.panel?.disposition) return
         // 战斗结束了，让主循环接着往下演
         submit('（战斗已结算完毕，继续推进剧情）', { silent: true })
@@ -897,7 +1052,7 @@ export default function App() {
         resync() // 弹窗已经关掉了，把待结算的战斗重新捞回来
       },
     })
-  }, [sessionId, submit, archiveLive, resync, applyActions, playPanelFx, toast, toastOutcome, takeUsage, tw, refreshWheel])
+  }, [sessionId, submit, archiveLive, resync, applyActions, playPanelFx, toast, toastOutcome, takeUsage, takeAch, tw, refreshWheel])
 
   /** 尝试脱离遭遇战 */
   const tryEvade = useCallback(async () => {
@@ -950,6 +1105,7 @@ export default function App() {
     try {
       const r = await api.combatDispose(sessionId, kill)
       takeUsage(r.usage)
+      takeAch(r.achievements)
       setPanel(r.panel)
       // 处置完这一问就没了，轮盘当场该能按了 —— 不必等模型把后续写完
       if (r.wheel !== undefined) setWheel(r.wheel || null)
@@ -974,7 +1130,7 @@ export default function App() {
       setBusy(false)
       resync() // 弹窗已经关了，把待处置的对手重新捞回来
     }
-  }, [sessionId, submit, takeUsage, resync])
+  }, [sessionId, submit, takeUsage, takeAch, resync])
 
   const doAction = useCallback(async (type) => {
     setBusy(true)
@@ -1003,6 +1159,7 @@ export default function App() {
       },
       onDone: (data) => {
         takeUsage(data.usage)
+        takeAch(data.achievements)
         if (!data.over) {
           setLiveCombat((prev) => (prev ? { ...prev, streaming: false } : prev))
           applyActions(data.actions)
@@ -1016,8 +1173,10 @@ export default function App() {
         archiveLive()
         setLiveCombat(null) // 收工时整块清掉，streaming 标志随之消失
         setFreeActions([])
+        setAutoAct(false) // 自动出招只管这一场：下一场要不要自动，由玩家重新决定
         // 升级 / 战果这种"打完才结算"的东西，弹一下比埋在日志里更有分量
         toastOutcome(data.outcome, data.summary, data.ups || [])
+        if ((data.ups || []).some((u) => u.includes('等级提升至'))) sfx.play('gradeUp')
         for (const u of data.ups || []) toast(u, { tone: 'blood', big: true, title: '战果' })
         setEntries((prev) => [
           ...prev,
@@ -1026,16 +1185,51 @@ export default function App() {
         setPanel(data.panel)
         setBusy(false)
         // 同上（见 startCombat 里那段说明）：人还躺着，先让玩家自己点
+        // 血条归零：死亡谢幕层已经盖上来，这一局不再推进任何东西
+        if (data.panel?.over?.dead) return
         if (data.panel?.disposition) return
         submit('（战斗已结算完毕，继续推进剧情）', { silent: true })
       },
       onError: (e) => {
         setError(e.message)
         setBusy(false)
+        setAutoAct(false) // 出错就停手：自动循环不能在未知状态里继续递招
         resync() // 行动栏已被清空，重新同步才能继续打
       },
     })
-  }, [sessionId, submit, archiveLive, resync, applyActions, playPanelFx, toast, toastOutcome, takeUsage, tw])
+  }, [sessionId, submit, archiveLive, resync, applyActions, playPanelFx, toast, toastOutcome, takeUsage, takeAch, tw])
+
+  /**
+   * 自动出招的挑招策略：有领域开领域、术式好了放术式、咒力见底先防御回气、
+   * 剩下出体术。只挑「当下 enabled」的行动 —— 冷却、被封、咒力不足都被排除。
+   * 不替玩家用反转术式：那是「不占回合」的判断，什么时候按是手感问题。
+   */
+  const pickAutoAct = useCallback((acts, snap) => {
+    const ceLow = !!snap && snap.ce.cur < snap.ce.max * 0.25
+    return acts.find((a) => a.type === 'domain' && a.enabled)
+      || acts.find((a) => a.type === 'technique' && a.enabled && !ceLow)
+      || (ceLow ? acts.find((a) => a.type === 'defend' && a.enabled) : null)
+      || acts.find((a) => a.type === 'physical' && a.enabled)
+      || null
+  }, [])
+
+  /**
+   * 自动出招的驱动循环：liveCombat / 行动栏 / busy 每次变化都重新评估。
+   * 战斗结束（liveCombat 清空）或没有可用行动就自然停住 —— doAction 的收工
+   * 路径会把 autoAct 关掉，这里的"停"只是不再递招，不会抢在状态前面。
+   */
+  useEffect(() => {
+    if (!autoAct || busy) return undefined
+    const c = liveCombat
+    if (!c || c.mode !== 'manual' || !c.actions?.length) return undefined
+    const act = pickAutoAct(c.actions, panel)
+    if (!act) {
+      setAutoAct(false)
+      return undefined
+    }
+    const t = setTimeout(() => doAction(act.type), 620)
+    return () => clearTimeout(t)
+  }, [autoAct, busy, liveCombat, panel, doAction, pickAutoAct])
 
   // ------------------------------------------------- 战斗向：轮盘
 
@@ -1052,6 +1246,7 @@ export default function App() {
     try {
       const r = mode === 'advance' ? await api.wheelAdvance(sessionId) : await api.wheelSpin(sessionId)
       takeUsage(r.usage)
+      takeAch(r.achievements)
       /*
        * 转一天之后，上一轮剧情留下的选项就过期了 —— 世界已经往前走了一天。
        * 更要紧的是里面还混着带引擎语义的那些（"迎战""修炼""疗伤"），
@@ -1086,7 +1281,12 @@ export default function App() {
       const gradeUps = mode === 'advance'
         ? (r.summary?.gradeUps || [])
         : (r.report?.gradeUp ? [r.report.gradeUp] : [])
+      if (gradeUps.length) sfx.play('gradeUp')
       for (const g of gradeUps) toast(g, { tone: 'blood', big: true, title: '等级提升' })
+      // 顿悟：星尘一响，翻倍的日报随后就到
+      if (r.report?.insight || (r.summary?.notes || []).some((x) => String(x).includes('顿悟'))) {
+        sfx.play('insight')
+      }
       if (mode === 'spin' && r.report?.kind === 'blocked') {
         toast(r.report.notes?.[0] || '这一天要留给那场仗', { tone: 'blood' })
       }
@@ -1102,7 +1302,7 @@ export default function App() {
     } finally {
       setBusy(false)
     }
-  }, [sessionId, takeUsage, askCombatEnter, toast])
+  }, [sessionId, takeUsage, takeAch, askCombatEnter, toast])
 
   // ------------------------------------------------- 疗伤
 
@@ -1156,7 +1356,49 @@ export default function App() {
     }
   }, [sessionId, takeUsage, applyActions, resync])
 
+  /**
+   * 谢幕：打完整条排期，给这一局一个正式的句点。
+   * 文案由服务端按战绩生成（不调模型）；幂等 —— 谢过幕再点，看的是同一份。
+   * overlay 关掉后世界照常可玩：句点是句点，不是锁。
+   * 必须定义在 onPick 之前 —— onPick 的依赖数组引用了它（TDZ 白屏，ui.test 盯着）。
+   */
+  const doFinish = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await api.finishGame(sessionId)
+      takeUsage(r.usage)
+      takeAch(r.achievements)
+      setEnding(r.ending)
+      setPanel(r.panel)
+      sfx.play('win')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [sessionId, takeUsage, takeAch])
+
+  /**
+   * 从检查点重来：死亡层的官方后悔药。
+   * 恢复的是「最近一场战斗开打前」的新会话 —— 走 onLoadSave 的完整接管。
+   */
+  const retryCheckpoint = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await api.loadCheckpoint(sessionId)
+      onLoadSave(r)
+    } catch (e) {
+      setError(e.message)
+      setBusy(false)
+    }
+  }, [sessionId, onLoadSave])
+
   const onPick = useCallback(async (choice) => {
+    sfx.play('uiTick')
+    // 谢幕是引擎级的收束，不发回合 —— 服务端直接按战绩出终章
+    if (choice.label?.includes('收束这一局')) return doFinish()
     // 遭遇战：先问要不要打
     if (choice.kind === 'combat-enter') return askCombatMode()
     if (choice.kind === 'combat-evade') return tryEvade()
@@ -1236,7 +1478,15 @@ export default function App() {
     // 后者在契约里是最高优先级
     const isCustom = choice.id === 'free'
     submit(isCustom ? `【我的行动】${choice.label}` : choice.label)
-  }, [sessionId, submit, askCombatMode, tryEvade, startCombat, doTraining, doRecovery])
+  }, [sessionId, submit, askCombatMode, tryEvade, startCombat, doTraining, doRecovery, doFinish])
+
+  /** 音效开关：合成音、总闸压得很低。关掉的选择跟着浏览器走 */
+  const toggleSound = useCallback(() => {
+    const next = !sound
+    sfx.setEnabled(next)
+    setSound(next)
+    if (next) sfx.play('uiTick')
+  }, [sound])
 
   /** 开局后也能换模式 —— 点顶栏那个徽章即可 */
   const togglePlayMode = useCallback(async () => {
@@ -1382,6 +1632,13 @@ export default function App() {
     return () => tw.hold(false)
   }, [cutins.length, tw.hold])
 
+  // 日志裁剪：超限成批裁旧 + 顶部插折叠线（见 ENTRIES_CAP 的说明）
+  useEffect(() => {
+    setEntries((prev) => (prev.length > ENTRIES_CAP
+      ? [{ kind: 'pruned' }, ...prev.slice(-300)]
+      : prev))
+  }, [entries])
+
   // ---------------------------------------------------------- 渲染
 
   /**
@@ -1414,7 +1671,7 @@ export default function App() {
     return (
       <div className="pick">
         {/* 开局这几屏没有顶栏，但开局生成是最花钱的一步，用量表得跟着走 */}
-        <div className="meter-fixed"><UsageMeter usage={usage} /></div>
+        <div className="meter-fixed"><UsageMeter usage={usage} engine={engine} /></div>
         {errBanner}
         <div className="pick-inner">
           <h1>回战 · 宿傩篇</h1>
@@ -1424,12 +1681,26 @@ export default function App() {
               <h2>开局</h2>
               <div className="tech">穿越者模拟</div>
               <div className="tech-eff">
-                引擎将掷出三份属性档案与三份身份档案，由你各自三选一，
-                组合成最终角色后直接切入主线。
+                引擎将掷出五份属性档案（覆盖二级 / 一级 / 各特级）与三份身份档案，
+                由你选一份属性 + 一份身份，组合成最终角色后直接切入主线。
               </div>
               <div className="divider" />
               <div className="kv"><span>数值</span><span>引擎计算，AI 不参与</span></div>
-              <div className="kv"><span>叙事</span><span>AI 实时推演</span></div>
+              <div className="kv"><span>叙事</span><span>AI 实时推演 / 本地预设</span></div>
+              {/*
+                玩法速览：新玩家三十秒内要能回答「这是什么、怎么玩、要花什么」。
+                收起来不占地方，展开是五条最要紧的事 —— 商用产品没有说明书可翻。
+              */}
+              <details className="howto">
+                <summary>玩法速览</summary>
+                <div className="howto-body">
+                  <div>· 三栏界面：左边看战况，中间读剧情、选行动（支持键盘 1-9），右边是自己的数值与时间线</div>
+                  <div>· 数值全由引擎按设定表结算 —— 等级压制是真的，越级挑战会真的挨打</div>
+                  <div>· 体术连击到第三拳起，暴击深处可能升格为<b>黒闪</b>（×2.6；打出过的身体会记住，越闪越容易）</div>
+                  <div>· 两种开局：<b>AI 接入</b>实时推演叙事（需 API Key）；<b>本地模式</b> 36 套预设剧情，零 token</div>
+                  <div>· 随时存档，刷新页面自动接回进度</div>
+                </div>
+              </details>
               {/*
                 有局在手就先给「继续上次」——从主页回来的人第一眼要找的就是它。
                 只有 开局 / 读取存档 的话，玩家会以为刚才那局被扔掉了。
@@ -1449,7 +1720,20 @@ export default function App() {
                 onClick={boot}
                 disabled={busy}
               >
-                {busy ? '正在掷骰…' : '开始生成'}
+                {busy ? '正在掷骰…' : '开始生成（AI 接入）'}
+              </button>
+              {/*
+                本地模式：预设剧情 + 引擎叙事，不调 AI。和上面的区别写在按钮下 ——
+                「不用 API Key、不花 token、开局即玩」是玩家做选择时最想知道的三件事。
+              */}
+              <button
+                className="pick-btn"
+                style={{ marginTop: 7 }}
+                onClick={bootLocal}
+                disabled={busy}
+                title="几十套预设剧情与角色，数值与战斗仍由引擎按设定表执行"
+              >
+                本地模式 · 预设剧情（无需 API）
               </button>
               <button
                 className="pick-btn"
@@ -1496,7 +1780,7 @@ export default function App() {
           {busy && (
             <div className="loading">
               <div className="spinner" />
-              正在生成三份属性档案，大约需要十几秒…
+              正在生成五份属性档案，大约需要十几秒…
             </div>
           )}
         </div>
@@ -1515,7 +1799,7 @@ export default function App() {
   if (phase === 'storyline') {
     return (
       <div className="pick">
-        <div className="meter-fixed"><UsageMeter usage={usage} /></div>
+        <div className="meter-fixed"><UsageMeter usage={usage} engine={engine} /></div>
         {errBanner}
         <div className="pick-inner">
           {homeLink}
@@ -1541,11 +1825,64 @@ export default function App() {
     )
   }
 
+  // 本地模式：选一套预设开局（故事线筛选 + 游玩模式和 AI 模式共用同一个轴）
+  if (phase === 'presets') {
+    const lines = [...new Set(presets.map((p) => p.line))]
+    const lineNames = { sukuna: '宿傩篇', kaigyoku: '怀玉篇', future: '未来篇' }
+    const shown = presetLine === 'all' ? presets : presets.filter((p) => p.line === presetLine)
+    return (
+      <div className="pick">
+        <div className="meter-fixed"><UsageMeter usage={usage} engine={engine} /></div>
+        {errBanner}
+        <div className="pick-inner">
+          {homeLink}
+          <h1>本地模式 · 选择剧本</h1>
+          <div className="sub">
+            {presets.length} 套预设剧情与角色 —— 数值与战斗由引擎按设定表执行，全程不调 AI
+          </div>
+
+          <PlayModePicker modes={playModes} value={playMode} onChange={setMode} />
+
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '14px 0 4px' }}>
+            {[['all', `全部 ${presets.length}`], ...lines.map((l) => [l, lineNames[l] || l])].map(([id, label]) => (
+              <button
+                key={id}
+                className="tag"
+                style={{
+                  cursor: 'pointer',
+                  borderColor: presetLine === id ? 'var(--blood)' : 'var(--line)',
+                  color: presetLine === id ? 'var(--blood)' : 'var(--ink-dim)',
+                  background: 'transparent',
+                  font: 'inherit',
+                }}
+                onClick={() => setPresetLine(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="cards">
+            {shown.map((p) => (
+              <PresetCard key={p.id} p={p} onPick={pickPreset} busy={busy} />
+            ))}
+          </div>
+          {busy && (
+            <div className="loading">
+              <div className="spinner" />
+              正在组装开局…
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   // 第三步：穿越时间
   if (phase === 'time') {
     return (
       <div className="pick">
-        <div className="meter-fixed"><UsageMeter usage={usage} /></div>
+        <div className="meter-fixed"><UsageMeter usage={usage} engine={engine} /></div>
         {errBanner}
         <div className="pick-inner">
           {homeLink}
@@ -1582,7 +1919,7 @@ export default function App() {
     const list = phase === 'attributes' ? attrProfiles : identProfiles
     return (
       <div className="pick">
-        <div className="meter-fixed"><UsageMeter usage={usage} /></div>
+        <div className="meter-fixed"><UsageMeter usage={usage} engine={engine} /></div>
         {errBanner}
         <div className="pick-inner">
           {homeLink}
@@ -1657,7 +1994,7 @@ export default function App() {
   return (
     <div className="shell" data-shake={shakeAttr}>
       <div className="topbar">
-        <UsageMeter usage={usage} />
+        <UsageMeter usage={usage} engine={engine} />
         <span className="brand">回战 <em>·</em> 宿傩篇</span>
         {panel?.time && <span className="date">{panel.time.date}　第 {panel.time.day} 天</span>}
         <span className="spacer" />
@@ -1671,6 +2008,22 @@ export default function App() {
           {playModes.find((m) => m.id === playMode)?.name
             || (playMode === 'combat' ? '战斗向' : '剧情向')}
         </button>
+        <button
+          className={`top-btn${sound ? '' : ' off'}`}
+          onClick={toggleSound}
+          title={sound ? '音效：开（点击关闭）' : '音效：关（点击开启）'}
+        >
+          音效{sound ? '' : '·关'}
+        </button>
+        {/*
+          终章：排期全部走完后出现（服务端 canFinish 判定）。打完整条线的局
+          该有个正式的句点，而不是在空档里永远转下去
+        */}
+        {panel?.canFinish && !ending && (
+          <button className="top-btn" onClick={doFinish} disabled={busy} title="排期已走完——给这一局一个正式的谢幕">
+            终章
+          </button>
+        )}
         <button className="top-btn" onClick={openCrossover} title="跨越两篇之间的时间空白">跨篇</button>
         <button className="top-btn" onClick={() => setShowSaves(true)}>存档</button>
         {/* 回主页不是结束这一局：进度在服务端，回来点「继续上次」就接着走 */}
@@ -1707,12 +2060,32 @@ export default function App() {
         */}
 
         {liveCombat?.mode === 'manual' && liveCombat.actions?.length ? (
-          <ActionBar
-            actions={liveCombat.actions}
-            freeActions={freeActions}
-            onAct={(type, opts) => (opts?.free ? doFreeAction(type) : doAction(type))}
-            disabled={busy}
-          />
+          <>
+            {/*
+              自动出招：一场几十回合的手动战斗，每回合都点一下是体力活。
+              策略固定（领域 > 术式 > 防御回气 > 体术）写在按钮上 —— 玩家开着它
+              是要"省手"，不是要"托管"，随时可以关掉插一手。
+            */}
+            <div className="auto-row">
+              <button
+                className={`auto-btn${autoAct ? ' on' : ''}`}
+                onClick={() => { sfx.play('uiTick'); setAutoAct((v) => !v) }}
+                disabled={busy && !autoAct}
+                title="自动按「领域 > 术式 > 防御回气 > 体术」递招；不替你用反转术式，随时可关"
+              >
+                自动出招 · {autoAct ? '开' : '关'}
+              </button>
+              <span className="auto-hint">
+                {autoAct ? '递招中：领域 → 术式 → 防御 → 体术' : '懒得每回合点就开它'}
+              </span>
+            </div>
+            <ActionBar
+              actions={liveCombat.actions}
+              freeActions={freeActions}
+              onAct={(type, opts) => (opts?.free ? doFreeAction(type) : doAction(type))}
+              disabled={busy}
+            />
+          </>
         ) : (
           <ChoiceList
             choices={choices}
@@ -1750,6 +2123,9 @@ export default function App() {
         <GrowthPanel rows={growth} training={panel?.training} days={wheel?.days} />
         <RelationPanel relations={panel?.relations} />
         <SukunaPanel sukuna={panel?.sukuna} />
+        {/* 本局总账先于单场明细：回合、击杀、介入的正日子、黒闪 —— 玩家打出去的每一拳都该有个地方留痕 */}
+        <CareerPanel career={panel?.career} />
+        <AchievementsPanel achievements={panel?.achievements} />
         {/* 战果压在时间线上面：打完一场先看战果，再看它动了哪一天 */}
         <BattleLogPanel battles={panel?.battles} />
         <TimelinePanel timeline={panel?.timeline} />
@@ -1797,6 +2173,113 @@ export default function App() {
       {/* 演出层：领域展开过场、数值跳动的轻提示。挂在最外层，覆盖整屏 */}
       <Impact data={impact} />
       <DomainCutin data={cutins[0] || null} onDone={() => setCutins((q) => q.slice(1))} />
+      {/*
+        谢幕：打完整条排期的正式句点。overlay 底下游戏照常 —— 关掉它
+        还能继续自由游玩，句点是句点，不是锁
+      */}
+      {ending && (
+        <div className="ending-screen" role="dialog" aria-label="终章">
+          <div className="end-wash" />
+          <div className="end-body">
+            <div className="end-kanji">{ending.title}</div>
+            <div className="end-name">
+              {ending.name}
+              <span>{ending.grade} · {ending.lineName} · {ending.date}</span>
+            </div>
+            <div className="end-text">{ending.text}</div>
+            <div className="end-career">
+              {[
+                ['回合', ending.career?.turns],
+                ['交战', ending.career?.battles],
+                ['击杀', ending.career?.kills],
+                ['介入', ending.career?.interventions],
+                ['黒闪', ending.career?.blackFlash],
+                ['改写', ending.career?.changedNodes],
+              ].map(([k, v]) => (
+                <div className="end-stat" key={k}>
+                  <b>{v ?? 0}</b>
+                  <span>{k}</span>
+                </div>
+              ))}
+            </div>
+            <div className="end-actions">
+              <button className="pick-btn" onClick={() => setEnding(null)}>继续游玩</button>
+              <button
+                className="pick-btn"
+                style={{ borderColor: 'var(--line)', color: 'var(--ink-dim)' }}
+                onClick={() => { setEnding(null); goHome() }}
+              >
+                回到主页
+              </button>
+            </div>
+          </div>
+          <div className="dc-skip">故事已收束 · 世界仍在往前走</div>
+        </div>
+      )}
+
+      {/*
+        死亡谢幕层：血条归零就是真的没了。
+        没有「继续游玩」—— 死是结局。出路只有三条：从这一场开打前重来、
+        读手动存档、或者认下这一局回主页。服务端的死亡闸门同时拦着一切
+        推进性操作，这里盖不盖住都不影响正确性，只是让「结束了」被看见。
+      */}
+      {panel?.over?.dead && (
+        <div className="ending-screen tone-death" role="dialog" aria-label="死亡">
+          <div className="end-wash" />
+          <div className="end-body">
+            <div className="end-kanji death">死亡</div>
+            <div className="end-name">
+              {panel.name}
+              <span>
+                {panel.over.summary} · {panel.over.date}
+                {panel.over.turn ? ` · 第 ${panel.over.turn} 回合` : ''}
+              </span>
+            </div>
+            <div className="end-text">
+              血条归零，人是真的没了。这一局到这里结束 ——{'\n'}检查点和存档都还在，从哪里重来由你决定。
+            </div>
+            <div className="end-career">
+              {[
+                ['回合', panel.career?.turns],
+                ['交战', panel.career?.battles],
+                ['击杀', panel.career?.kills],
+                ['介入', panel.career?.interventions],
+                ['黒闪', panel.career?.blackFlash],
+                ['改写', panel.career?.changedNodes],
+              ].map(([k, v]) => (
+                <div className="end-stat" key={k}>
+                  <b>{v ?? 0}</b>
+                  <span>{k}</span>
+                </div>
+              ))}
+            </div>
+            <div className="end-actions">
+              {panel.over.checkpoint && (
+                <button className="pick-btn" onClick={retryCheckpoint} disabled={busy}>
+                  从上一场开打前重来
+                </button>
+              )}
+              <button
+                className="pick-btn"
+                style={panel.over.checkpoint ? { borderColor: 'var(--line)', color: 'var(--ink-dim)' } : undefined}
+                onClick={() => setShowSaves(true)}
+                disabled={busy}
+              >
+                读取存档
+              </button>
+              <button
+                className="pick-btn"
+                style={{ borderColor: 'var(--line)', color: 'var(--ink-dim)' }}
+                onClick={goHome}
+                disabled={busy}
+              >
+                回到主页
+              </button>
+            </div>
+          </div>
+          <div className="dc-skip">死是结局的一种 · 不是唯一的结局</div>
+        </div>
+      )}
       {/*
         处置倒下的对手。等「撃破」那一屏演完再问 —— 两件事挤在同一秒，
         玩家会先看见弹窗、过场就成了背景噪音；而打完那一下的心跳正是

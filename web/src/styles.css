@@ -133,6 +133,8 @@ body::before {
    否则玩家会以为按钮坏了，而不是"等一下就好" */
 .top-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .top-btn:disabled:hover { border-color: var(--line); color: var(--ink-dim); background: var(--bg-2); }
+/* 音效关：降一档存在感 —— 状态可见，但不和真正要紧的按钮抢眼睛 */
+.top-btn.off { opacity: 0.55; color: var(--ink-faint); }
 
 .only-narrow { display: none; }
 
@@ -1301,6 +1303,10 @@ body::before {
 @keyframes pulse { 50% { opacity: 0.35; } }
 .usage-tok { color: var(--ink-dim); }
 .usage-cost { color: var(--gold); font-weight: 600; }
+/* 本地模式徽标：一个安静的「免费」承诺，替代永远为 0 的用量表 */
+.usage.local { cursor: default; }
+.usage.local .usage-cost { color: var(--ok); }
+.usage.local:hover { border-color: var(--line); }
 
 .usage-pop {
   position: absolute;
@@ -1625,6 +1631,9 @@ body::before {
   position: fixed;
   inset: 0;
   z-index: 90;
+  transform: translateZ(0);   /* 首帧即独立合成层 —— 挂载的那一下不再挤压主树重排 */
+  contain: paint;
+  box-shadow: inset 0 0 16vmin rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1642,63 +1651,183 @@ body::before {
  * 光晕的颜色按领域**类型**给，不按是谁开的 —— "谁开的"已经由
  * 底色冷暖（.from-enemy）和正文里的我方/敌方说清楚了，
  * 而类型是玩家开完之后必须马上知道的事：这三种打法完全不同。
+ *
+ * 椭圆、微偏、低强度：一团正圆的光晕是"几何"，压扁了才是"氛围"。
  */
 .dc-wash {
   position: absolute;
-  inset: -30%;
+  inset: -20%;
   background: radial-gradient(
-    circle at 50% 50%,
-    rgba(200, 45, 34, 0.55),
-    rgba(120, 18, 12, 0.18) 42%,
-    transparent 68%
+    ellipse 58% 44% at 50% 45%,
+    rgba(200, 45, 34, 0.42),
+    rgba(120, 18, 12, 0.14) 46%,
+    transparent 72%
   );
   animation: dcWash 1200ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 .domain-cutin.tone-rule .dc-wash {
   background: radial-gradient(
-    circle at 50% 50%,
-    rgba(96, 42, 150, 0.58),
-    rgba(40, 12, 70, 0.2) 42%,
-    transparent 68%
+    ellipse 58% 44% at 50% 45%,
+    rgba(96, 42, 150, 0.44),
+    rgba(40, 12, 70, 0.16) 46%,
+    transparent 72%
   );
 }
 .domain-cutin.tone-buff .dc-wash {
   background: radial-gradient(
-    circle at 50% 50%,
-    rgba(38, 132, 86, 0.5),
-    rgba(10, 62, 40, 0.2) 42%,
-    transparent 68%
+    ellipse 58% 44% at 50% 45%,
+    rgba(38, 132, 86, 0.4),
+    rgba(10, 62, 40, 0.15) 46%,
+    transparent 72%
   );
 }
+/*
+ * 黒閃：比领域更硬的排面 —— 黑底、红裂、一瞬。
+ * 原著里它是"亿分之一秒的同步"，所以光晕收得比领域快一倍，
+ * 大字的辉光更尖锐 —— 慢了、柔了都不像挨的那一拳。
+ */
+.domain-cutin.tone-bf { background: rgba(6, 2, 2, 0.93); }
+.domain-cutin.tone-bf .dc-wash {
+  background: radial-gradient(
+    ellipse 52% 40% at 50% 46%,
+    rgba(255, 32, 18, 0.42),
+    rgba(64, 0, 0, 0.2) 38%,
+    transparent 64%
+  );
+  animation: dcWash 640ms cubic-bezier(0.1, 0.9, 0.1, 1) both;
+}
+.domain-cutin.tone-bf .dc-kanji span {
+  text-shadow:
+    0 0 18px rgba(255, 48, 30, 0.95),
+    0 0 44px rgba(255, 0, 0, 0.5),
+    0 4px 0 rgba(0, 0, 0, 0.35);
+}
+.domain-cutin.tone-bf .dc-sure { color: #ffbdb4; }
 @keyframes dcWash {
-  from { transform: scale(0.35); opacity: 0; }
+  from { transform: scale(0.55); opacity: 0; }
   55% { opacity: 1; }
-  to { transform: scale(1.05); opacity: 0.72; }
+  to { transform: scale(1.04); opacity: 0.8; }
 }
 
-/* 三层同心圆往外炸开，错开一点就成了"术式铺开"的层次 */
-.dc-rings { position: absolute; inset: 0; display: grid; place-items: center; }
-.dc-rings i {
+/*
+ * 漫画集中线：从边缘向心的一圈细线。
+ *
+ * repeating-conic-gradient 一次成像，radial-mask 只让边缘显形 ——
+ * 中心留白给大字。整层只动一次 transform（进场收紧）后归静帧：
+ * 它是背景质感，不是动画主角，常转反而吵。
+ */
+.dc-focus {
   position: absolute;
-  width: 30vmin;
-  height: 30vmin;
-  border: 2px solid rgba(255, 236, 214, 0.5);
-  border-radius: 50%;
-  /*
-   * 只动 transform 和 opacity。原来这里还夹着一个 border-width: 10px → 1px，
-   * 那是每帧重新布局一次，三个圈就是三次 —— 而这几个圈正好压在大字和
-   * 满屏光晕上面，掉帧最狠的那几帧就是它们贡献的。
-   * 变细这件事其实不用单独做：圈从 30vmin 撑到三倍，同样的 2px 边框
-   * 摊在越来越长的圆周上，看起来自然就细了。
-   */
-  animation: dcRing 1500ms cubic-bezier(0.15, 0.8, 0.2, 1) both;
+  inset: -8%;
+  will-change: transform;
+  background: repeating-conic-gradient(
+    from 0deg at 50% 50%,
+    rgba(255, 240, 220, 0.055) 0deg 0.65deg,
+    transparent 0.65deg 5.6deg
+  );
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, transparent 26%, #000 60%);
+  mask-image: radial-gradient(circle at 50% 50%, transparent 26%, #000 60%);
+  animation: dcFocus 1300ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
-.dc-rings i:nth-child(2) { animation-delay: 140ms; }
-.dc-rings i:nth-child(3) { animation-delay: 280ms; }
-@keyframes dcRing {
-  from { transform: scale(0.2); opacity: 0; }
-  30% { opacity: 0.9; }
-  to { transform: scale(3.1); opacity: 0; }
+.domain-cutin.tone-bf .dc-focus {
+  background: repeating-conic-gradient(
+    from 0deg at 50% 50%,
+    rgba(255, 90, 60, 0.09) 0deg 0.5deg,
+    transparent 0.5deg 4.6deg
+  );
+  animation-duration: 560ms;
+}
+@keyframes dcFocus {
+  from { opacity: 0; transform: scale(1.16) rotate(1.4deg); }
+  to { opacity: 1; transform: none; }
+}
+
+/*
+ * 术式阵（SVG）：刻度环 + 细点线 + 六边形法阵，双组反向缓转。
+ * SVG 的线条比 CSS border 细致得多 —— 刻度、点线、多边形这些"被设计过"
+ * 的细节是 CSS 圈圈给不了的。stroke 跟领域类型走。
+ */
+.dc-cast {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 78vmin;
+  height: 78vmin;
+  margin: -39vmin 0 0 -39vmin;
+  pointer-events: none;
+  opacity: 0.9;
+}
+.dc-cast circle, .dc-cast line, .dc-cast polygon {
+  fill: none;
+  stroke: rgba(255, 233, 201, 0.34);
+}
+.dc-cast polygon { stroke: rgba(255, 233, 201, 0.22); }
+.dc-cast-a, .dc-cast-b { transform-origin: 200px 200px; will-change: transform; }
+.dc-cast-a { animation: dcCast 52s linear infinite; }
+.dc-cast-b { animation: dcCastR 34s linear infinite; }
+.domain-cutin.tone-rule .dc-cast circle,
+.domain-cutin.tone-rule .dc-cast line { stroke: rgba(206, 170, 255, 0.4); }
+.domain-cutin.tone-rule .dc-cast polygon { stroke: rgba(206, 170, 255, 0.26); }
+.domain-cutin.tone-buff .dc-cast circle,
+.domain-cutin.tone-buff .dc-cast line { stroke: rgba(160, 235, 190, 0.36); }
+.domain-cutin.tone-buff .dc-cast polygon { stroke: rgba(160, 235, 190, 0.22); }
+@keyframes dcCast { to { transform: rotate(360deg); } }
+@keyframes dcCastR { to { transform: rotate(-360deg); } }
+
+/*
+ * 黒闪的斩线：一道横贯画面的亮线扫开，再跟一道细的回声。
+ * 斜 14 度 —— 水平线是图表，斜线是出手。
+ */
+.dc-slash { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.dc-slash i {
+  position: absolute;
+  left: -12%;
+  right: -12%;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%) rotate(-14deg) scaleX(0);
+  transform-origin: left center;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 64, 44, 0.95) 16%,
+    #fff 50%,
+    rgba(255, 64, 44, 0.95) 84%,
+    transparent
+  );
+  box-shadow: 0 0 22px rgba(255, 50, 30, 0.75);
+  animation: dcSlash 300ms cubic-bezier(0.2, 0.9, 0.2, 1) 80ms both;
+}
+.dc-slash i:nth-child(2) {
+  top: calc(50% + 5.5vmin);
+  height: 1px;
+  opacity: 0.55;
+  box-shadow: none;
+  animation-duration: 240ms;
+  animation-delay: 210ms;
+}
+@keyframes dcSlash {
+  from { transform: translateY(-50%) rotate(-14deg) scaleX(0); }
+  to { transform: translateY(-50%) rotate(-14deg) scaleX(1); }
+}
+
+/*
+ * 电影遮幅：上下两条发丝线把画面收成宽银幕。
+ * 一层横向的秩序 —— 集中线和斩线都压得住，画面不再是一块空黑。
+ */
+.dc-bar {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 236, 214, 0.5), transparent);
+  animation: dcBar 760ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.dc-bar.top { top: 11vh; }
+.dc-bar.bottom { bottom: 11vh; animation-delay: 90ms; }
+@keyframes dcBar {
+  from { opacity: 0; transform: scaleX(0.4); }
+  to { opacity: 1; transform: none; }
 }
 
 .dc-body { position: relative; padding: 0 20px; text-align: center; color: #f6efe4; }
@@ -1710,8 +1839,8 @@ body::before {
   font-weight: 700;
   line-height: 1;
   text-shadow:
-    0 0 26px rgba(255, 90, 60, 0.85),
-    0 0 62px rgba(200, 30, 20, 0.6),
+    0 0 18px rgba(255, 90, 60, 0.85),
+    0 0 40px rgba(200, 30, 20, 0.55),
     0 4px 0 rgba(0, 0, 0, 0.35);
   /*
    * 字是从模糊里凝出来的，但那个模糊**不能**做在动画里：
@@ -1809,24 +1938,24 @@ body::before {
 .domain-cutin.is-outcome { background: rgba(8, 6, 5, 0.93); }
 .domain-cutin.tone-win .dc-wash {
   background: radial-gradient(
-    circle at 50% 50%,
-    rgba(198, 148, 44, 0.52),
-    rgba(96, 66, 8, 0.18) 42%,
-    transparent 68%
+    ellipse 56% 42% at 50% 45%,
+    rgba(198, 148, 44, 0.4),
+    rgba(96, 66, 8, 0.14) 46%,
+    transparent 72%
   );
 }
 .domain-cutin.tone-lose .dc-wash {
   background: radial-gradient(
-    circle at 50% 50%,
-    rgba(136, 26, 18, 0.55),
-    rgba(52, 8, 6, 0.2) 42%,
-    transparent 68%
+    ellipse 56% 42% at 50% 45%,
+    rgba(136, 26, 18, 0.42),
+    rgba(52, 8, 6, 0.16) 46%,
+    transparent 72%
   );
 }
 .domain-cutin.tone-win .dc-kanji span {
   text-shadow:
-    0 0 26px rgba(255, 206, 110, 0.9),
-    0 0 62px rgba(198, 148, 44, 0.65),
+    0 0 18px rgba(255, 206, 110, 0.9),
+    0 0 40px rgba(198, 148, 44, 0.6),
     0 4px 0 rgba(0, 0, 0, 0.35);
 }
 .domain-cutin.is-outcome .dc-name { letter-spacing: 0.24em; text-indent: 0.24em; }
@@ -1879,23 +2008,36 @@ body::before {
 @keyframes imEdge { from { opacity: 0.92; } to { opacity: 0; } }
 
 /*
- * 炸开的那一圈落在哪一侧：打对方炸左上（那张卡在左栏上半），
- * 自己挨打炸左下（我方那张卡在左栏下半）。不用看字就知道这回合谁挨了。
+ * 命中点的冲击环：椭圆细环从命中点扩散、消散。
+ *
+ * 原来是一团 radial-gradient 圆斑 —— 糊。细环（2px 边）扩散是"冲击波"：
+ * 方向可读（横宽纵窄），落点可读（环心就是命中点），消散干脆。
+ * 颜色跟 tone 走：暴击更红、必中偏紫、挨打压向血色。
  */
-.impact .im-burst {
-  background: radial-gradient(
-    circle at var(--im-at, 22% 30%),
-    transparent 0,
-    rgba(255, 120, 80, 0.4) 17%,
-    transparent 46%
-  );
-  animation: imBurst 440ms cubic-bezier(0.15, 0.8, 0.25, 1) both;
+.impact .im-burst { background: none; }
+.impact .im-burst::before {
+  content: "";
+  position: absolute;
+  left: var(--im-x, 22%);
+  top: var(--im-y, 30%);
+  width: 38vmin;
+  height: 24vmin;
+  border: 2px solid rgba(255, 150, 110, 0.8);
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(0.35);
+  animation: imBurst 460ms cubic-bezier(0.15, 0.8, 0.25, 1) both;
 }
-.impact.from-enemy .im-burst { --im-at: 22% 30%; }
-.impact.from-self .im-burst { --im-at: 22% 70%; }
+.impact.tone-crit .im-burst::before {
+  border-color: rgba(255, 96, 60, 0.95);
+  box-shadow: 0 0 26px rgba(255, 60, 30, 0.45);
+}
+.impact.tone-sure .im-burst::before { border-color: rgba(196, 146, 255, 0.9); }
+.impact.tone-taken .im-burst::before { border-color: rgba(255, 74, 50, 0.85); }
+.impact.from-enemy .im-burst { --im-x: 22%; --im-y: 30%; }
+.impact.from-self .im-burst { --im-x: 22%; --im-y: 70%; }
 @keyframes imBurst {
-  from { opacity: 0.95; transform: scale(0.55); }
-  to { opacity: 0; transform: scale(1.25); }
+  from { opacity: 0.95; transform: translate(-50%, -50%) scale(0.35); }
+  to { opacity: 0; transform: translate(-50%, -50%) scale(1.3); }
 }
 
 /*
@@ -1997,6 +2139,14 @@ body::before {
   text-shadow: 0 0 14px rgba(200, 45, 34, 0.55);
 }
 .float-dmg.k-sure { color: var(--tier); text-shadow: 0 0 14px rgba(107, 53, 150, 0.45); }
+/* 黒闪的数字：黑描边 + 红芯 —— 和特写同一套视觉语言，全屏认得出 */
+.float-dmg.k-bf {
+  color: #ff3b2a;
+  text-shadow:
+    0 0 10px rgba(255, 48, 30, 0.85),
+    0 0 34px rgba(255, 0, 0, 0.5),
+    0 2px 0 rgba(0, 0, 0, 0.7);
+}
 .float-dmg.k-heal { color: var(--ok); }
 /* 按"这一下占血条多少"分级：大伤害要一眼看出是大的 */
 .float-dmg.big { font-size: 24px; }
@@ -2193,6 +2343,12 @@ body::before {
   font-size: 11px;
   letter-spacing: 0.1em;
 }
+/* 黒闪徽记：实心红底 —— 比普通暴击重一档，一眼分得出来 */
+.beat .bt-crit.bf {
+  background: rgba(168, 35, 27, 0.85);
+  color: #ffe9e5;
+  font-weight: 700;
+}
 .beat .bt-miss { color: var(--ink-faint); font-size: 11.5px; }
 /* 领域追斩是"环境在替你补刀"，和自己那一手区分开 */
 .beat .bt-dmg.tick, .beat .bt-heal.tick, .beat .bt-ce.tick { color: var(--tier); }
@@ -2322,8 +2478,8 @@ body::before {
  * 只保留"出现了"这个事实（animation-fill-mode: both 的终态），去掉过程。
  */
 @media (prefers-reduced-motion: reduce) {
-  .dc-wash, .dc-rings i, .dc-kanji span { animation: none; }
-  .dc-rings { display: none; }
+  .dc-wash, .dc-focus, .dc-kanji span, .dc-bar { animation: none; }
+  .dc-cast, .dc-slash i { animation: none; display: none; }
   .float-dmg, .bar-flash, .combo-row .combo-n, .crit-chip, .toast, .ws-landed { animation: none; }
   .beat, .seal-chip { animation: none; }
   .domain-aura .da-ring { display: none; }
@@ -2341,4 +2497,327 @@ body::before {
   .impact .im-flash { animation: none; opacity: 0; }
   .impact .im-burst { display: none; }
   .impact .im-edge { animation: none; opacity: 0.75; }
+}
+
+/* ------------------------------------------------------------ 黑闪累计 / 玩法速览 */
+
+/* StatusPanel 里的黒闪累计：红点串 + 数字，攒量可见 */
+.bf-tally {
+  color: #ff5f4d;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 开始屏「玩法速览」：收起是一行链接，展开是五条要点 —— 新玩家没有说明书可翻 */
+details.howto { margin-top: 10px; }
+details.howto summary {
+  cursor: pointer;
+  color: var(--ink-dim);
+  font-size: 12.5px;
+  letter-spacing: 0.08em;
+  user-select: none;
+  list-style: none;
+}
+details.howto summary::-webkit-details-marker { display: none; }
+details.howto summary::before { content: '▸ '; color: var(--blood); }
+details.howto[open] summary::before { content: '▾ '; }
+details.howto summary:hover { color: var(--gold); }
+details.howto .howto-body {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: var(--bg-2);
+  font-size: 12.5px;
+  line-height: 1.85;
+  color: var(--ink-dim);
+}
+details.howto .howto-body b { color: var(--ink); font-weight: 600; }
+
+/* ------------------------------------------------------------ 自动出招 / 本局战绩 */
+
+/* 手动战斗的自动出招开关：长在行动栏正上方，一眼可及、一手可关 */
+.auto-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 2px 8px;
+}
+.auto-btn {
+  font: inherit;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg-2);
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.auto-btn:hover { border-color: var(--gold); color: var(--gold); }
+.auto-btn.on {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: rgba(190, 150, 60, 0.08);
+}
+.auto-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.auto-hint { font-size: 11.5px; color: var(--ink-faint); letter-spacing: 0.04em; }
+
+/* 本局战绩：读数卡，不抢戏 —— 数字对齐，行距紧凑 */
+.panel.career .kv { font-size: 12.5px; padding: 2.5px 0; }
+.panel.career .kv span:last-child {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------ 节点过场 / 谢幕 */
+
+/* 原作节点当天的大字过场：冷紫墨色 —— 时间的重量，不是战斗的红 */
+.domain-cutin.tone-node { background: rgba(10, 8, 16, 0.9); }
+.domain-cutin.tone-node .dc-wash {
+  background: radial-gradient(
+    ellipse 56% 42% at 50% 45%,
+    rgba(84, 60, 140, 0.4),
+    rgba(24, 14, 44, 0.16) 44%,
+    transparent 70%
+  );
+}
+.domain-cutin.tone-node .dc-kanji span {
+  font-size: clamp(26px, 7.2vw, 68px);
+  text-shadow:
+    0 0 18px rgba(160, 120, 230, 0.7),
+    0 0 60px rgba(90, 50, 160, 0.5),
+    0 4px 0 rgba(0, 0, 0, 0.4);
+}
+.domain-cutin.tone-node .dc-type { border-color: rgba(206, 170, 255, 0.5); color: #e6d4ff; }
+.domain-cutin.tone-node .dc-sure { color: #cfc0e8; max-width: min(560px, 86vw); line-height: 1.8; }
+
+/* 谢幕：整局的句点。比过场更安静 —— 慢进、留白、可回看 */
+.ending-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 6, 5, 0.94);
+  animation: dcIn 700ms ease-out both;
+}
+.end-wash {
+  position: absolute;
+  inset: -30%;
+  background: radial-gradient(
+    circle at 50% 42%,
+    rgba(150, 110, 40, 0.24),
+    rgba(30, 22, 10, 0.16) 46%,
+    transparent 70%
+  );
+  animation: dcWash 2200ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.end-body {
+  position: relative;
+  max-width: min(640px, 90vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 28px 26px;
+  text-align: center;
+  color: #f6efe4;
+}
+.end-kanji {
+  font-family: var(--font-narr);
+  font-size: clamp(44px, 10vw, 84px);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-shadow: 0 0 30px rgba(230, 190, 110, 0.5), 0 4px 0 rgba(0, 0, 0, 0.35);
+  animation: dcKanji 900ms cubic-bezier(0.18, 0.9, 0.25, 1.2) both;
+}
+.end-name {
+  margin-top: 14px;
+  font-size: 17px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.end-name span { font-size: 12.5px; color: var(--ink-faint); letter-spacing: 0.08em; }
+.end-text {
+  margin-top: 20px;
+  font-size: 14px;
+  line-height: 2;
+  text-align: left;
+  white-space: pre-line;
+  color: #e8ddca;
+  border-top: 1px solid rgba(255, 236, 214, 0.14);
+  border-bottom: 1px solid rgba(255, 236, 214, 0.14);
+  padding: 18px 6px;
+}
+.end-career {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+}
+.end-stat { display: flex; flex-direction: column; gap: 2px; }
+.end-stat b {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  color: var(--gold);
+}
+.end-stat span { font-size: 11px; color: var(--ink-faint); letter-spacing: 0.1em; }
+.end-actions { margin-top: 22px; display: flex; gap: 10px; justify-content: center; }
+.end-actions .pick-btn { min-width: 132px; }
+@media (max-width: 560px) {
+  .end-career { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* ------------------------------------------------------------ 台词块 / 回执筹码 */
+
+/*
+ * 台词：说话人做成小铭牌，正文留出呼吸。
+ * 左侧那道渐隐的竖线保留 —— 它是"有人在说话"的空间信号，
+ * 但从生硬的实线换成向下消隐，读到这里自然收进下一段旁白。
+ */
+.line { border-left: none; padding-left: 14px; position: relative; }
+.line::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 3px;
+  bottom: 2px;
+  width: 2px;
+  background: linear-gradient(180deg, var(--blood) 0%, rgba(168, 35, 27, 0.16) 100%);
+}
+.line .who {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 9px;
+  border: 1px solid rgba(168, 35, 27, 0.38);
+  border-radius: 2px;
+  background: rgba(168, 35, 27, 0.07);
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  color: var(--blood);
+  font-weight: 600;
+}
+
+/*
+ * 引擎回执筹码：一行行小圆片。
+ * 收益条描绿 —— 一回合十来条里，"哪些是好消息"要能一扫而过。
+ */
+.note-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 18px;
+}
+.note-chips > div {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  background: var(--bg-3);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-dim);
+  letter-spacing: 0.02em;
+}
+.note-chips > div.up {
+  border-color: rgba(63, 138, 88, 0.42);
+  background: rgba(43, 110, 70, 0.08);
+  color: var(--ok);
+}
+.note-chips > div.up::before { content: "▲ "; font-size: 9.5px; }
+
+/* ------------------------------------------------------------ 节点竖排 / 死亡 */
+
+/*
+ * 节点过场在宽屏上是「卷轴」版式：节点名竖排在左，场景描述横排在右 ——
+ * 它是章节的扉页，不是战斗的宣言。窄屏退回居中竖排（自然可读）。
+ */
+@media (min-width: 640px) {
+  .domain-cutin.tone-node .dc-body {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: clamp(22px, 4.5vw, 52px);
+    align-items: center;
+    text-align: left;
+    max-width: min(760px, 88vw);
+  }
+  .domain-cutin.tone-node .dc-kanji { flex-direction: column; gap: 3px; }
+  .domain-cutin.tone-node .dc-type { margin-top: 0; justify-self: start; }
+  .domain-cutin.tone-node .dc-name { margin-top: 8px; letter-spacing: 0.2em; }
+  .domain-cutin.tone-node .dc-sure {
+    max-width: 46ch;
+    text-align: left;
+    letter-spacing: 0.05em;
+    line-height: 2.1;
+  }
+}
+
+/* 死亡：血色的谢幕。与金色终章同一副骨架，温度完全相反 */
+.ending-screen.tone-death { background: rgba(10, 4, 4, 0.95); }
+.ending-screen.tone-death .end-wash {
+  background: radial-gradient(
+    ellipse 56% 42% at 50% 45%,
+    rgba(168, 35, 27, 0.3),
+    rgba(60, 6, 4, 0.18) 46%,
+    transparent 72%
+  );
+}
+.ending-screen.tone-death .end-kanji.death {
+  color: #ff5f4d;
+  text-shadow:
+    0 0 20px rgba(255, 60, 40, 0.8),
+    0 0 52px rgba(200, 20, 10, 0.5),
+    0 4px 0 rgba(0, 0, 0, 0.4);
+}
+.ending-screen.tone-death .end-stat b { color: #ff8a7a; }
+
+/* ------------------------------------------------------------ 成就 / 词缀 */
+
+/* 成就面板：达成亮星、未达成灰星 —— 目标看得见，才有人想去够 */
+.panel.ach .ach-count {
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.ach-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 3px 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.ach-row .ach-mark { width: 14px; flex: none; color: var(--ink-faint); }
+.ach-row.done .ach-mark { color: var(--gold); }
+.ach-row .ach-name { color: var(--ink-dim); flex: none; }
+.ach-row.done .ach-name { color: var(--gold); font-weight: 600; }
+.ach-row .ach-desc {
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ach-row.done .ach-desc { color: var(--ink-dim); }
+
+/* 词缀标签：紫底描边 —— 区别于原作校正的血色 */
+.canon-tag.affix {
+  border-color: rgba(126, 87, 194, 0.45);
+  color: #cdbcf0;
+  background: rgba(107, 53, 150, 0.08);
+}
+
+/* ------------------------------------------------------------ 援护 chip */
+
+/* 战斗栏回合行里的援护标：金边小签 —— 有人替你挡了这一手，得被看见 */
+.combat-round .backup-chip {
+  color: var(--gold);
+  border: 1px solid rgba(190, 150, 60, 0.4);
+  border-radius: 2px;
+  padding: 1px 8px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
 }

@@ -16,17 +16,22 @@ const DOMAIN_COST_RATIO = 0.08
 /**
  * 开局属性档案由引擎掷骰，模型只负责"术式叫什么、天赋标签叫什么"。
  * 这样能保证数值永远落在设定表区间内，模型不会掷出 999999 的咒力。
+ *
+ * forcedGrade：开局五档用的定点掷骰 —— 档位由调用方指定（二级/一级/各特级），
+ * 各项属性不再 ±1 级漂移，综合等级精确等于指定档位。中位等级的随机手感
+ * 保留在不带此参数的调用里（敌方生成等）。
  */
-export function rollAttributeProfile(rng, slot) {
-  const overall = weightedPick(rng, INITIAL_WEIGHTS)
+export function rollAttributeProfile(rng, slot, forcedGrade = null) {
+  const overall = forcedGrade || weightedPick(rng, INITIAL_WEIGHTS)
+  const shift = (g) => (forcedGrade ? g : shiftGrade(g, pickByProb(rng, ATTR_SHIFT)))
 
   const attr = (key) => {
-    const g = shiftGrade(overall, pickByProb(rng, ATTR_SHIFT))
+    const g = shift(overall)
     const [lo, hi] = RANGES[g][key]
     return { value: rint(rng, lo, hi), grade: g }
   }
 
-  const techGrade = shiftGrade(overall, pickByProb(rng, ATTR_SHIFT))
+  const techGrade = shift(overall)
 
   const profile = {
     slot,
@@ -36,7 +41,7 @@ export function rollAttributeProfile(rng, slot) {
     cursedDamage: { ...attr('cd'), label: '咒术伤害' },
     physicalDamage: { ...attr('pd'), label: '体术伤害' },
     efficiency: (() => {
-      const g = shiftGrade(overall, pickByProb(rng, ATTR_SHIFT))
+      const g = shift(overall)
       // 效率在设定表里是固定值，围绕它做 ±5% 浮动保留随机感
       return { value: Number((RANGES[g].eff * rfloat(rng, 0.95, 1.05)).toFixed(2)), grade: g, label: '咒力效率' }
     })(),

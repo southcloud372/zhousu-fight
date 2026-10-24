@@ -45,6 +45,9 @@ export function SaveModal({ sessionId, onLoad, onClose }) {
     }
   }
 
+  // 删除的两段确认：误触一下不会丢档 —— 丢档是这里唯一不可逆的操作
+  const [confirmId, setConfirmId] = useState(null)
+
   const doDelete = async (id) => {
     setBusy(true); setErr('')
     try {
@@ -106,11 +109,11 @@ export function SaveModal({ sessionId, onLoad, onClose }) {
               </button>
               <button
                 className="pick-btn"
-                style={{ width: 62, padding: '5px 0', fontSize: 12.5, borderColor: 'var(--line)', color: 'var(--ink-dim)' }}
-                onClick={() => doDelete(s.id)}
+                style={{ width: 62, padding: '5px 0', fontSize: 12.5, borderColor: confirmId === s.id ? 'var(--blood)' : 'var(--line)', color: confirmId === s.id ? 'var(--blood)' : 'var(--ink-dim)' }}
+                onClick={() => (confirmId === s.id ? doDelete(s.id) : setConfirmId(s.id))}
                 disabled={busy}
               >
-                删除
+                {confirmId === s.id ? '确认删除？' : '删除'}
               </button>
             </div>
           ))

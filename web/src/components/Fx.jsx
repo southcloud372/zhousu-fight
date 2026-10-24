@@ -125,8 +125,10 @@ export function DomainCutin({ data, onDone }) {
   const doneRef = useRef(onDone)
   doneRef.current = onDone
 
-  // 收场那一拍比领域多留半秒：它后面还接着战果结算，急着走会显得草率
-  const hold = data?.kind === 'win' || data?.kind === 'lose' ? 3100 : 2600
+  // 收场那一拍比领域多留半秒：它后面还接着战果结算，急着走会显得草率；
+  // 黑闪则短得多 —— 它就是一瞬的事，拖长了反而不像
+  const hold = data?.kind === 'bf' ? 2100
+    : (['win', 'lose', 'retreat'].includes(data?.kind) ? 3100 : 2600)
 
   useEffect(() => {
     if (!data) return undefined
@@ -136,10 +138,18 @@ export function DomainCutin({ data, onDone }) {
   }, [data, hold])
 
   if (!data) return null
-  const outcome = data.kind === 'win' || data.kind === 'lose'
+  const outcome = data.kind === 'win' || data.kind === 'lose' || data.kind === 'retreat'
+  const bf = data.kind === 'bf'
+  // 节点过场：原作大日子的大字（涩谷事变、最终决战…），节点名就是那几个字
+  const isNode = data.kind === 'node'
   const enemy = data.side === 'enemy'
-  const tone = outcome ? data.kind : (DOMAIN_TONE[data.type] || 'dmg')
-  const kanji = outcome ? (data.kind === 'win' ? '撃破' : '敗北') : '領域展開'
+  // retreat 借用 win 的金色 —— 击退也是一场胜果
+  const tone = outcome ? (data.kind === 'retreat' ? 'win' : data.kind) : bf ? 'bf' : isNode ? 'node' : (DOMAIN_TONE[data.type] || 'dmg')
+  const kanji = outcome
+    ? (data.kind === 'win' ? '撃破' : data.kind === 'retreat' ? '撃退' : '敗北')
+    : bf ? '黒閃'
+      : isNode ? (data.name || '')
+        : '領域展開'
 
   return (
     <div
@@ -147,10 +157,47 @@ export function DomainCutin({ data, onDone }) {
       onClick={() => doneRef.current?.()}
       role="presentation"
     >
+      {/*
+        视觉语言：漫画分镜，不是几何圆。
+          dc-focus  集中线 —— 从边缘向心的一圈细线，只在边缘显形
+          dc-cast   术式阵 —— SVG 法阵：刻度环 + 六边形，双组反向缓转
+          dc-slash  斩线 —— 黒闪专用的一道横斩
+          dc-bar    遮幅 —— 上下两条发丝线，把画面收成宽银幕
+      */}
+      <div className="dc-focus" aria-hidden="true" />
+      {!outcome && !bf && !isNode && (
+        <svg className="dc-cast" viewBox="0 0 400 400" aria-hidden="true">
+          {/* 外组：刻度环（粗虚线 + 细点线 + 12 道刻度），顺时针缓转 */}
+          <g className="dc-cast-a">
+            <circle cx="200" cy="200" r="190" strokeDasharray="12 16" />
+            <circle cx="200" cy="200" r="172" strokeDasharray="2 7" />
+            {Array.from({ length: 12 }, (_, i) => {
+              const a = (i * 30 * Math.PI) / 180
+              return (
+                <line
+                  key={i}
+                  x1={(200 + 174 * Math.cos(a)).toFixed(2)}
+                  y1={(200 + 174 * Math.sin(a)).toFixed(2)}
+                  x2={(200 + 190 * Math.cos(a)).toFixed(2)}
+                  y2={(200 + 190 * Math.sin(a)).toFixed(2)}
+                />
+              )
+            })}
+          </g>
+          {/* 内组：六边形法阵 + 短弧环，逆时针缓转 */}
+          <g className="dc-cast-b">
+            <polygon points={Array.from({ length: 6 }, (_, i) => {
+              const a = ((i * 60 + 30) * Math.PI) / 180
+              return `${(200 + 118 * Math.cos(a)).toFixed(2)},${(200 + 118 * Math.sin(a)).toFixed(2)}`
+            }).join(' ')} />
+            <circle cx="200" cy="200" r="136" strokeDasharray="30 12" />
+          </g>
+        </svg>
+      )}
+      {bf && <div className="dc-slash" aria-hidden="true"><i /><i /></div>}
+      <div className="dc-bar top" aria-hidden="true" />
+      <div className="dc-bar bottom" aria-hidden="true" />
       <div className="dc-wash" />
-      <div className="dc-rings" aria-hidden="true">
-        <i /><i /><i />
-      </div>
 
       <div className="dc-body">
         <div className="dc-kanji" aria-label={outcome ? kanji : '领域展开'}>
@@ -160,7 +207,8 @@ export function DomainCutin({ data, onDone }) {
         </div>
 
         {!outcome && data.type && <div className="dc-type">{data.type}</div>}
-        <div className="dc-name">{data.name}</div>
+        {/* 节点过场的大字就是节点名，dc-name 再写一遍就重了 */}
+        {!isNode && <div className="dc-name">{data.name}</div>}
 
         {!outcome && data.sureHit && <div className="dc-sure">{data.sureHit}</div>}
         {outcome && data.summary && <div className="dc-sure">{data.summary}</div>}
@@ -386,7 +434,8 @@ function BeatLine({ who, side, b, ticks, delay }) {
     if (b.damage > 0) bits.push(<b className="bt-dmg" key="d">−{n(b.damage)}</b>)
     if (b.healed > 0) bits.push(<b className="bt-heal" key="h">+{n(b.healed)}</b>)
     if (b.recovered > 0) bits.push(<span className="bt-ce" key="c">咒力 +{n(b.recovered)}</span>)
-    if (b.crit) bits.push(<span className="bt-crit" key="k">暴击</span>)
+    if (b.blackFlash) bits.push(<span className="bt-crit bf" key="bf">黒闪</span>)
+    else if (b.crit) bits.push(<span className="bt-crit" key="k">暴击</span>)
     if (b.staggered) bits.push(<span className="bt-miss" key="s">被打断</span>)
     if (b.fizzled) bits.push(<span className="bt-miss" key="f">{MISS_LABEL[b.kind] || '没生效'}</span>)
   }

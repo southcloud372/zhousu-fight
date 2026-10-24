@@ -79,6 +79,11 @@ export function enemyProfile(unit) {
      */
     canon: !!unit.canon,
     canonNote: unit.canonNote || '',
+    // 精英词缀：名字前缀 + 可读的规则说明（战斗乘区在 combat.js / elite.js）
+    affixes: unit.affixes || [],
+    affixDesc: unit.affixDesc || '',
+    // 无下限之类的被动屏障：档案里要看见，决策才知道该攒领域
+    barrier: unit.barrier || null,
     archetype: unit.archetype || '',
     archetypeNote: ARCHETYPE_NOTE[unit.archetype] || '',
     hp: { cur: unit.hp?.cur ?? 0, max: unit.hp?.max ?? 0 },

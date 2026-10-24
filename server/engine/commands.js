@@ -87,7 +87,12 @@ export function rollTraining(state, item, rng) {
 }
 
 /** 进度满 100% 时数值 +10%。等级本身没有突破门槛，堆够了就升 */
-export function applyTraining(state, result) {
+/**
+ * 把一天修炼的进度写进角色。
+ * opts.noTime：同一天里的第二次结算（轮盘的顿悟翻倍）不再推进时间 ——
+ * 这里的「过一天」是修炼本身的成本，顿悟是同一天里的第二份收获。
+ */
+export function applyTraining(state, result, opts = {}) {
   const p = state.player
   const ups = []
   const add = (p.training[result.item] || 0) + result.progress * 100
@@ -146,7 +151,7 @@ export function applyTraining(state, result) {
   }
 
   state.time.skipStreak += 1
-  advanceTime(state, '1d')
+  if (!opts.noTime) advanceTime(state, '1d')
   return ups
 }
 

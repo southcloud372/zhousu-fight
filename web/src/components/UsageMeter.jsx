@@ -27,12 +27,25 @@ const ZERO = {
  * usage 为 null 时显示 0 而不是隐藏 —— 开始界面和开局选卡那几屏也要能看到它，
  * 否则玩家压根不知道这功能在哪，而开局生成恰恰是最花钱的一步。
  * 点击展开明细（也支持悬停；触屏没有 hover，所以点击是必需的）。
+ *
+ * engine === 'local' 时整块换成「本地模式 · 零 token」徽标 ——
+ * 本地局挂一个永远为 0 的用量表，读起来像坏了，不像免费。
  */
-export function UsageMeter({ usage }) {
+export function UsageMeter({ usage, engine }) {
   const [open, setOpen] = useState(false)
   const u = usage || ZERO
   const idle = !usage // 还没开始跑，只有零值
   const estimated = !!u.estimated
+
+  if (engine === 'local') {
+    return (
+      <div className="usage local" title="本地模式：预设剧情 + 引擎叙事，全程不调用模型">
+        <span className="usage-dot" data-live="0" />
+        <span className="usage-tok">本地模式</span>
+        <span className="usage-cost">零 token</span>
+      </div>
+    )
+  }
 
   return (
     <div

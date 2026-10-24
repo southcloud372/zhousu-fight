@@ -9,9 +9,18 @@ async function req(url, opts = {}) {
   return r.json()
 }
 
-export const newSession = () => req('/api/session', { method: 'POST' })
+// engine: 'ai'（默认，token 模式）| 'local'（预设剧情，不调模型）
+export const newSession = (engine) =>
+  req('/api/session', { method: 'POST', headers: J, body: JSON.stringify(engine ? { engine } : {}) })
 export const listStorylines = () => req('/api/storylines')
 export const listPlayModes = () => req('/api/play-modes')
+
+// 本地模式：预设列表与「选预设即开局」
+export const listPresets = () => req('/api/presets')
+export const choosePreset = (id, presetId, playMode) =>
+  req(`/api/session/${id}/choose-preset`, {
+    method: 'POST', headers: J, body: JSON.stringify({ presetId, playMode }),
+  })
 export const setPlayMode = (id, mode) =>
   req(`/api/session/${id}/play-mode`, { method: 'POST', headers: J, body: JSON.stringify({ mode }) })
 export const chooseStoryline = (id, sid, playMode) =>
@@ -120,6 +129,10 @@ export const listSaves = () => req('/api/saves')
 export const saveGame = (id, name) =>
   req(`/api/session/${id}/save`, { method: 'POST', headers: J, body: JSON.stringify({ name }) })
 export const loadSave = (sid) => req(`/api/saves/${sid}/load`, { method: 'POST' })
+
+// 从检查点重来：恢复到最近一场战斗开打前（死亡后的官方后悔药）
+export const loadCheckpoint = (sessionId) =>
+  req('/api/saves/checkpoint/load', { method: 'POST', headers: J, body: JSON.stringify({ sessionId }) })
 export const deleteSave = (sid) => req(`/api/saves/${sid}`, { method: 'DELETE' })
 export const getLog = (id) => req(`/api/session/${id}/log`)
 export const getUsage = (id) => req(`/api/session/${id}/usage`)
@@ -145,3 +158,6 @@ export const combatEvade = (id) => req(`/api/session/${id}/combat/evade`, { meth
 // 那一下的正文由紧随其后的那次剧情回合来写
 export const combatDispose = (id, kill) =>
   req(`/api/session/${id}/combat/dispose`, { method: 'POST', headers: J, body: JSON.stringify({ kill: !!kill }) })
+
+// 谢幕：打完整条排期后的正式句点（文案由服务端按战绩生成，不调模型）
+export const finishGame = (id) => req(`/api/session/${id}/finish`, { method: 'POST', headers: J })

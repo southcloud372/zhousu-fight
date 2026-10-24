@@ -161,9 +161,9 @@ test('填了脏数据当作没填，不会把数值打成 0 或 NaN', () => {
 test('等级由数字反推，不是玩家点单的', () => {
   const p = rolled()
   const t = tuneAttributeProfile(p, {
-    ce: 5000000, hp: 800000, cursedDamage: 120000, physicalDamage: 50000, efficiency: 130,
+    ce: 800000, hp: 250000, cursedDamage: 20000, physicalDamage: 10000, efficiency: 130,
   })
-  assert.equal(t.ce.value, 5000000)
+  assert.equal(t.ce.value, 800000)
   assert.equal(t.ce.grade, '超特级', '数值顶格了，等级就该跟着顶格')
   assert.equal(t.hp.grade, '超特级')
   assert.equal(t.cursedDamage.grade, '超特级')
@@ -256,7 +256,7 @@ test('调到特级时档位名跟着综合等级变', () => {
 test('调过的档案能直接被 buildPlayer 吃下去（等级、领域、防御都要对得上）', () => {
   const p = rolled()
   const t = tuneAttributeProfile(p, {
-    ce: 5000000, hp: 800000, cursedDamage: 120000, physicalDamage: 50000,
+    ce: 800000, hp: 250000, cursedDamage: 20000, physicalDamage: 10000,
     efficiency: 130, techniqueMultiplier: 4.5, techniqueCooldown: 2,
   })
   const flavor = {
@@ -266,8 +266,8 @@ test('调过的档案能直接被 buildPlayer 吃下去（等级、领域、防�
   }
   const unit = buildPlayer(t, flavor, { kind: '穿越者', age: 17 }, flavor)
   assert.equal(unit.grade, '超特级')
-  assert.equal(unit.ce.max, 5000000)
-  assert.equal(unit.hp.max, 800000)
+  assert.equal(unit.ce.max, 800000)
+  assert.equal(unit.hp.max, 250000)
   assert.equal(unit.efficiency.value, 1.3)
   assert.equal(unit.technique.multiplier, 4.5)
   assert.equal(unit.technique.cooldown, 2)

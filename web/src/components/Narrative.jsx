@@ -18,13 +18,18 @@ function Dialogue({ lines }) {
   )
 }
 
+/**
+ * 引擎回执的一回合小账：数值落地、夹紧修正、原作校正……
+ * 渲染成一行行**筹码**而不是竖排流水 —— 它是附属信息，不该和正文抢版面；
+ * 有收益的那几条（→ / +）描金边，扫一眼就知道这回合赚没赚。
+ */
 function Notes({ notes }) {
   if (!notes?.length) return null
   return (
-    <div className="notes">
+    <div className="note-chips">
       {notes.map((n, i) => (
         <div key={i} className={n.includes('→') || n.includes('+') ? 'up' : ''}>
-          · {n}
+          {n}
         </div>
       ))}
     </div>
@@ -89,7 +94,17 @@ function WheelLog({ e }) {
   )
 }
 
-function Entry({ e }) {
+/**
+ * 单条日志。
+ *
+ * React.memo 是长局的性能保票：日志条目一旦写入就不再变，但每来一条新
+ * 正文，整个 entries 数组都会触发一次重渲染 —— 没有 memo 的话，几百条
+ * 旧条目每回合都要白白重跑一遍。包上之后，只有真正新增的那条会渲染。
+ */
+const Entry = React.memo(function Entry({ e }) {
+  if (e.kind === 'pruned') {
+    return <div className="turn-sep">—— 更早的剧情已折叠 · 完整记录在服务端存档里 ——</div>
+  }
   if (e.kind === 'player') {
     return <div className="player-input">{e.text}</div>
   }
@@ -142,7 +157,7 @@ function Entry({ e }) {
       <Notes notes={e.notes} />
     </>
   )
-}
+})
 
 /**
  * 打字机队列。
@@ -385,7 +400,10 @@ export function NarrativeLog({ entries, streaming, busy, liveCombat, onSkip }) {
  * 之前它混在选项下面不太显眼，现在单独一行并加了标题。
  */
 export function ChoiceList({ choices, onPick, disabled, recap }) {
-  const [free, setFree] = React.useState('')
+  // 预填上一次手写的行动 —— 常用动作（修炼一天的描述、固定的话术）不用每次重打
+  const [free, setFree] = React.useState(() => {
+    try { return localStorage.getItem('sunuo:lastAction') || '' } catch { return '' }
+  })
   const [collapsed, setCollapsed] = React.useState(false)
   const trimmed = free.trim()
   const count = choices.length

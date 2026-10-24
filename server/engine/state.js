@@ -8,6 +8,21 @@ import { DEFAULT_PLAY_MODE, playModeOf } from './playmodes.js'
 import { initialNodes, nextMilestone, firstPoint } from './timeline.js'
 import { normalizeDomainType, defaultDomainTypeFor, domainTypeOf, domainKit } from './domains.js'
 import { noteDeath } from './plotdeps.js'
+import { endingReady } from './ending.js'
+import { battleForecast } from './elite.js'
+import { achievementView } from './achievements.js'
+
+/**
+ * 脱离成功率（第一节：速度由体术伤害与咒力效率判定）。
+ * combat.js 里有一份同款 unitSpeed —— 那边 import 了这边的 applyGradeUp，
+ * 反向引用会成环，所以这里内联这一小段公式（两处都有一句注释指着对方）。
+ */
+function evadeChanceOf(player, enemy) {
+  const speed = (u) => u.physicalDamage.value * 0.5 + u.efficiency.value * 100
+  const a = speed(player)
+  const b = speed(enemy)
+  return Number(Math.max(0.1, Math.min(0.85, a / (a + b))).toFixed(3))
+}
 
 export const GAME_START_DATE = '2018-06-05'
 
@@ -33,6 +48,71 @@ export function initialFingers(storylineId) {
   return storylineId === DEFAULT_STORYLINE
     ? { fingersCollected: 1, fingersEaten: 1, fingersPlayerEaten: 0 }
     : { fingersCollected: 0, fingersEaten: 0, fingersPlayerEaten: 0 }
+}
+
+/**
+ * 界面日志的上限。
+ *
+ * log 是「给玩家回看」的，不是账本 —— 更早的剧情由编年史（chronicle）和
+ * 战果（battles）各自留存。没有上限的话，几百回合的存档每次落盘都在
+ * 序列化全部历史正文，存档体积和 persist 耗时都线性膨胀。
+ * 超限就成批裁掉最老的（一次 slice，比每次 push 都 splice 便宜）。
+ */
+export const LOG_CAP = 200
+
+/** 追加一条界面日志，超限时整批裁旧 */
+export function pushLog(state, entry) {
+  state.log.push(entry)
+  if (state.log.length > LOG_CAP) state.log = state.log.slice(-LOG_CAP)
+  return entry
+}
+
+/** 关系里程碑：单方向只提示一次的门槛（跨上或跌下都算跨过） */
+const RELATION_MILESTONES = [
+  [80, '到了推心置腹的地步'],
+  [60, '可以托付后背了'],
+  [-60, '结成了死仇'],
+  [-80, '到了不死不休的地步'],
+]
+
+/**
+ * 死亡结算：血条归零就是真的没了。
+ *
+ * 设定原文写的是「血条归零为濒死，未及时治疗则死」—— 治疗机制
+ * （反转术式 / 静养 / 家入硝子）存在的意义是让你**别归零**；归零之后再谈
+ * 治疗等于给死亡打折，濒死就会永远停在叙事里。这里的规则是一条直线：
+ *
+ *   战斗里被压到 0   → 败北，当场死亡
+ *   赢了但换到 0     → 同归于尽，也是死（赢了这一场，没了下一场）
+ *   剧情回合的透支/伤势扣到 0 → 死
+ *
+ * 死亡不是删除：局面原地冻结，检查点（开打前的自动快照）和手动存档都还在
+ * —— 重来是从检查点重来，不是装作没死过。
+ *
+ * 幂等：第一次结算登记事实，之后的调用原样奉回（战斗收尾和回合落地
+ * 会先后各查一次）。
+ */
+export function checkPlayerDeath(state, cause) {
+  const p = state.player
+  if (!p) return null
+  if (state.over?.dead) return state.over
+  if (p.hp.cur > 0) return null
+
+  const CAUSE = {
+    'combat-loss': '战斗败北，血条归零',
+    'combat-aftermath': '赢下了这一场，但血条也归了零',
+    overspend: '咒力透支，反噬耗尽了最后的生命',
+    wound: '伤势过重，血条归零',
+  }
+  state.over = {
+    dead: true,
+    cause,
+    summary: CAUSE[cause] || '血条归零',
+    date: state.time?.date || '',
+    day: state.time?.day ?? 0,
+    turn: state.turn,
+  }
+  return state.over
 }
 
 export function blankState(rng, storylineId = DEFAULT_STORYLINE, playMode = DEFAULT_PLAY_MODE) {
@@ -171,6 +251,15 @@ export function applyProposal(state, prop) {
   for (const [k, v] of Object.entries(prop.relationDelta || {})) {
     const cur = state.relations[k] ?? 0
     state.relations[k] = Math.max(-100, Math.min(100, cur + v))
+    // 关系里程碑：跨过 ±60/±80 的那一刻提示玩家。
+    // 数字是抽象的，跨过的坎是具体的 —— "可以托付后背的人"和"不死不休的仇"
+    // 都是玩家的决策该知道的事，不只藏在右栏的数字里
+    const after = state.relations[k]
+    for (const [edge, label] of RELATION_MILESTONES) {
+      if ((cur < edge && after >= edge) || (cur > edge && after <= edge)) {
+        notes.push(`与${k}的关系${label}（${after > 0 ? '+' : ''}${after}）`)
+      }
+    }
   }
 
   // 死亡永久入库：模型每回合都会在状态里看到已死亡角色，就很难让人复活。
@@ -208,6 +297,9 @@ export function applyProposal(state, prop) {
 
   p.status = hpStatus(p.hp)
   if (p.technique.cdLeft > 0) p.technique.cdLeft--
+
+  // 血条归零在剧情回合同样成立：伤势 delta 或咒力透支把最后的生命耗尽
+  checkPlayerDeath(state, p.hp.cur <= 0 ? (notes.some((n) => n.includes('透支')) ? 'overspend' : 'wound') : null)
 
   return notes
 }
@@ -348,6 +440,15 @@ export function modelStateView(state) {
   return {
     故事线: `${line.name}（${line.era}）`,
     游玩模式: playModeOf(state.playMode).name,
+    /*
+     * 下一原作节点（全模式）：剧情向的模型原来没有时间感 —— 它不知道
+     * 离涩谷事变还有几天，随手写个「一个月后」就可能把节点推过头。
+     * 战斗向早有轮盘倒计时，这里是把同一份真值喂给每一条线的叙事。
+     */
+    下一原作节点: (() => {
+      const ms = nextMilestone(state)
+      return ms ? `${ms.date}「${ms.node}」（还有 ${ms.daysLeft} 天 · ${ms.dangerLabel}）` : '排期已走完'
+    })(),
     ...(wheelView ? { 修炼循环: wheelView } : {}),
     本线登场角色: line.characters,
     本线原作节点: line.nodes,
@@ -464,6 +565,8 @@ export function panelSnapshot(state) {
     technique: p.technique,
     domain: p.domain,
     reverseCursedTechnique: p.reverseCursedTechnique,
+    // 黑闪累计：打出过的身体会记住那种感觉（原著设定），这里给界面留个读数
+    blackFlash: p._blackFlash || 0,
     tools: p.tools,
     talents: p.talents,
     cursedDamage: p.cursedDamage,
@@ -474,13 +577,37 @@ export function panelSnapshot(state) {
     timeline: state.timeline,
     // 战果面板用：最近 30 场（倒序交给前端，引擎只保证顺序是时间先后）
     battles: state.battles || [],
+    /*
+     * 本局战绩：元进度的一层。打出去的每一拳都该在这张表上留痕 ——
+     * 回合数、场次、击杀、介入过的正日子、黒闪颗数、改写的节点。
+     * 全部由既有事实（battles / timeline / 黑闪计数）现算，不另记账本。
+     */
+    career: state.player ? {
+      turns: state.turn,
+      battles: (state.battles || []).length,
+      kills: (state.battles || []).filter((b) => b.killed).length,
+      interventions: (state.battles || []).filter((b) => b.ground === '介入战').length,
+      blackFlash: state.player._blackFlash || 0,
+      changedNodes: (state.timeline.changed || []).length,
+      // 乘胜追击的读数：连胜越长，下一场的战利品掉率越高（面板要点明这件事）
+      winStreak: state.winStreak || 0,
+    } : null,
     time: state.time,
+    // 成就：全量表 + 达成状态（右栏面板渲染；新达成的提示走响应层 takeAchievements）
+    achievements: achievementView(state),
+    // 死亡结算：血条归零即终局（面板据此盖死亡谢幕层，并拦截一切后续操作）。
+    // checkpoint 标记告诉前端「从上一场开打前重来」这条出路是否存在
+    over: state.over ? { ...state.over, checkpoint: !!state.hasCheckpoint } : null,
+    // 谢幕可用：排期走完且还没谢过幕 —— 顶栏「终章」按钮的显隐依据
+    canFinish: endingReady(state),
     training: p.training,
     // 战斗相关的现场状态，刷新页面后要靠它恢复
     combat: state.combat
       ? {
           mode: state.combat.mode,
           turn: state.combat.turn,
+          // 援护者：战斗栏挂一句「谁替你抢下了先手」
+          backup: state.combat.backup || null,
           enemy: {
             name: state.combat.enemy.name,
             grade: state.combat.enemy.grade,
@@ -504,6 +631,14 @@ export function panelSnapshot(state) {
           enemyGrade: state.pendingCombat.enemy.grade,
           enemyTechnique: state.pendingCombat.enemy.technique.name,
           reason: state.pendingCombat.reason,
+          // 介入战带节点名（界面据此放大字过场）；脱离成功率摆进选项文案 ——
+          // 关键决策不该赌黑盒，跑不跑得掉玩家应该有数
+          intervention: state.pendingCombat.intervention || null,
+          evadeChance: evadeChanceOf(p, state.pendingCombat.enemy),
+          // 敌方完整档案预览：打不打得过，开打之前就该看得见
+          profile: enemyProfile(state.pendingCombat.enemy),
+          // 战力预估三档：占优 / 胶着 / 劣势（粗估方向，不替引擎保证结果）
+          forecast: battleForecast(p, state.pendingCombat.enemy),
         }
       : null,
     /*
